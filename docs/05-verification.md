@@ -13,7 +13,7 @@
 | V4 | bundle 能被 DSH 安装并激活（同一份清单与安装机制） | `plugin_manager install_bundle` → `application: applied`；`fiberPhase: active` | ✅ 已验证 |
 | V5 | per-Agent 工具注册 + 提示注入在本运行时真实生效 | 骨架版（同机制、仅 1 个诊断工具）被本 Agent 实际调用成功 | ✅ 已验证（骨架代） |
 | V6 | 最终组合配置进入 profile 121 | `dsh --profile 121 --dump-config` 输出含本行与配置 | ✅ 已验证 |
-| V7 | **最终代码代**在运行中的 Desktop 里 live 跑一次完整团队流程 | 需要重启 DSH 进程 | ⚠️ **未验证**（原因见 §5） |
+| V7 | **最终代码代**在运行中的 Desktop 里 live 跑一次完整团队流程 | 重启 DSH 后真实 run（4 成员 / 2 项 / 约 5 分钟） | ✅ **已验证**，见 [`08-live-run.md`](08-live-run.md) 与 [`evidence/live-run/`](evidence/live-run/) |
 | V8 | 对抗性独立审阅 | 独立 reviewer（fresh context）审阅代码与文档 | ✅ 完成：18 条发现（1 blocker / 10 major / 6 minor / 1 nit），处理见 [`07-review-resolution.md`](07-review-resolution.md)，原始记录见 [`06`](06-review-findings.md) |
 
 ---
@@ -159,34 +159,30 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 
 ## 5. 未验证项与原因
 
-### V7：最终代码代的 live 团队流程
+### V7：最终代码代的 live 团队流程 —— 已验证
 
-**未验证原因（实测）**：DSH 的 HMR 只监视 profile manifest 与 patch 文件，**不监视工作区 linked 插件包的源码**。因此：
+2026-11-01 重启 DSH 后，在干净的 `/tmp/atw-smoke` 用 4 个成员（Lead + 2 worker + 1 reviewer）跑通完整闭环：
+计划 → 并行独立执行 → 升级仲裁 → 结构化报告 → 自动指派并完成相互评审 → 门禁 → finalize 写报告。
+完整时间线、证据与残余 nit 见 [`08-live-run.md`](08-live-run.md)；原始工件在 [`evidence/live-run/`](evidence/live-run/)
+（`report.md`、`state.json`、`hello.mjs`、`hello.test.mjs`、`README.md`）。
 
-- 修改 `index.js` / `lib/*` 后，运行中的进程仍是首次加载的模块代（本机实测：`team_workflow_info` 一直可用，证明旧代未卸载）；
-- 卸载/重装 bundle、切换 row 开关都返回 `application: applied`，但运行中的模块代没有被替换；
-- 更换链接路径（新 ESM URL）重启 row 也未触发新代加载。
+Lead 独立复核（不采信成员自述）：
 
-**同时**，本 shell 无法做独立进程的 live 验证：`OPENCODE_GO_API_KEY` / `DEEPSEEK_API_KEY` 均未设置（模型凭据由 Desktop 进程注入），`dsh --profile headless "job"` 无法完成一次真实模型回合。
+```bash
+cd /tmp/atw-smoke && PATH=<dsh-node-bin>:$PATH node --test
+# ℹ tests 3 / ℹ pass 3 / ℹ fail 0   exit=0
+```
 
-**正确的复现步骤（重启后 5 分钟）**：
+**如需再复跑**：重启后的任意会话，对 Lead 说「用 Agent Team 工作流做一个小实现 + 独立评审，走完
+report→review→gate→finalize」，或直接在空目录里调用 `team_flow_plan` 并按返回的 spawn 简报组队。
 
-1. 退出并重开 DSH（Desktop 重启会清空模块缓存，加载最终代码代）；
-2. 新建一个空目录作为工作目录（避免污染现有工程），确认 `.agentteam/` 可写；
-3. 对 Lead 说：
-   > 用 Agent Team 工作流验证这套插件：目标是创建一个 `hello.mjs`（导出 `greet(name)`）+ 一个 node:test 测试；请开两个工作项（实现、验证）或一个实现项 + 一个独立评审，按 `team_flow_plan` 返回的 spawn 简报组队，走完 report → review → gate → finalize。
-4. 期望结果：
-   - `team_flow_status` 返回 `phase: planned → in_review → converged → finalized`；
-   - 实现者 `team_flow_report` 后，评审者收到 `[REVIEW]` 通知；
-   - 每个 item 出现 ≥1 轮 verdict，作者逐条 `team_flow_review_respond`；
-   - `team_flow_gate {finalize:true}` 通过后生成 `.agentteam/report.md`（含 DoD、命令与退出码、评审记录、gate 表）；
-   - 非 owner / 非指派 reviewer 的调用被拒绝。
+> 注：重启前记录的"HMR 只监视 profile、不热替换 linked 插件模块代"仍然成立——所以**改插件代码后需要重启**，这与 live run 无关。
 
 ### 其他未验证
 
 | 项 | 原因 |
 | --- | --- |
-| 真实模型对注入协议的行为（是否遵守、是否绕过） | 需要重启后的 live 回合；离线只能验证文本与工具契约 |
+| 真实模型对注入协议的行为（是否遵守、是否绕过） | 已观测 **1 次** live 样本（`08-live-run.md`：4 个成员全部按协议行动，含拒绝作弊与拒绝收敛后漂移），但不是统计结论 |
 | `team_flow_gate` 与原生任务板在**跨进程**场景下的一致性 | DSH 一个 Team 只存在于一个 Host 进程，设计上不支持跨进程写 |
 | Client UI 呈现（本插件无 UI 部分） | 未实现 UI；`state.json` 可通过文件侧栏查看 |
 

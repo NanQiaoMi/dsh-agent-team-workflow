@@ -81,6 +81,11 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 
 45 个用例：计划校验与波次、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。
 
+## 真实运行记录
+
+2026-11-01 重启后在空目录跑通一次完整 live run（4 成员 / 2 并行项 / 约 5 分钟，含一次升级仲裁与两轮独立评审），
+记录见仓库 `docs/08-live-run.md`，原始工件在 `docs/evidence/live-run/`。
+
 ## 边界
 
 - 无法在运行时强制只读角色、无法用 hooks 阻断原生 `complete`、无 token 计量：这些能力本包不做伪称，只用「角色约定 + 门禁检查 + 报告审计」替代。

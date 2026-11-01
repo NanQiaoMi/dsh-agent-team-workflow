@@ -24,8 +24,9 @@
 | [`docs/03-architecture.md`](docs/03-architecture.md) | **架构设计**：分层、角色模型、注入四层、状态机、门禁、黑板、诚实边界、ADR |
 | [`docs/04-workflow-protocol.md`](docs/04-workflow-protocol.md) | **注入式工作流协议**：端到端 runbook、工具参考、数据模板、rubric、失败 playbook、反模式 |
 | [`docs/05-verification.md`](docs/05-verification.md) | 验证证据：测试清单与命令、安装/激活证据、未验证项 |
-| [`docs/06-review-findings.md`](docs/06-review-findings.md) | 独立 reviewer 的对抗性审阅原始记录（18 条发现，未修改） |
+| [`docs/06-review-findings.md`](docs/06-review-findings.md) | 独立 reviewer 的对抗性审阅原始记录（两轮共 24 条发现，未修改） |
 | [`docs/07-review-resolution.md`](docs/07-review-resolution.md) | 逐条处理决定：修复 / 部分修复 / 不接受及理由 |
+| [`docs/08-live-run.md`](docs/08-live-run.md) | **重启后的真实 live run**：4 成员 / 2 并行项 / 5 分钟跑通全流程的证据与观察 |
 | [`packages/agent-team-workflow/`](packages/agent-team-workflow/) | 可安装插件包（零外部依赖，纯 ESM） |
 
 ## 快速开始
@@ -87,6 +88,8 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 ```
 
 45 个用例覆盖：计划校验（自审/环/写范围竞争/成员名/规模）、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类（含空证据、空命令、依赖未批准、评审无证据）、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。详见 [`docs/05-verification.md`](docs/05-verification.md)。
+
+**已通过真实 live run 验证**（2026-11-01，重启后）：4 个成员、2 个并行工作项、一次升级仲裁、两轮独立评审、门禁收敛并生成报告——记录与原始证据见 [`docs/08-live-run.md`](docs/08-live-run.md)。
 
 ## 已知边界（诚实标注）
 
