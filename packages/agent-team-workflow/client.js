@@ -754,10 +754,10 @@ window.__ModuleLoader__.load({
 
     /**
      * Distribute `count` nodes over one or two rows inside a percentage box.
-     * @returns `[{ x, y }]` in `0..100` percentage coordinates.
+     * @returns `{ nodes: [{ x, y }] (0..100 percentage coordinates), perRow }`.
      */
     function spreadNodes(count, singleRowY, firstRowY, secondRowY) {
-      if (count <= 0) return []
+      if (count <= 0) return { nodes: [], perRow: 1 }
       const rows = count > 6 ? 2 : 1
       const perRow = Math.ceil(count / rows)
       const nodes = []
@@ -769,7 +769,17 @@ window.__ModuleLoader__.load({
         const y = rows === 1 ? singleRowY : row === 0 ? firstRowY : secondRowY
         nodes.push({ x: round1(x), y })
       }
-      return nodes
+      return { nodes, perRow }
+    }
+
+    /**
+     * Width cap (percentage) that keeps `perRow` nodes from overlapping.
+     * @returns the `max-width` percentage for one node in the row.
+     */
+    function nodeWidth(perRow, cap, floor) {
+      if (perRow <= 1) return cap
+      const gap = 86 / (perRow - 1)
+      return Math.min(cap, Math.max(floor, gap * 0.9))
     }
 
     /**
@@ -781,19 +791,19 @@ window.__ModuleLoader__.load({
     function computeTopology(team, items) {
       const leadName = team.me && team.me.name ? team.me.name : ''
       const lead = { x: 50, y: 13, name: leadName }
-      const memberPositions = spreadNodes(team.members.length, 45, 39, 57)
+      const memberSpread = spreadNodes(team.members.length, 45, 39, 57)
       const memberNodes = team.members.map((member, index) => ({
         key: 'member-' + member.name + '-' + index,
         member,
-        x: memberPositions[index].x,
-        y: memberPositions[index].y,
+        x: memberSpread.nodes[index].x,
+        y: memberSpread.nodes[index].y,
       }))
-      const itemPositions = spreadNodes(items.length, 82, 76, 90)
+      const itemSpread = spreadNodes(items.length, 82, 76, 90)
       const itemNodes = items.map((item, index) => ({
         key: 'item-' + item.id,
         item,
-        x: itemPositions[index].x,
-        y: itemPositions[index].y,
+        x: itemSpread.nodes[index].x,
+        y: itemSpread.nodes[index].y,
       }))
       const edges = []
       for (const node of memberNodes) {
@@ -824,7 +834,14 @@ window.__ModuleLoader__.load({
           })
         }
       }
-      return { lead, memberNodes, itemNodes, edges }
+      return {
+        lead,
+        memberNodes,
+        itemNodes,
+        edges,
+        memberWidth: nodeWidth(memberSpread.perRow, 34, 9),
+        itemWidth: nodeWidth(itemSpread.perRow, 11, 5),
+      }
     }
 
     // ---------------------------------------------------------------------
@@ -866,7 +883,7 @@ window.__ModuleLoader__.load({
 .atw-panel{display:flex;flex-direction:column;box-sizing:border-box;min-width:0;border:0.5px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1);overflow:hidden}
 .atw-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;padding:7px 12px;border-bottom:0.5px solid var(--dsw-alias-border-l1)}
 .atw-panel-title{font-size:12px;font-weight:600;line-height:18px;white-space:nowrap}
-.atw-panel-hint{min-width:0;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.atw-panel-hint{min-width:0;color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:400;line-height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .atw-panel-body{padding:10px 12px;min-width:0}
 .atw-panel-body--flush{padding:0}
 .atw-flow{overflow:auto;max-height:min(58vh,560px)}
@@ -958,7 +975,7 @@ window.__ModuleLoader__.load({
 .atw-error-card{display:flex;flex-direction:column;gap:6px;box-sizing:border-box;border:0.5px solid var(--dsw-alias-state-error-primary);border-radius:10px;background:var(--dsw-alias-bg-layer-1);padding:14px 16px}
 .atw-error-title{font-size:14px;line-height:22px;font-weight:600;color:var(--dsw-alias-state-error-primary)}
 .atw-error-detail{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:17px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
-.atw-drawer{position:absolute;top:8px;right:8px;bottom:8px;z-index:6;display:flex;flex-direction:column;box-sizing:border-box;width:min(460px,calc(100% - 16px));border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-base);overflow:hidden}
+.atw-drawer{position:fixed;top:80px;right:16px;z-index:40;display:flex;flex-direction:column;box-sizing:border-box;width:min(440px,calc(100vw - 32px));max-height:calc(100vh - 180px);border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-base);overflow:hidden}
 .atw-drawer-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;box-sizing:border-box;padding:10px 12px;border-bottom:0.5px solid var(--dsw-alias-border-l1)}
 .atw-drawer-heading{display:flex;flex-direction:column;gap:2px;min-width:0}
 .atw-drawer-title{font-size:13px;line-height:19px;font-weight:600;overflow-wrap:anywhere}
@@ -1251,8 +1268,8 @@ window.__ModuleLoader__.load({
                 'div',
                 {
                   key: node.key,
-                  className: 'atw-node atw-node--st-' + memberTone(node.member.status) + ' atw-node--st-' + str(node.member.status, 'inactive'),
-                  style: { left: node.x + '%', top: node.y + '%' },
+                  className: 'atw-node atw-node--member atw-node--st-' + str(node.member.status, 'inactive'),
+                  style: { left: node.x + '%', top: node.y + '%', maxWidth: topology.memberWidth + '%' },
                   title: node.member.name + ' · ' + memberStatusLabel(tr, node.member.status),
                 },
                 h('span', { className: 'atw-dot' }),
@@ -1266,7 +1283,7 @@ window.__ModuleLoader__.load({
                 {
                   key: node.key,
                   className: 'atw-node atw-node--item atw-node--tone-' + statusTone(node.item.status),
-                  style: { left: node.x + '%', top: node.y + '%' },
+                  style: { left: node.x + '%', top: node.y + '%', maxWidth: topology.itemWidth + '%' },
                   title: node.item.id + ' · ' + statusLabel(tr, node.item.status) + (node.item.subject ? ' · ' + node.item.subject : ''),
                 },
                 h('span', { className: 'atw-dot' }),
@@ -1278,7 +1295,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { className: 'atw-legend' },
-            legendLine('legend-lead', tr('topology.leadEdge'), 'atw-legend-line--lead'),
+            legendLine('legend-lead', tr('topology.leadEdge')),
             legendLine('legend-owns', tr('topology.ownsEdge'), 'atw-legend-line--owns'),
             legendLine('legend-reviews', tr('topology.reviewsEdge'), 'atw-legend-line--review'),
           ),
@@ -1534,13 +1551,18 @@ window.__ModuleLoader__.load({
         kvRow('reviewers', tr('drawer.reviewers'), item.reviewers.length > 0 ? item.reviewers.join(', ') : tr('drawer.none')),
         kvRow('writeScopes', tr('drawer.writeScopes'), item.writeScopes.length > 0 ? item.writeScopes.join(', ') : tr('drawer.none')),
         kvRow('blockedBy', tr('drawer.blockedBy'), item.blockedBy.length > 0 ? item.blockedBy.join(', ') : tr('drawer.none')),
-        kvRow(
-          tr,
-          'task',
-          tr('drawer.task', { id: item.task ? str(item.task.id, '?') : '-', revision: item.task ? str(item.task.revision, '?') : '-' }),
-          item.task ? str(item.task.status, tr('common.unknown')) : tr('drawer.noTask'),
-        ),
       ]
+      if (item.task) {
+        meta.push(
+          kvRow(
+            'task',
+            tr('drawer.task', { id: str(item.task.id, '?'), revision: str(item.task.revision, '?') }),
+            str(item.task.status, tr('common.unknown')),
+          ),
+        )
+      } else {
+        meta.push(kvRow('task', tr('drawer.noTask'), tr('common.none')))
+      }
       sections.push(h('div', { key: 'meta', className: 'atw-section' }, meta))
       sections.push(bulletList('dod', tr('drawer.dod'), item.definitionOfDone))
       if (item.override !== null) {
@@ -1655,12 +1677,13 @@ window.__ModuleLoader__.load({
       if (records.length === 0) {
         reviewRows.push(h('div', { key: 'no-records', className: 'atw-muted' }, tr('drawer.noFindings')))
       }
-      for (const record of records) {
+      for (let recordIndex = 0; recordIndex < records.length; recordIndex += 1) {
+        const record = records[recordIndex]
         const findings = record.findings
         reviewRows.push(
           h(
             'div',
-            { key: 'record-' + record.round + '-' + record.reviewer, className: 'atw-record' },
+            { key: 'record-' + recordIndex + '-' + record.round, className: 'atw-record' },
             h(
               'div',
               { className: 'atw-record-head' },
