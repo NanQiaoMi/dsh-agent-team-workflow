@@ -1861,7 +1861,26 @@ window.__ModuleLoader__.load({
       /** Marker-id seat: stable per mount, unique across mounted boards. */
       const markerRef = React.useRef(null)
       const copyTimerRef = React.useRef(null)
+      /** Board root, used to reach the conversation scrollport on mount. */
+      const rootRef = React.useRef(null)
       if (markerRef.current === null) markerRef.current = nextMarkerId()
+
+      // A View switch reuses the conversation scrollport, which keeps the chat
+      // scroll offset; without this the board would mount scrolled out of view.
+      React.useEffect(() => {
+        const node = rootRef.current
+        if (node === null || node === undefined || node.parentElement === null) return
+        let cursor = node.parentElement
+        while (cursor !== null && cursor !== undefined) {
+          const style = typeof getComputedStyle === 'function' ? getComputedStyle(cursor) : null
+          const overflowY = style === null || style === undefined ? '' : style.overflowY
+          if ((overflowY === 'auto' || overflowY === 'scroll') && cursor.scrollHeight > cursor.clientHeight) {
+            cursor.scrollTop = 0
+            return
+          }
+          cursor = cursor.parentElement
+        }
+      }, [])
 
       React.useEffect(() => {
         if (sessionId === '') return undefined
@@ -2017,7 +2036,7 @@ window.__ModuleLoader__.load({
       }
       return h(
         'div',
-        { className: 'atw-root', 'data-atw-board': 'v1' },
+        { className: 'atw-root', 'data-atw-board': 'v1', ref: rootRef },
         h('style', { key: 'atw-style', dangerouslySetInnerHTML: { __html: STYLES } }),
         h(BoardBoundary, { fallback: renderErrorCard(tr, tr('error.boundary')) }, content),
       )

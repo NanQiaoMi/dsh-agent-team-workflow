@@ -14,7 +14,7 @@
 | V5 | per-Agent 工具注册 + 提示注入在本运行时真实生效 | 骨架版（同机制、仅 1 个诊断工具）被本 Agent 实际调用成功 | ✅ 已验证（骨架代） |
 | V6 | 最终组合配置进入 profile 121 | `dsh --profile 121 --dump-config` 输出含本行与配置 | ✅ 已验证 |
 | V7 | **最终代码代**在运行中的 Desktop 里 live 跑一次完整团队流程 | 重启 DSH 后真实 run（4 成员 / 2 项 / 约 5 分钟） | ✅ **已验证**，见 [`08-live-run.md`](08-live-run.md) 与 [`evidence/live-run/`](evidence/live-run/) |
-| V9 | 实时看板（聚合/路由/客户端） | 离线测试 29 例（dashboard 14 / 路由 6 / client 契约 9）+ 真实黑板 dry-run | ✅ 全绿；端到端待重启刷新后人工确认（[`10`](10-dashboard-verification.md) §3） |
+| V9 | 实时看板（聚合/路由/客户端） | 离线测试 30 例（dashboard 14 / 路由 6 / client 契约 10）+ 真实黑板 dry-run + **真实浏览器复验**（独立 Host：启动图/View/路由/渲染/滚动修复） | ✅ 全绿；桌面 App 重启后按 [`10`](10-dashboard-verification.md) §3 复验 | |
 | V8 | 对抗性独立审阅 | 独立 reviewer（fresh context）审阅代码与文档 | ✅ 完成：18 条发现（1 blocker / 10 major / 6 minor / 1 nit），处理见 [`07-review-resolution.md`](07-review-resolution.md)，原始记录见 [`06`](06-review-findings.md) |
 
 ---

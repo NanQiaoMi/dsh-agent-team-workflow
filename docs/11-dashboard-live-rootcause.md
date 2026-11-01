@@ -62,12 +62,30 @@ createRequire('~/.dsh/profiles/121/package.json').resolve('@local/dsh-agent-team
 `packages/agent-team-workflow/package.json`：
 
 - `exports` 增加 `"./package.json": "./package.json"`；
-- 版本 `1.0.0 → 1.0.1`（便于确认加载的是新清单）。
+- 版本 `1.0.0 → 1.0.1`（便于确认加载的是新清单）；
+- `client.js`：修复 View 切换后的滚动位置（见 §5 最后一行）。
 
 已重新安装 bundle（`application: applied`）。**必须重启 Host** 才能生效：扫描器把失败结果缓存在内存
 （`pkgMeta` 的 `null`），行热重载不会清缓存；Client 侧则需要页面刷新/重启后重新拉取启动图。
 
-## 5. 重启后的复验清单
+## 5. 隔离实例上的完整复验（已在真实浏览器完成）
+
+为了不干扰用户正在运行的 Desktop 代际，用同一 profile 起了一个独立 Host
+（`dsh --profile 121 --port 4399 --no-open`，独立端口、独立进程），并在真实 Chromium 里驱动它：
+
+| 检查 | 结果 |
+| --- | --- |
+| 启动图包含 Web 半 | ✅ 修复后 `__DSH_BOOT__.entries` 出现 `@local/dsh-agent-team-workflow`（`client.js` rev + 4 个 inject 依赖 + `immediately:true`） |
+| View 导航 | ✅ 会话头部 tab 为 `对话 / 轨迹 / 团队看板`，点击后 `aria-selected=true` 且渲染 `.atw-root` |
+| 认证路由（同源浏览器） | ✅ `fetch('/api/agent-team-workflow.snapshot?session=…')` → 200、`cache-control: no-store`、`{ok:true, version:1, run:null, diagnostics:{boardSource:"missing"}}` |
+| 富数据渲染 | ✅ 用真实已收敛 run 的 `state.json` 作 fixture：流程图（波次卡 + `R1/2` 自循环 + 依赖箭头）、拓扑（Lead + W1/W2 节点 + 三类边图例）、事件流 9 条 + 筛选、门禁三项通过 + 报告路径、升级已裁决；截图见 `docs/evidence/dashboard/` |
+| 详情抽屉 | ✅ 点击卡片后展示 owner/role/status/wave/reviewers/写范围/DoD/报告摘要 |
+| 空态 | ✅ 无黑板时显示"看板为空 · 让 Lead 运行 team_flow_plan…" + 成员拓扑 |
+| **滚动位置 bug** | ⚠️ 发现并修复：View 切换复用会话滚动容器，聊天滚到底（scrollTop=6093）后切到看板会"空白"（看板实际渲染在 y=-1038）。已在组件挂载时把最近的可滚动祖先 `scrollTop=0`；复验 `6093 → 0`、`boardTop=76`、可见 |
+
+新增契约测试：`test/client.contract.test.mjs` 增加 1 例（10/10 通过），锁住"必须重置滚动容器"这一行为。
+
+## 5b. 桌面 App 重启后的复验清单
 
 1. Host 重启 → 重新拉取 `GET /`，`__DSH_BOOT__` 的 `entries` 应出现
    `@local/dsh-agent-team-workflow`（`url` 形如 `plugins/??@local/dsh-agent-team-workflow/client.js&rev=…`，`immediately:true`）；

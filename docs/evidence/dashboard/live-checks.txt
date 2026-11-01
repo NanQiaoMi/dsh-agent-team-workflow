@@ -1,0 +1,90 @@
+# Live dashboard checks — isolated Host instance (same profile 121)
+
+Purpose: verify the Web half and the rendered board in a real browser, without
+touching the user's running Desktop generation. An independent Host was booted
+from the same profile (`dsh --profile 121 --port 4399 --no-open`), a fixture
+board was seeded for one session, and the app was driven in a Chromium page.
+
+## 1. Boot graph contains the Web half (after the manifest export fix)
+
+`GET /` → `globalThis["__DSH_BOOT__"].entries` (75 modules) includes:
+
+```json
+{
+  "id": "@local/dsh-agent-team-workflow",
+  "url": "plugins/??@local/dsh-agent-team-workflow/client.js&rev=3a2febd577dc",
+  "rev": "3a2febd577dc",
+  "inject": [
+    "@deepseek-ai/dsh-client-locale",
+    "@deepseek-ai/dsh-client-ui-conversation",
+    "@deepseek-ai/dsh-client-ui-renderer",
+    "@deepseek-ai/dsh-client-ui-session"
+  ],
+  "immediately": true
+}
+```
+
+Before the fix the same list had 77 modules and no `@local/…` entry
+(the Desktop generation additionally loads two more shipped bundles).
+
+## 2. View tab registered
+
+After opening a session: `[data-conversation-tabs] [role=tab]` = `["对话","轨迹","团队看板"]`;
+clicking the third sets `aria-selected=true` and renders `div.atw-root`.
+
+## 3. Authenticated route, same origin, real browser
+
+```js
+fetch('/api/agent-team-workflow.snapshot?session=session-2ea71afb-…', { credentials: 'same-origin' })
+→ 200, cache-control: no-store
+   { ok: true, version: 1, run: null, diagnostics: { boardSource: "missing" },
+     members: ["lead"] }
+```
+
+## 4. Rendered board (seeded fixture from the real finalized run)
+
+Flow panel: 第 1 波 with cards `W1 已批准 / impl-hello / 评审 1/2` and
+`W2 已批准 / impl-docs / 评审 1/2`, each with the `R1/2` review self-loop arc and
+the dependency/flow SVG arrows.
+
+Topology panel: `Lead lead` node, `W1`/`W2` item nodes, legend
+`Lead → 成员`, `成员 → 工作项`, `评审 → 被审项`.
+
+Events panel: 9 events newest-first (`run/finalized`, `review/submitted ×2`,
+`item/reported ×2`, `escalation/resolved`, `escalation/raised`, …) with the
+`全部/评审/升级/修复/交付` filter chips and relative times.
+
+Gate panel: `通过 · 评估于 …`, `W1 通过`, `W2 通过`, report path + copy control.
+Escalation panel: `需求冲突 · 已解决 · 关联 W1` with the arbitration text.
+
+Detail drawer (click `W1`): title/owner/role/status/wave/reviewers/write scopes/
+DoD list/report summary; `关闭` control.
+
+Screenshots: `board-overview.png`, `board-drawer.png` in this directory.
+
+## 5. Empty state (no board)
+
+Same session before the fixture was seeded rendered:
+`看板为空 · 让 Lead 运行 team_flow_plan 建立 run；看板每 1.2 秒自动刷新。`
+`还没有找到黑板文件，run 建立后会自动出现在这里。` + 当前团队成员 + 拓扑.
+
+## 6. Scrollport reset (bug found live, fixed, re-verified)
+
+The View switcher reuses the conversation scrollport. With the chat scrolled to
+the bottom (scrollTop = 6093 px), switching to 团队看板 used to mount the board
+at the same offset (board rect y = -1038): the panel looked blank until scrolled.
+
+After the fix (`rootRef` + reset the nearest scrollable ancestor on mount):
+
+```json
+{ "beforeSwitchScrollTop": 6093, "afterSwitchScrollTop": 0,
+  "boardTop": 76, "visible": true }
+```
+
+## 7. Notes
+
+- The independent instance shares the profile's session log directory; it was
+  used read-only against one existing session and its temporary board fixture
+  was removed afterwards.
+- The Desktop generation needs one restart because its client-module scan cached
+  the pre-fix `null` resolution (see docs/11 §3).

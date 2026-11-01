@@ -160,5 +160,5 @@ changes_requested=warn、escalated/pending failed=error、pending=idle。样式�
 
 1. ✅ `buildSnapshot` 单测覆盖：无 run、完整 run（2 items/依赖/评审记录/gate/escalations）、截断上限、状态归一化、waves 自洽（14 例，见 `docs/10`）。
 2. ✅ 路由：GET 200 + JSON + `no-store`；400/404/405 分支；损坏黑板降级、非成员会话不抛（6 例；403 由 Connection 层拦截）。
-3. ✅ `client.js`：模块格式正确、只 require('react')、注册 `conversation.view`（id/order/label/locale/inject）、无 `document.body`/iframe/其它 require；`node --check` 通过（9 例契约测试）。
+3. ✅ `client.js`：模块格式正确、只 require('react')、注册 `conversation.view`（id/order/label/locale/inject）、无 `document.body`/iframe/其它 require；`node --check` 通过（10 例契约测试）。
 4. ⏳ 端到端（需重启 + 刷新后由人工确认）：View 导航出现"团队看板"，打开即见当前 run；运行中的 team 在 1–2 秒内更新；点击 item 出详情；收敛后仍可查看报告。验证步骤见 [`10-dashboard-verification.md`](10-dashboard-verification.md) §3。

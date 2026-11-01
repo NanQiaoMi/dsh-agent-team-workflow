@@ -28,7 +28,7 @@
 | [`docs/07-review-resolution.md`](docs/07-review-resolution.md) | 逐条处理决定：修复 / 部分修复 / 不接受及理由 |
 | [`docs/08-live-run.md`](docs/08-live-run.md) | **重启后的真实 live run**：4 成员 / 2 并行项 / 5 分钟跑通全流程的证据与观察 |
 | [`docs/09-dashboard-design.md`](docs/09-dashboard-design.md) | **实时监控看板**设计契约：snapshot 数据契约、HTTP 路由、Client View、面板与容错 |
-| [`docs/10-dashboard-verification.md`](docs/10-dashboard-verification.md) | 看板验证记录：29 例离线测试、真实黑板 dry-run、待人工确认的端到端步骤 |
+| [`docs/10-dashboard-verification.md`](docs/10-dashboard-verification.md) | 看板验证记录：30 例离线测试、真实黑板 dry-run、待人工确认的端到端步骤 |
 | [`docs/11-dashboard-live-rootcause.md`](docs/11-dashboard-live-rootcause.md) | **「View 不出现」根因**：client 启动图静默跳过（`exports` 漏导 `./package.json`）+ live 只读验证方法 |
 | [`packages/agent-team-workflow/`](packages/agent-team-workflow/) | 可安装插件包（零外部依赖，纯 ESM） |
 
@@ -101,7 +101,7 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 "$NODE" --test test/engine.test.mjs test/tools.integration.test.mjs test/plugin.test.mjs
 ```
 
-74 个用例（含看板 29 例）覆盖：计划校验（自审/环/写范围竞争/成员名/规模）、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类（含空证据、空命令、依赖未批准、评审无证据）、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。详见 [`docs/05-verification.md`](docs/05-verification.md)。
+75 个用例（含看板 30 例）覆盖：计划校验（自审/环/写范围竞争/成员名/规模）、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类（含空证据、空命令、依赖未批准、评审无证据）、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。详见 [`docs/05-verification.md`](docs/05-verification.md)。
 
 **已通过真实 live run 验证**（2026-11-01，重启后）：4 个成员、2 个并行工作项、一次升级仲裁、两轮独立评审、门禁收敛并生成报告——记录与原始证据见 [`docs/08-live-run.md`](docs/08-live-run.md)。
 

@@ -80,7 +80,7 @@ client.js           Web 端看板（conversation.view，纯 JS 动态模块，�
                     会静默跳过本包的客户端半（看板 tab 不出现），详见 docs/11
 lib/dashboard.js    看板聚合（零 import 纯函数）：waves/状态归一化/counts/截断
 lib/dashboard-route.js  GET /api/agent-team-workflow.snapshot（Connection 认证 Fetch 路由）
-test/               74 个离线用例（engine 26 / tools 14 / plugin 5 / dashboard 14 / route 6 / client 9）
+test/               75 个离线用例（engine 26 / tools 14 / plugin 5 / dashboard 14 / route 6 / client 10）
 ```
 
 ## 验证
@@ -90,7 +90,7 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 "$NODE" --test test/engine.test.mjs test/tools.integration.test.mjs test/plugin.test.mjs
 ```
 
-74 个用例：计划校验与波次、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验；看板快照（waves/截断/防御降级）、路由状态码与降级、客户端模块契约与空态渲染。
+75 个用例：计划校验与波次、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验；看板快照（waves/截断/防御降级）、路由状态码与降级、客户端模块契约与空态渲染。
 
 ## 真实运行记录
 

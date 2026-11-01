@@ -22,7 +22,7 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
                  test/dashboard.test.mjs test/dashboard-route.test.mjs test/client.contract.test.mjs
 ```
 
-实测：**74 tests / 74 pass / 0 fail**。
+实测：**75 tests / 75 pass / 0 fail**。
 
 | 套件 | 用例 | 覆盖 |
 | --- | --- | --- |
@@ -49,6 +49,13 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 > **2026-11-02 追记**：首次重启后 View 未出现，已定位为「客户端半未进入启动图」——根因与修复见
 > [`11-dashboard-live-rootcause.md`](11-dashboard-live-rootcause.md)（`package.json` 漏导 `./package.json`，
 > 扫描器静默跳过并把失败结果缓存在内存）。Host 半路由已在运行中的应用上实测 200。
+
+## 2.4 真实浏览器复验（独立 Host 实例）
+
+已用同一 profile 启动独立 Web Host，在 Chromium 中实测：启动图包含 Web 半、View 导航出现「团队看板」、
+同源 `fetch` 路由 200 + `no-store`、流程图/拓扑/事件流/门禁/升级/详情抽屉渲染、空态渲染；并发现并修复
+View 切换后滚动位置未重置的问题（滚动 6093 → 0）。详见 [`11-dashboard-live-rootcause.md`](11-dashboard-live-rootcause.md) §5
+与 `docs/evidence/dashboard/{live-checks.txt,board-overview.png,board-drawer.png}`。
 
 ## 3. 尚未验证（需要一次重启 + 刷新）
 

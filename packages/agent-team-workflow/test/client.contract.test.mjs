@@ -364,6 +364,14 @@ test('conversation.view registration shape matches docs/09 §4', () => {
 // Render smoke test: empty state, no snapshot, no DOM
 // ---------------------------------------------------------------------------
 
+test('DashboardView resets the reused conversation scrollport on mount', () => {
+  // A View switch keeps the chat scroll offset in the shared scrollport; the board
+  // must scroll its ancestor back to the top or it mounts out of view (live bug).
+  assert.match(source, /cursor\.scrollTop = 0/, 'the board must reset the scrollport it mounts into')
+  assert.match(source, /const rootRef = React\.useRef\(null\)/, 'the board needs a root ref to find its scrollport')
+  assert.match(source, /ref: rootRef/, 'the root element must carry the ref')
+})
+
 test('DashboardView renders the empty state from a null snapshot without throwing', () => {
   const component = applied.registrations[0].component
   const keys = []
