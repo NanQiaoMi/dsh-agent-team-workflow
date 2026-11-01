@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Agent Team Workflow",
+    "description": "Injects a standard multi-agent workflow (plan, independent parallel execution, mutual review, quality gates) into Agent Teams."
+  }
+}

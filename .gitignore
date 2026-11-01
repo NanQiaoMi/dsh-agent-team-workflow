@@ -1,0 +1,6 @@
+# Local runtime artifacts the plugin writes into a Team working directory.
+.agentteam/
+# Tooling leftovers.
+node_modules/
+.DS_Store
+*.tmp

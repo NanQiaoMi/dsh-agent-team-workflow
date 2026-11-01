@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Agent Team Workflow">
+  <title>Agent Team Workflow</title>
+  <rect x="1" y="1" width="62" height="62" rx="14" fill="#0f172a"/>
+  <g stroke="#38bdf8" stroke-width="2" stroke-linecap="round" opacity="0.85">
+    <line x1="32" y1="20" x2="16" y2="40"/>
+    <line x1="32" y1="20" x2="48" y2="40"/>
+    <line x1="16" y1="44" x2="48" y2="44" stroke-dasharray="4 4"/>
+  </g>
+  <g fill="#38bdf8">
+    <circle cx="32" cy="19" r="6.5"/>
+  </g>
+  <g fill="#e2e8f0">
+    <circle cx="16" cy="43" r="5.5"/>
+    <circle cx="48" cy="43" r="5.5"/>
+  </g>
+  <g stroke="#f472b6" stroke-width="2.5" stroke-linecap="round" fill="none">
+    <path d="M22 52.5 A 7 7 0 0 1 36 52.5"/>
+    <path d="M28.5 53.5 l 3.2 -1.2 l -1.2 3.2"/>
+  </g>
+</svg>

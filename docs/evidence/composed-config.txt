@@ -1,0 +1,23 @@
+# Composed config row for the plugin (dsh --profile 121 --dump-config)
+# command: "$NODE" "$DSH" --profile 121 --dump-config | grep -A 18 '# == @local/dsh-agent-team-workflow'
+# date: 2026-11-01T10:42:23+08:00
+
+# == @local/dsh-agent-team-workflow
+- id: agent-team-workflow
+  name: '@local/dsh-agent-team-workflow'
+  config:
+    artifactsDir: .agentteam
+    writeArtifacts: true
+    injectPolicy: true
+    maxReviewRounds: 2
+    maxParallelItems: 4
+    maxItems: 12
+    workerContext: fresh
+    strictScopes: false
+    allowScopeOverlap: false
+    autoNotify: true
+    requireReviewEvidence: true
+# == ~/.dsh/cordis.patch.yml
+- id: seep-mcp
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:

@@ -1,0 +1,31 @@
+# Agent Team Workflow — injected collaboration protocol for Agent Teams.
+#
+# The row is additive: it never disables the shipped Team runtime or the nine
+# Team tools; it layers a workflow state machine, review protocol, and quality
+# gates on top of `ctx.agentTeams` and the existing shared task board.
+- insert:
+    - id: agent-team-workflow
+      name: '@local/dsh-agent-team-workflow'
+      config:
+        # Artifact directory (relative to the Team working directory, or absolute).
+        artifactsDir: .agentteam
+        # Persist state.json + report.md; false keeps the run in memory only.
+        writeArtifacts: true
+        # Inject the workflow protocol into every Team member system prompt.
+        injectPolicy: true
+        # Maximum review rounds per work item before mandatory Lead arbitration.
+        maxReviewRounds: 2
+        # Recommended maximum work items in one execution wave.
+        maxParallelItems: 4
+        # Maximum work items in one run.
+        maxItems: 12
+        # Context mode for spawned workers: fresh keeps execution independent.
+        workerContext: fresh
+        # Treat reported files outside declared write scopes as a gate failure.
+        strictScopes: false
+        # Allow overlapping write scopes inside one wave (recorded as a warning).
+        allowScopeOverlap: false
+        # Notify the reviewer/author automatically on review transitions.
+        autoNotify: true
+        # Reject an approving review that declares no inspected evidence.
+        requireReviewEvidence: true

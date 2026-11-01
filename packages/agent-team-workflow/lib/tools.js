@@ -1,0 +1,1223 @@
+/**
+ * Model-facing tools of the Agent Team Workflow plugin.
+ *
+ * Each tool is a thin adapter: validate arguments, check Team identity and
+ * role, then delegate to the pure engine in `workflow.js` and to the run store.
+ * `team_*` tools owned by the shipped Agent Teams package keep their meaning;
+ * this layer adds the workflow state machine, review ledger, and gates.
+ */
+
+import { runSettings } from './config.js'
+import * as W from './workflow.js'
+import {
+  approvedMessage,
+  changesRequestedMessage,
+  renderReportMarkdown,
+  renderReviewerBrief,
+  renderWorkerBrief,
+  reviewRequestMessage,
+} from './protocol.js'
+
+/** Round-trip a tool result to plain lossless JSON (drops `undefined` members). */
+function compactJson(value) {
+  return JSON.parse(JSON.stringify(value))
+}
+
+/** Declare one canonical output schema with compact model-facing JSON. */
+function jsonOutput(schema) {
+  return {
+    schema,
+    render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+  }
+}
+
+/** Recover the caller Agent guaranteed by Agent-scoped tool discovery. */
+function callingAgent(agent, toolName) {
+  if (agent === undefined) throw new Error(`${toolName} requires a calling Agent`)
+  return agent
+}
+
+/** @returns `{agent, membership}` for one tool execution. */
+function resolveCaller(ctx, exec, toolName) {
+  const agent = callingAgent(exec.agent, toolName)
+  const membership = ctx.agentTeams.membership(agent)
+  return { agent, membership }
+}
+
+function requireLead(membership, toolName) {
+  if (membership.role !== 'lead') {
+    throw new Error(`${toolName} is Lead-only; you are teammate "${membership.name}". Report the need to the Lead with send_message instead.`)
+  }
+}
+
+async function requireRun(store, agent, toolName) {
+  const state = await store.readState(agent)
+  if (state === null) {
+    throw new Error(`no Agent Team Workflow run exists yet; the Lead must call team_flow_plan first (${toolName})`)
+  }
+  return state
+}
+
+/** Refuse to mutate a run that already converged. */
+function requireWritableRun(state, toolName) {
+  if (state.phase === W.RUN_PHASE.FINALIZED) {
+    throw new Error(`run ${state.runId} is finalized; ${toolName} cannot change it. Start a new run with team_flow_plan {replace:true} if more work is needed.`)
+  }
+}
+
+/** Validate a spawnable member name (lower-kebab-case, never the Lead). */
+function assertMemberName(name, field) {
+  const value = String(name ?? '').trim()
+  if (value === 'lead') throw new Error(`${field} cannot be "lead"; the Lead coordinates and gates`)
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)) throw new Error(`${field} "${value}" is not a spawnable member name (lower-kebab-case, digits allowed)`)
+  return value
+}
+
+/** Send one peer message, converting transport failures into a warning. */
+async function sendPeer(ctx, agent, target, text, signal) {
+  try {
+    await ctx.agentTeams.sendMessage(agent, { target, content: [{ type: 'text', text }], signal })
+    return null
+  } catch (error) {
+    return `could not notify "${target}": ${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+/** @returns whether one member name is currently in the roster. */
+function isLiveMember(ctx, agent, name) {
+  try {
+    return ctx.agentTeams.listMembers(agent).some((member) => member.name === name)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Drive one backing Team task to completed, repairing any intermediate state.
+ * @returns status text or a warning.
+ */
+async function syncTaskComplete(ctx, agent, taskId) {
+  if (taskId === null) return null
+  try {
+    let task = ctx.agentTeams.getTask(agent, taskId)
+    if (task.status === 'deleted') return null
+    if (task.status === 'completed') {
+      task = await ctx.agentTeams.updateTask(agent, { taskId, expectedRevision: task.revision, action: 'reopen' })
+    }
+    if (task.status === 'pending') {
+      task = await ctx.agentTeams.updateTask(agent, { taskId, expectedRevision: task.revision, action: 'claim' })
+    }
+    if (task.status === 'in_progress') {
+      await ctx.agentTeams.updateTask(agent, { taskId, expectedRevision: task.revision, action: 'complete' })
+    }
+    return null
+  } catch (error) {
+    return `backing Team task ${taskId} not synchronized: ${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+/**
+ * Reopen one backing Team task so a rework round is visible on the shared board.
+ * @returns status text or a warning.
+ */
+async function syncTaskReopen(ctx, agent, taskId) {
+  if (taskId === null) return null
+  try {
+    const task = ctx.agentTeams.getTask(agent, taskId)
+    if (task.status !== 'completed') return null
+    await ctx.agentTeams.updateTask(agent, { taskId, expectedRevision: task.revision, action: 'reopen' })
+    return null
+  } catch (error) {
+    return `backing Team task ${taskId} was not reopened: ${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+/** Truncate one model-supplied string before it enters the board. */
+function clip(value, max) {
+  const text = String(value ?? '')
+  return text.length > max ? text.slice(0, max) : text
+}
+
+/** Build a fresh run id. */
+function makeRunId(now) {
+  const stamp = now.replace(/[-:.TZ]/g, '').slice(0, 14)
+  const suffix = Math.random().toString(36).slice(2, 6)
+  return `run-${stamp}-${suffix}`
+}
+
+/** Normalize one requested work item into engine shape. */
+function normalizeItem(raw, index) {
+  const subject = String(raw?.subject ?? '').trim()
+  const owner = String(raw?.owner ?? '').trim()
+  const definitionOfDone = Array.isArray(raw?.definition_of_done) ? raw.definition_of_done.map((entry) => String(entry).trim()).filter(Boolean) : []
+  const reviewers = Array.isArray(raw?.reviewers) ? [...new Set(raw.reviewers.map((entry) => String(entry).trim()).filter(Boolean))] : []
+  const blockedBy = Array.isArray(raw?.blocked_by) ? [...new Set(raw.blocked_by.map((entry) => String(entry).trim()).filter(Boolean))] : []
+  const writeScopes = Array.isArray(raw?.write_scopes) ? [...new Set(raw.write_scopes.map((entry) => W.normalizeScope(entry)).filter((entry) => entry.length > 0))] : []
+  return {
+    id: String(raw?.id ?? `W${index + 1}`).trim(),
+    subject,
+    owner,
+    role: String(raw?.role ?? 'implementer').trim() || 'implementer',
+    writeScopes,
+    blockedBy,
+    definitionOfDone,
+    needsReview: raw?.needs_review !== false,
+    reviewers,
+    evidenceOptional: raw?.evidence_optional === true,
+    status: W.ITEM_STATUS.PENDING,
+    taskId: null,
+    report: null,
+    reportSeq: 0,
+    reviews: [],
+    reviewSeq: 0,
+    overrideReason: null,
+    repairLog: [],
+    createdAt: null,
+    updatedAt: null,
+    reportedAt: null,
+    approvedAt: null,
+    approvedBy: null,
+  }
+}
+
+/** Render the shared-task description for one item. */
+function taskDescription(state, item) {
+  return [
+    `Workflow run ${state.runId} — item ${item.id} (${item.role}).`,
+    `Owner: ${item.owner}. Reviewers: ${item.reviewers.join(', ') || '(none)'}.`,
+    '',
+    'Definition of done:',
+    ...item.definitionOfDone.map((entry) => `- ${entry}`),
+    '',
+    'Report with team_flow_report; do not complete this task before reporting.',
+  ].join('\n')
+}
+
+/** Compact report shape returned to the model. */
+function reportView(item) {
+  return {
+    item_id: item.id,
+    status: item.status,
+    reported: item.report !== null,
+    files: item.report?.files ?? [],
+    commands: (item.report?.commands ?? []).map((command) => ({ command: command.command, exit_code: command.exitCode })),
+    next_actions: [],
+  }
+}
+
+/**
+ * Build every tool definition for one plugin instance.
+ * @param options - `{ ctx, settings, store, version }`.
+ * @returns array of ToolDefinition-compatible objects.
+ */
+export function buildTools({ ctx, settings, store, version }) {
+  const definitions = [
+    // ---------------------------------------------------------------- plan
+    {
+      name: 'team_flow_plan',
+      description:
+        'Lead-only. Create the standard workflow run: turn the objective into work items with disjoint write scopes, a definition of done, dependencies, and independent reviewers. Returns each item backing Team task id plus the exact spawn prompt and reviewer prompt to pass to spawn_teammate. Refuses dependency cycles, self-review, and write-scope overlap inside one execution wave.',
+      parameters: {
+        type: 'object',
+        properties: {
+          objective: { type: 'string', description: 'The team-level objective, including what "done" means for the user.' },
+          acceptance_criteria: { type: 'array', items: { type: 'string' }, description: 'Verifiable team-level acceptance criteria (at least one).' },
+          constraints: { type: 'array', items: { type: 'string' }, description: 'Hard constraints every member must respect.' },
+          items: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'Stable short id such as W1; auto-assigned when omitted.' },
+                subject: { type: 'string', description: 'One-line deliverable title.' },
+                owner: { type: 'string', description: 'Teammate name that will do the work (never "lead").' },
+                role: { type: 'string', description: 'implementer | verifier | researcher | architect | writer.' },
+                write_scopes: { type: 'array', items: { type: 'string' }, description: 'Workspace-relative paths this owner may modify. Must be disjoint from other items in the same wave.' },
+                blocked_by: { type: 'array', items: { type: 'string' }, description: 'Item ids that must be approved first.' },
+                definition_of_done: { type: 'array', items: { type: 'string' }, description: 'Checkable completion conditions (at least one).' },
+                needs_review: { type: 'boolean', description: 'Default true. Set false only with reviewers empty and an articulated reason.' },
+                reviewers: { type: 'array', items: { type: 'string' }, description: 'Independent reviewer member names; must not include the owner.' },
+                evidence_optional: { type: 'boolean', description: 'Set true only for read-only/research items where no command can be run.' },
+              },
+              required: ['subject', 'owner', 'definition_of_done'],
+            },
+            description: 'Work items; each becomes one shared Team task plus one owner brief.',
+          },
+          replace: { type: 'boolean', description: 'Archive the existing run and start a new one.' },
+        },
+        required: ['objective', 'acceptance_criteria', 'items'],
+      },
+      output: jsonOutput({
+        type: 'object',
+        properties: {
+          run_id: { type: 'string' },
+          phase: { type: 'string' },
+          waves: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
+          items: { type: 'array', items: {} },
+          spawn: { type: 'array', items: {} },
+          reviewer_spawn: { type: 'array', items: {} },
+          warnings: { type: 'array', items: { type: 'string' } },
+          next_actions: { type: 'array', items: { type: 'string' } },
+        },
+      }),
+      async execute(args, exec) {
+        const { agent, membership } = resolveCaller(ctx, exec, 'team_flow_plan')
+        requireLead(membership, 'team_flow_plan')
+        const now = new Date().toISOString()
+        const rawItems = Array.isArray(args.items) ? args.items : []
+        const items = rawItems.map((raw, index) => normalizeItem(raw, index))
+        const plan = {
+          objective: String(args.objective ?? '').trim(),
+          acceptanceCriteria: (Array.isArray(args.acceptance_criteria) ? args.acceptance_criteria : []).map((entry) => String(entry).trim()).filter(Boolean),
+          constraints: (Array.isArray(args.constraints) ? args.constraints : []).map((entry) => String(entry).trim()).filter(Boolean),
+          items,
+        }
+        const effective = runSettings(settings)
+        const validation = W.validatePlan(plan, effective)
+        if (validation.errors.length > 0) {
+          throw new Error(`the plan violates the workflow rules:\n- ${validation.errors.join('\n- ')}`)
+        }
+
+        const outcome = await store.lock(agent, async () => {
+          const existing = await store.readState(agent)
+          if (existing !== null && args.replace !== true) {
+            throw new Error(`run ${existing.runId} already exists (phase ${existing.phase}). Call team_flow_status to resume it, or pass replace:true to archive it and start a new run.`)
+          }
+          const archivedPaths = []
+          if (existing !== null) {
+            existing.phase = W.RUN_PHASE.ABORTED
+            const saved = await store.writeArtifact(agent, `teams/${store.teamIdOf(agent)}/runs/${existing.runId}.json`, `${JSON.stringify(existing, null, 2)}\n`)
+            if (saved !== null) archivedPaths.push(saved)
+          }
+
+          const runId = makeRunId(now)
+          const state = W.createRun({
+            workflowVersion: W.WORKFLOW_VERSION,
+            runId,
+            teamId: store.teamIdOf(agent),
+            objective: plan.objective,
+            acceptanceCriteria: plan.acceptanceCriteria,
+            constraints: plan.constraints,
+            settings: effective,
+            items,
+            actor: membership.name,
+            now,
+            artifacts: { statePath: store.statePath(agent), reportPath: null, root: store.describeRoot(agent) },
+          })
+
+          // Create backing shared tasks in wave order so dependencies exist first.
+          const created = []
+          const taskIdByItem = new Map()
+          try {
+            for (const wave of validation.waves) {
+              for (const itemId of wave) {
+                const item = items.find((candidate) => candidate.id === itemId)
+                const blockedBy = item.blockedBy.map((blocker) => taskIdByItem.get(blocker)).filter((value) => typeof value === 'string')
+                const task = await ctx.agentTeams.createTask(agent, {
+                  subject: item.subject.slice(0, 200),
+                  description: taskDescription(state, item).slice(0, 16_384),
+                  ...(blockedBy.length === 0 ? {} : { blockedBy }),
+                  ...(item.writeScopes.length === 0 ? {} : { writeScopes: item.writeScopes }),
+                  signal: exec.signal,
+                })
+                taskIdByItem.set(item.id, task.id)
+                item.taskId = task.id
+                created.push(task.id)
+              }
+            }
+          } catch (error) {
+            for (const taskId of created.reverse()) {
+              try {
+                const task = ctx.agentTeams.getTask(agent, taskId)
+                await ctx.agentTeams.updateTask(agent, { taskId, expectedRevision: task.revision, action: 'delete' })
+              } catch {
+                /* rollback is best effort */
+              }
+            }
+            throw new Error(`could not create the backing Team tasks: ${error instanceof Error ? error.message : String(error)}`)
+          }
+          for (const item of items) {
+            item.createdAt = now
+            item.updatedAt = now
+          }
+          W.appendEvent(state, { at: now, type: 'run/tasks-created', actor: membership.name, detail: `${created.length} backing task(s)` })
+          await store.writeState(agent, state)
+
+          // Only after the new board is durable may the archived run's tasks be
+          // removed. Retried in passes because the board refuses to delete a
+          // blocker that still has dependents.
+          if (existing !== null) {
+            let pendingTasks = existing.items.map((item) => item.taskId).filter((taskId) => typeof taskId === 'string')
+            for (let pass = 0; pass < 4 && pendingTasks.length > 0; pass += 1) {
+              const remaining = []
+              for (const taskId of pendingTasks) {
+                try {
+                  const task = ctx.agentTeams.getTask(agent, taskId)
+                  if (task.status === 'deleted') continue
+                  await ctx.agentTeams.updateTask(agent, { taskId, expectedRevision: task.revision, action: 'delete' })
+                } catch {
+                  remaining.push(taskId)
+                }
+              }
+              if (remaining.length === pendingTasks.length) break
+              pendingTasks = remaining
+            }
+          }
+          return { state, archivedPaths }
+        })
+        const state = outcome.state
+        const archived = outcome.archivedPaths
+
+        const workerNames = new Set(items.map((item) => item.owner))
+        const workerSpawn = items.map((item) => {
+          const reviewing = items.filter((other) => other.reviewers.includes(item.owner)).map((other) => other.id)
+          const brief = renderWorkerBrief(state, item, reviewing, settings.workerContext)
+          return { kind: 'worker', item_id: item.id, name: brief.name, description: brief.description, context: brief.context, prompt: brief.prompt }
+        })
+        const allReviewers = W.collectReviewers(items)
+        const reviewerSpawn = allReviewers
+          .filter((reviewer) => reviewer !== 'lead' && !workerNames.has(reviewer))
+          .map((reviewer) => {
+            const reviewed = items.filter((item) => item.reviewers.includes(reviewer))
+            const brief = renderReviewerBrief(state, reviewer, reviewed)
+            return { kind: 'reviewer', reviews: reviewed.map((item) => item.id), name: brief.name, description: brief.description, context: brief.context, prompt: brief.prompt }
+          })
+        const dualRole = allReviewers.filter((reviewer) => workerNames.has(reviewer))
+        const leadReviews = allReviewers.includes('lead')
+        const reviewerNotes = [
+          ...(dualRole.length === 0 ? [] : [`Spawn ${dualRole.join(', ')} once: they own work items and also review, so their review duty is already inside their worker brief.`]),
+          ...(leadReviews ? ['The Lead itself reviews at least one item; no extra spawn is needed for that.'] : []),
+        ]
+        const spawnContexts = [...new Set(workerSpawn.map((entry) => entry.context))].join('/')
+        const nextActions = [
+          `Spawn wave 1 owners now: ${(validation.waves[0] ?? []).join(', ') || '(none)'}. Pass each returned spawn prompt verbatim with spawn_teammate and its own context value (${spawnContexts || settings.workerContext}).`,
+          ...(reviewerSpawn.length > 0 ? [`Spawn reviewers upfront so review notifications can reach them: ${reviewerSpawn.map((entry) => entry.name).join(', ')}.`] : []),
+          ...reviewerNotes,
+          'Then call wait_agent and re-read team_flow_status after each change; do not do the workers\' edits yourself.',
+          ...validation.warnings,
+        ]
+        return {
+          run_id: state.runId,
+          phase: state.phase,
+          waves: validation.waves,
+          items: items.map((item) => ({ id: item.id, subject: item.subject, owner: item.owner, task_id: item.taskId, reviewers: item.reviewers, write_scopes: item.writeScopes })),
+          spawn: workerSpawn,
+          reviewer_spawn: reviewerSpawn,
+          warnings: [...archived.map((path) => `archived previous run state to ${path}`), ...validation.warnings],
+          next_actions: nextActions,
+        }
+      },
+    },
+
+    // -------------------------------------------------------------- status
+    {
+      name: 'team_flow_status',
+      description:
+        'Read the workflow board: run phase, every work item with review state, your assigned actions, open escalations, and Team member status. Call this first, and re-read it after every peer message. next_actions is the authoritative assignment for the calling member.',
+      parameters: {
+        type: 'object',
+        properties: {
+          item_id: { type: 'string', description: 'Optional work item id; when given, its full report and review records are included.' },
+        },
+        additionalProperties: false,
+      },
+      output: jsonOutput({
+        type: 'object',
+        properties: {
+          workflow_version: { type: 'integer' },
+          run_id: {
+            oneOf: [{ type: 'string' }, { type: 'null' }],
+          },
+          phase: { type: 'string' },
+          objective: { type: 'string' },
+          acceptance_criteria: { type: 'array', items: { type: 'string' } },
+          me: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string' } } },
+          counts: { type: 'object' },
+          items: { type: 'array', items: {} },
+          escalations: { type: 'array', items: {} },
+          team: { type: 'array', items: {} },
+          next_actions: { type: 'array', items: { type: 'string' } },
+          artifacts: {},
+          settings: {},
+        },
+      }),
+      async execute(args, exec) {
+        const { agent, membership } = resolveCaller(ctx, exec, 'team_flow_status')
+        const state = await store.readState(agent)
+        let members = []
+        try {
+          members = ctx.agentTeams.listMembers(agent).map((member) => ({
+            name: member.name,
+            role: member.role,
+            status: member.status,
+            context: member.context,
+          }))
+        } catch {
+          members = []
+        }
+        const artifacts = {
+          root: store.describeRoot(agent),
+          team_dir: store.teamDir(agent),
+          state_path: settings.writeArtifacts ? store.statePath(agent) : null,
+          report_path: state?.artifacts?.reportPath ?? null,
+        }
+        const detailItemId = typeof args?.item_id === 'string' && args.item_id.length > 0 ? args.item_id : undefined
+        if (state !== null && detailItemId !== undefined) W.findItem(state, detailItemId)
+        const tasksById = new Map()
+        try {
+          for (const task of ctx.agentTeams.listTasks(agent)) tasksById.set(task.id, { id: task.id, revision: task.revision, status: task.status })
+        } catch {
+          /* a missing board only removes revision detail */
+        }
+        if (state === null) {
+          return {
+            workflow_version: W.WORKFLOW_VERSION,
+            run_id: null,
+            phase: 'none',
+            objective: '',
+            acceptance_criteria: [],
+            me: { name: membership.name, role: membership.role },
+            counts: { total: 0, approved: 0, pending: 0, in_review: 0, changes_requested: 0, escalated: 0 },
+            items: [],
+            escalations: [],
+            team: members,
+            next_actions:
+              membership.role === 'lead'
+                ? [`No workflow run exists. Call team_flow_plan to create one; keep the team at 1 implementation + 1 review + 1 verification item unless parallelism is justified.`]
+                : ['No workflow run exists yet. Wait for the Lead to call team_flow_plan and send your spawn brief.'],
+            artifacts,
+            settings,
+          }
+        }
+        const status = W.buildStatus(state, {
+          me: { name: membership.name, role: membership.role },
+          role: membership.role,
+          settings: state.settings,
+          members,
+          artifacts,
+          tasksById,
+          detailItemId,
+        })
+        return { ...status, workflow_version: W.WORKFLOW_VERSION, artifacts, settings }
+      },
+    },
+
+    // -------------------------------------------------------------- report
+    {
+      name: 'team_flow_report',
+      description:
+        'Owner-only. Submit the structured work report for your item: summary, changed files, verification commands with integer exit codes, quoted evidence, open questions, and risks. This is the deliverable a reviewer inspects; it also completes the backing Team task and hands the item to its reviewer.',
+      parameters: {
+        type: 'object',
+        properties: {
+          item_id: { type: 'string', description: 'Your workflow item id, e.g. W1.' },
+          summary: { type: 'string', description: 'What you did and what is now true, in plain language.' },
+          files: { type: 'array', items: { type: 'string' }, description: 'Workspace-relative files you created or modified.' },
+          commands: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                command: { type: 'string', description: 'Exact command line.' },
+                exit_code: { type: 'integer', description: 'Observed exit code.' },
+                note: { type: 'string', description: 'Optional one-line interpretation.' },
+              },
+              required: ['command', 'exit_code'],
+            },
+            description: 'Verification commands you actually ran.',
+          },
+          evidence: { type: 'array', items: { type: 'string' }, description: 'Quoted output, test names, or artifact paths that prove the claims.' },
+          open_questions: { type: 'array', items: { type: 'string' }, description: 'Anything still unresolved, including assumptions you need confirmed.' },
+          risks: { type: 'array', items: { type: 'string' }, description: 'Known risks, residual defects, or follow-up work.' },
+          deviation: { type: 'string', description: 'Any deviation from the brief (scope, approach, DoD) and why.' },
+        },
+        required: ['item_id', 'summary', 'files'],
+      },
+      output: jsonOutput({
+        type: 'object',
+        properties: {
+          item_id: { type: 'string' },
+          status: { type: 'string' },
+          reported: { type: 'boolean' },
+          files: { type: 'array', items: { type: 'string' } },
+          commands: { type: 'array', items: {} },
+          review_round: {},
+          reviewer: {},
+          scope_warnings: { type: 'array', items: { type: 'string' } },
+          sequence_warnings: { type: 'array', items: { type: 'string' } },
+          sync_warnings: { type: 'array', items: { type: 'string' } },
+          notified: { type: 'array', items: { type: 'string' } },
+          next_actions: { type: 'array', items: { type: 'string' } },
+        },
+      }),
+      async execute(args, exec) {
+        const { agent, membership } = resolveCaller(ctx, exec, 'team_flow_report')
+        let outcome = null
+        const now = new Date().toISOString()
+        const commands = (Array.isArray(args.commands) ? args.commands : []).map((command) => ({
+          command: String(command?.command ?? '').trim(),
+          exitCode: Number.isInteger(command?.exit_code) ? command.exit_code : null,
+          note: command?.note === undefined ? null : String(command.note),
+        }))
+        const files = (Array.isArray(args.files) ? args.files : []).map((file) => W.normalizePath(file)).filter((file) => file.length > 0)
+        const report = {
+          summary: clip(String(args.summary ?? '').trim(), 4000),
+          files,
+          commands,
+          evidence: (Array.isArray(args.evidence) ? args.evidence : []).map((entry) => clip(entry, 1000)),
+          openQuestions: (Array.isArray(args.open_questions) ? args.open_questions : []).map((entry) => clip(entry, 1000)),
+          risks: (Array.isArray(args.risks) ? args.risks : []).map((entry) => clip(entry, 1000)),
+          deviation: args.deviation === undefined ? null : clip(args.deviation, 2000),
+        }
+        const state = await store.mutateState(agent, (current) => {
+          if (current === null) throw new Error('no workflow run exists yet; the Lead must call team_flow_plan first')
+          requireWritableRun(current, 'team_flow_report')
+          const item = W.findItem(current, String(args.item_id ?? ''))
+          if (item.owner !== membership.name) {
+            throw new Error(`item "${item.id}" belongs to "${item.owner}"; only its owner may report it. If the owner is stuck, message it or escalate.`)
+          }
+          if (item.status === W.ITEM_STATUS.APPROVED) throw new Error(`item "${item.id}" is already approved; do not report it again`)
+          const applied = W.applyReport(current, { itemId: item.id, caller: membership.name, report, now, settings: current.settings })
+          outcome = applied
+          return current
+        })
+        const item = outcome.item
+        const scopeWarnings = item.report.files.filter((file) => item.writeScopes.length > 0 && !item.writeScopes.some((scope) => W.pathInScope(file, scope)))
+        const syncWarnings = []
+        const completed = await syncTaskComplete(ctx, agent, item.taskId)
+        if (completed !== null) syncWarnings.push(completed)
+        const notified = []
+        if (item.status === W.ITEM_STATUS.ESCALATED) {
+          const escalation = state.escalations.at(-1)
+          const failure = await sendPeer(
+            ctx,
+            agent,
+            'lead',
+            `[BLOCKER] ${item.id} "${item.subject}" needs arbitration after reporting (escalation ${escalation?.id ?? 'unknown'}).\n${escalation?.detail ?? ''}\nCall team_flow_status, then resolve it with team_flow_escalate or record a gate override.`,
+            exec.signal,
+          )
+          if (failure === null) notified.push('lead')
+          else syncWarnings.push(failure)
+        } else if (outcome.review !== null && outcome.nextReviewer !== null) {
+          if (!isLiveMember(ctx, agent, outcome.nextReviewer)) {
+            syncWarnings.push(`reviewer "${outcome.nextReviewer}" is not in the roster; spawn it with the reviewer prompt from team_flow_plan, then the author can re-report or the Lead can re-notify.`)
+          } else if (settings.autoNotify) {
+            const failure = await sendPeer(ctx, agent, outcome.nextReviewer, reviewRequestMessage(state, item), exec.signal)
+            if (failure === null) notified.push(outcome.nextReviewer)
+            else syncWarnings.push(failure)
+          }
+        }
+        const status = W.buildStatus(state, {
+          me: { name: membership.name, role: membership.role },
+          role: membership.role,
+          settings: state.settings,
+          members: [],
+          artifacts: {},
+        })
+        return {
+          ...reportView(item),
+          status: item.status,
+          review_round: outcome.review?.round ?? null,
+          reviewer: outcome.nextReviewer,
+          scope_warnings: scopeWarnings,
+          sequence_warnings: item.report?.sequenceWarnings ?? [],
+          sync_warnings: syncWarnings,
+          notified,
+          next_actions: item.status === W.ITEM_STATUS.IN_REVIEW ? ['Stop and let the reviewer work; the Lead will message you if changes are requested.'] : status.next_actions,
+        }
+      },
+    },
+
+    // ------------------------------------------------------- review submit
+    {
+      name: 'team_flow_review_submit',
+      description:
+        'Reviewer-only. Submit one verdict for the review assigned to you: approve | approve_with_nits | request_changes | block, with severity-tagged findings that name a file and line, plus the evidence you personally checked. A non-approving verdict must carry at least one finding.',
+      parameters: {
+        type: 'object',
+        properties: {
+          item_id: { type: 'string', description: 'Item id you were asked to review.' },
+          verdict: { type: 'string', enum: ['approve', 'approve_with_nits', 'request_changes', 'block'], description: 'Review verdict.' },
+          summary: { type: 'string', description: 'Two or three sentences a busy Lead can act on.' },
+          findings: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'Short id such as F1; required for the author to respond.' },
+                severity: { type: 'string', enum: ['blocker', 'major', 'minor', 'nit'], description: 'Severity of the finding.' },
+                file: { type: 'string', description: 'Workspace-relative file the finding is about.' },
+                line: { type: 'integer', description: 'Line number when applicable.' },
+                claim: { type: 'string', description: 'Precise statement of the defect, with the reasoning or reproduction.' },
+                suggestion: { type: 'string', description: 'Concrete fix direction.' },
+              },
+              required: ['id', 'severity', 'claim'],
+            },
+            description: 'Findings; every non-approving verdict needs at least one.',
+          },
+          evidence_checked: { type: 'array', items: { type: 'string' }, description: 'What you actually inspected or re-ran: files read, commands run, tests executed.' },
+        },
+        required: ['item_id', 'verdict', 'summary', 'findings', 'evidence_checked'],
+      },
+      output: jsonOutput({
+        type: 'object',
+        properties: {
+          item_id: { type: 'string' },
+          verdict: { type: 'string' },
+          item_status: { type: 'string' },
+          next_reviewer: {},
+          notified: { type: 'array', items: { type: 'string' } },
+          sync_warnings: { type: 'array', items: { type: 'string' } },
+          next_actions: { type: 'array', items: { type: 'string' } },
+        },
+      }),
+      async execute(args, exec) {
+        const { agent, membership } = resolveCaller(ctx, exec, 'team_flow_review_submit')
+        const now = new Date().toISOString()
+        const findings = (Array.isArray(args.findings) ? args.findings : []).map((finding, index) => ({
+          id: finding?.id === undefined ? `F${index + 1}` : String(finding.id),
+          severity: String(finding?.severity ?? 'major'),
+          file: finding?.file === undefined ? null : String(finding.file),
+          line: Number.isInteger(finding?.line) ? finding.line : null,
+          claim: clip(String(finding?.claim ?? '').trim(), 2000),
+          suggestion: finding?.suggestion === undefined ? null : clip(finding.suggestion, 1000),
+        }))
+        for (const finding of findings) {
+          if (!W.SEVERITIES.includes(finding.severity)) throw new Error(`finding "${finding.id}" has severity "${finding.severity}"; use one of ${W.SEVERITIES.join('/')}`)
+          if (finding.claim.length === 0) throw new Error(`finding "${finding.id}" needs a non-empty claim`)
+        }
+        if (!W.VERDICTS.includes(args.verdict)) throw new Error(`verdict must be one of ${W.VERDICTS.join('/')}`)
+        let outcome = null
+        const state = await store.mutateState(agent, (current) => {
+          if (current === null) throw new Error('no workflow run exists yet')
+          requireWritableRun(current, 'team_flow_review_submit')
+          const item = W.findItem(current, String(args.item_id ?? ''))
+          const pending = W.pendingReview(item)
+          if (pending === null) throw new Error(`item "${item.id}" has no pending review for you`)
+          if (pending.reviewer !== membership.name) {
+            throw new Error(`the pending review of "${item.id}" is assigned to "${pending.reviewer}", not "${membership.name}". Do not review items assigned to a peer.`)
+          }
+          const evidenceChecked = (Array.isArray(args.evidence_checked) ? args.evidence_checked : []).map((entry) => String(entry))
+          if (W.isApproving(args.verdict) && evidenceChecked.length === 0 && current.settings.requireReviewEvidence !== false) {
+            throw new W.WorkflowError(
+              'an approving verdict must declare what you actually inspected in evidence_checked (read the files, re-run a command, or quote the evidence you checked)',
+              'WORKFLOW_REVIEW_EVIDENCE_REQUIRED',
+            )
+          }
+          outcome = W.applyReviewSubmit(current, {
+            itemId: item.id,
+            reviewer: membership.name,
+            verdict: args.verdict,
+            summary: clip(String(args.summary ?? '').trim(), 4000),
+            findings,
+            evidenceChecked,
+            now,
+          })
+          return current
+        })
+        const item = outcome.item
+        const syncWarnings = []
+        if (item.status === W.ITEM_STATUS.CHANGES_REQUESTED) {
+          const reopened = await syncTaskReopen(ctx, agent, item.taskId)
+          if (reopened !== null) syncWarnings.push(reopened)
+        }
+        const notified = []
+        if (item.status === W.ITEM_STATUS.CHANGES_REQUESTED) {
+          const failure = settings.autoNotify ? await sendPeer(ctx, agent, item.owner, changesRequestedMessage(state, item, outcome.review), exec.signal) : null
+          if (failure === null && settings.autoNotify) notified.push(item.owner)
+          else if (failure !== null) syncWarnings.push(failure)
+        } else if (item.status === W.ITEM_STATUS.APPROVED) {
+          const failure = settings.autoNotify ? await sendPeer(ctx, agent, item.owner, approvedMessage(state, item, outcome.review), exec.signal) : null
+          if (failure === null && settings.autoNotify) notified.push(item.owner)
+          else if (failure !== null) syncWarnings.push(failure)
+        }
+        if (outcome.nextReviewer !== null && outcome.nextReviewer !== undefined) {
+          if (!isLiveMember(ctx, agent, outcome.nextReviewer)) syncWarnings.push(`next reviewer "${outcome.nextReviewer}" is not in the roster`)
+          else if (settings.autoNotify) {
+            const failure = await sendPeer(ctx, agent, outcome.nextReviewer, reviewRequestMessage(state, item), exec.signal)
+            if (failure === null) notified.push(outcome.nextReviewer)
+            else syncWarnings.push(failure)
+          }
+        }
+        const status = W.buildStatus(state, {
+          me: { name: membership.name, role: membership.role },
+          role: membership.role,
+          settings: state.settings,
+          members: [],
+          artifacts: {},
+        })
+        return {
+          item_id: item.id,
+          verdict: outcome.review.verdict,
+          item_status: item.status,
+          next_reviewer: outcome.nextReviewer ?? null,
+          notified,
+          sync_warnings: syncWarnings,
+          next_actions: status.next_actions,
+        }
+      },
+    },
+
+    // ----------------------------------------------------- review respond
+    {
+      name: 'team_flow_review_respond',
+      description:
+        'Owner-only. Answer every open review finding of your item: fixed | rebut | accepted_risk, each with the evidence that supports it. When all findings are answered the reviewer gets the next round; a rebutted blocker, or an exhausted round budget, escalates to the Lead instead.',
+      parameters: {
+        type: 'object',
+        properties: {
+          item_id: { type: 'string', description: 'Your item id.' },
+          responses: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                finding_id: { type: 'string', description: 'Finding id from the review.' },
+                state: { type: 'string', enum: ['fixed', 'rebut', 'accepted_risk'], description: 'What you did about it.' },
+                evidence: { type: 'string', description: 'Command, diff, or quoted output that supports this response.' },
+                note: { type: 'string', description: 'Short rationale, mandatory for rebut and accepted_risk.' },
+              },
+              required: ['finding_id', 'state'],
+            },
+            description: 'One response per open finding.',
+          },
+        },
+        required: ['item_id', 'responses'],
+      },
+      output: jsonOutput({
+        type: 'object',
+        properties: {
+          item_id: { type: 'string' },
+          item_status: { type: 'string' },
+          next_round: {},
+          next_reviewer: {},
+          escalated: { type: 'boolean' },
+          notified: { type: 'array', items: { type: 'string' } },
+          sync_warnings: { type: 'array', items: { type: 'string' } },
+          next_actions: { type: 'array', items: { type: 'string' } },
+        },
+      }),
+      async execute(args, exec) {
+        const { agent, membership } = resolveCaller(ctx, exec, 'team_flow_review_respond')
+        const now = new Date().toISOString()
+        const responses = (Array.isArray(args.responses) ? args.responses : []).map((response) => ({
+          findingId: String(response?.finding_id ?? ''),
+          state: String(response?.state ?? ''),
+          evidence: response?.evidence === undefined ? null : clip(response.evidence, 2000),
+          note: response?.note === undefined ? null : clip(response.note, 2000),
+        }))
+        for (const response of responses) {
+          if (!W.FINDING_RESOLUTIONS.includes(response.state)) throw new Error(`response for "${response.findingId}" has state "${response.state}"; use one of ${W.FINDING_RESOLUTIONS.join('/')}`)
+          if ((response.state === 'rebut' || response.state === 'accepted_risk') && (response.note === null || response.note.length === 0)) {
+            throw new Error(`response for "${response.findingId}" is ${response.state} and needs a note explaining why`)
+          }
+        }
+        let outcome = null
+        const state = await store.mutateState(agent, (current) => {
+          if (current === null) throw new Error('no workflow run exists yet')
+          requireWritableRun(current, 'team_flow_review_respond')
+          const item = W.findItem(current, String(args.item_id ?? ''))
+          if (item.owner !== membership.name) throw new Error(`item "${item.id}" belongs to "${item.owner}"; only the author may answer its review`)
+          outcome = W.applyReviewRespond(current, { itemId: item.id, author: membership.name, responses, now, settings: current.settings })
+          return current
+        })
+        const item = outcome.item
+        const syncWarnings = []
+        const notified = []
+        if (outcome.escalated) {
+          const escalation = state.escalations.at(-1)
+          const failure = await sendPeer(
+            ctx,
+            agent,
+            'lead',
+            `[BLOCKER] ${item.id} "${item.subject}" needs arbitration (escalation ${escalation?.id ?? 'unknown'}).\n${escalation?.detail ?? ''}\nCall team_flow_status, then resolve it with team_flow_escalate or record a gate override.`,
+            exec.signal,
+          )
+          if (failure === null) notified.push('lead')
+          else syncWarnings.push(failure)
+        } else if (outcome.nextReviewer !== null && outcome.nextReviewer !== undefined) {
+          if (!isLiveMember(ctx, agent, outcome.nextReviewer)) syncWarnings.push(`reviewer "${outcome.nextReviewer}" is not in the roster`)
+          else if (settings.autoNotify) {
+            const failure = await sendPeer(ctx, agent, outcome.nextReviewer, reviewRequestMessage(state, item), exec.signal)
+            if (failure === null) notified.push(outcome.nextReviewer)
+            else syncWarnings.push(failure)
+          }
+        }
+        const status = W.buildStatus(state, {
+          me: { name: membership.name, role: membership.role },
+          role: membership.role,
+          settings: state.settings,
+          members: [],
+          artifacts: {},
+        })
+        return {
+          item_id: item.id,
+          item_status: item.status,
+          next_round: outcome.nextReview?.round ?? null,
+          next_reviewer: outcome.nextReviewer ?? null,
+          escalated: outcome.escalated === true,
+          notified,
+          sync_warnings: syncWarnings,
+          next_actions: status.next_actions,
+        }
+      },
+    },
+
+    // ---------------------------------------------------------------- gate
+    {
+      name: 'team_flow_gate',
+      description:
+        'Lead-only. Evaluate the quality gates (report presence, evidence quality, reviewer approval, unresolved findings, write-scope discipline, blocking escalations) and optionally finalize: only a passing gate may converge the run and write the report. Overrides are recorded with a reason and still show as overridden in the report.',
+      parameters: {
+        type: 'object',
+        properties: {
+          finalize: { type: 'boolean', description: 'Write the report and converge the run when every gate passes.' },
+          overrides: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                item_id: { type: 'string', description: 'Item whose failures the Lead accepts.' },
+                reason: { type: 'string', description: 'Why the remaining failures are acceptable; recorded in the report.' },
+              },
+              required: ['item_id', 'reason'],
+            },
+            description: 'Explicit Lead risk acceptance for specific items.',
+          },
+        },
+      },
+      output: jsonOutput({
+        type: 'object',
+        properties: {
+          pass: { type: 'boolean' },
+          finalized: { type: 'boolean' },
+          item_gates: { type: 'array', items: {} },
+          team_failures: { type: 'array', items: { type: 'string' } },
+          report_path: {},
+          next_actions: { type: 'array', items: { type: 'string' } },
+        },
+      }),
+      async execute(args, exec) {
+        const { agent, membership } = resolveCaller(ctx, exec, 'team_flow_gate')
+        requireLead(membership, 'team_flow_gate')
+        const now = new Date().toISOString()
+        const overrides = (Array.isArray(args.overrides) ? args.overrides : []).map((override) => ({
+          itemId: String(override?.item_id ?? ''),
+          reason: String(override?.reason ?? '').trim(),
+        }))
+        for (const override of overrides) if (override.reason.length === 0) throw new Error(`override for "${override.itemId}" needs a reason`)
+
+        let nativeTasks = []
+        let members = []
+        try {
+          nativeTasks = ctx.agentTeams.listTasks(agent).map((task) => ({ id: task.id, status: task.status, revision: task.revision }))
+        } catch {
+          nativeTasks = []
+        }
+        try {
+          members = ctx.agentTeams.listMembers(agent).map((member) => ({ name: member.name, role: member.role, status: member.status, context: member.context }))
+        } catch {
+          members = []
+        }
+
+        let gate = null
+        let reportPath = null
+        const state = await store.mutateState(agent, async (current) => {
+          if (current === null) throw new Error('no workflow run exists yet')
+          for (const override of overrides) W.findItem(current, override.itemId)
+          gate = W.evaluateGates(current, { settings: current.settings, members, nativeTasks, overrides, now })
+          if (args.finalize === true && gate.pass) {
+            for (const override of overrides) {
+              const item = W.findItem(current, override.itemId)
+              item.overrideReason = override.reason
+            }
+          }
+          current.gate = gate
+          current.updatedAt = now
+          if (args.finalize === true) {
+            if (!gate.pass) {
+              W.appendEvent(current, { at: now, type: 'gate/failed', actor: membership.name, detail: `${gate.itemGates.filter((entry) => !entry.pass).length} item gate(s) failed` })
+              return current
+            }
+            current.phase = W.RUN_PHASE.FINALIZED
+            current.finalizedAt = now
+            const markdown = renderReportMarkdown(current, gate)
+            reportPath = await store.writeArtifact(agent, `teams/${store.teamIdOf(agent)}/report.md`, markdown)
+            current.artifacts = { ...(current.artifacts ?? {}), reportPath }
+            W.appendEvent(current, { at: now, type: 'run/finalized', actor: membership.name, detail: reportPath === null ? 'finalized' : `report at ${reportPath}` })
+          }
+          return current
+        })
+
+        if (args.finalize === true && !gate.pass) {
+          const failures = gate.itemGates
+            .filter((entry) => !entry.pass)
+            .map((entry) => `${entry.id}: ${entry.failures.join('; ')}`)
+          throw new Error(`the gate did not pass, so the run was not finalized:\n- ${[...gate.teamFailures, ...failures].join('\n- ')}\nFix the causes, or accept specific items with an override reason.`)
+        }
+        if (args.finalize === true && gate.pass) {
+          // Convergence also closes the shared board: a finalized run leaves no
+          // half-open backing task behind for a later reader to misread.
+          for (const item of state.items) {
+            if (item.taskId === null) continue
+            try {
+              const task = ctx.agentTeams.getTask(agent, item.taskId)
+              if (task.status === 'pending') {
+                const claimed = await ctx.agentTeams.updateTask(agent, { taskId: item.taskId, expectedRevision: task.revision, action: 'claim' })
+                await ctx.agentTeams.updateTask(agent, { taskId: item.taskId, expectedRevision: claimed.revision, action: 'complete' })
+              } else if (task.status === 'in_progress') {
+                await ctx.agentTeams.updateTask(agent, { taskId: item.taskId, expectedRevision: task.revision, action: 'complete' })
+              }
+            } catch {
+              /* finalize already succeeded; task cleanup is best effort */
+            }
+          }
+        }
+        const nextActions =
+          args.finalize === true && gate.pass
+            ? [`Run finalized. Report: ${reportPath ?? '(artifacts disabled)'}. Give the user the committed deliverable and the verification evidence; do not re-plan.`]
+            : gate.pass
+              ? ['Gate passes. Call team_flow_gate {finalize:true} to converge the run and write the report.']
+              : ['Gate does not pass yet. Read item_gates failures and steer the owners/reviewers; do not finalize.']
+        return {
+          pass: gate.pass,
+          finalized: args.finalize === true && gate.pass,
+          item_gates: gate.itemGates,
+          team_failures: gate.teamFailures,
+          report_path: reportPath,
+          next_actions: nextActions,
+        }
+      },
+    },
+
+    // ----------------------------------------------------------- escalate
+    {
+      name: 'team_flow_escalate',
+      description:
+        'Any member. Raise a structured escalation to the Lead (blocker, conflicting requirements, scope change, decision, or arbitration) or, as Lead, resolve one. Blocking escalations stop the gate from passing, which is how the workflow refuses to converge silently.',
+      parameters: {
+        type: 'object',
+        properties: {
+          kind: { type: 'string', enum: ['blocker', 'conflict', 'scope_change', 'decision', 'arbitration'], description: 'Escalation kind.' },
+          subject: { type: 'string', description: 'One-line subject for a new escalation.' },
+          detail: { type: 'string', description: 'Full context the Lead needs to decide, including what you already tried.' },
+          blocking: { type: 'boolean', description: 'Default true. Set false for informational notes.' },
+          item_id: { type: 'string', description: 'Related work item id.' },
+          escalation_id: { type: 'string', description: 'Lead-only: id of the escalation to resolve.' },
+          resolution: { type: 'string', description: 'Lead-only: the decision and its rationale, recorded in the report.' },
+        },
+      },
+      output: jsonOutput({
+        type: 'object',
+        properties: {
+          escalation_id: { type: 'string' },
+          resolved: { type: 'boolean' },
+          notified: { type: 'array', items: { type: 'string' } },
+          sync_warnings: { type: 'array', items: { type: 'string' } },
+          next_actions: { type: 'array', items: { type: 'string' } },
+        },
+      }),
+      async execute(args, exec) {
+        const { agent, membership } = resolveCaller(ctx, exec, 'team_flow_escalate')
+        const now = new Date().toISOString()
+        const resolving = typeof args.escalation_id === 'string' && args.escalation_id.length > 0
+        if (resolving) {
+          requireLead(membership, 'team_flow_escalate (resolve mode)')
+          const resolution = String(args.resolution ?? '').trim()
+          if (resolution.length === 0) throw new Error('resolving an escalation requires a resolution text recording the decision')
+          const state = await store.mutateState(agent, (current) => {
+            if (current === null) throw new Error('no workflow run exists yet')
+            W.resolveEscalation(current, { escalationId: String(args.escalation_id), resolution, actor: membership.name, now })
+            return current
+          })
+          const status = W.buildStatus(state, { me: { name: membership.name, role: membership.role }, role: membership.role, settings: state.settings, members: [], artifacts: {} })
+          return { escalation_id: String(args.escalation_id), resolved: true, notified: [], sync_warnings: [], next_actions: status.next_actions }
+        }
+        const kind = String(args.kind ?? 'blocker')
+        if (!W.ESCALATION_KINDS.includes(kind)) throw new Error(`kind must be one of ${W.ESCALATION_KINDS.join('/')}`)
+        const subject = String(args.subject ?? '').trim()
+        if (subject.length === 0) throw new Error('a new escalation needs a subject')
+        const detail = String(args.detail ?? '').trim()
+        let escalation = null
+        const state = await store.mutateState(agent, (current) => {
+          if (current === null) throw new Error('no workflow run exists yet')
+          requireWritableRun(current, 'team_flow_escalate')
+          const item = args.item_id === undefined ? null : W.findItem(current, String(args.item_id))
+          escalation = W.raiseEscalation(current, {
+            kind,
+            subject,
+            detail,
+            blocking: args.blocking !== false,
+            itemId: item?.id ?? null,
+            actor: membership.name,
+            now,
+          })
+          return current
+        })
+        const syncWarnings = []
+        const notified = []
+        if (membership.role !== 'lead') {
+          const failure = await sendPeer(
+            ctx,
+            agent,
+            'lead',
+            `[BLOCKER] Escalation ${escalation.id} (${kind})${escalation.itemId === null ? '' : ` on ${escalation.itemId}`}: ${subject}\n\n${detail}\n\nCall team_flow_status and resolve it with team_flow_escalate {escalation_id:"${escalation.id}", resolution:"..."}.`,
+            exec.signal,
+          )
+          if (failure === null) notified.push('lead')
+          else syncWarnings.push(failure)
+        }
+        const status = W.buildStatus(state, { me: { name: membership.name, role: membership.role }, role: membership.role, settings: state.settings, members: [], artifacts: {} })
+        return {
+          escalation_id: escalation.id,
+          resolved: false,
+          notified,
+          sync_warnings: syncWarnings,
+          next_actions: status.next_actions,
+        }
+      },
+    },
+    // ------------------------------------------------------------- repair
+    {
+      name: 'team_flow_repair',
+      description:
+        'Lead-only repair for a stuck run: reopen a work item so it can be redone, reassign its owner, or reset a stuck review to another reviewer. Every repair records the reason in the audit trail and notifies the affected member, so recovery is explicit instead of a silent re-plan.',
+      parameters: {
+        type: 'object',
+        properties: {
+          item_id: { type: 'string', description: 'Work item to repair.' },
+          action: { type: 'string', enum: ['reopen', 'reassign', 'reset_review'], description: 'Repair action.' },
+          reason: { type: 'string', description: 'Why the repair is needed; recorded in the audit trail and shown to the member.' },
+          owner: { type: 'string', description: 'reassign: new owner member name (lower-kebab-case).' },
+          reviewer: { type: 'string', description: 'reset_review: reviewer to assign (defaults to the next outstanding reviewer).' },
+        },
+        required: ['item_id', 'action', 'reason'],
+      },
+      output: jsonOutput({
+        type: 'object',
+        properties: {
+          item_id: { type: 'string' },
+          action: { type: 'string' },
+          item_status: { type: 'string' },
+          notified: { type: 'array', items: { type: 'string' } },
+          sync_warnings: { type: 'array', items: { type: 'string' } },
+          next_actions: { type: 'array', items: { type: 'string' } },
+        },
+      }),
+      async execute(args, exec) {
+        const { agent, membership } = resolveCaller(ctx, exec, 'team_flow_repair')
+        requireLead(membership, 'team_flow_repair')
+        const now = new Date().toISOString()
+        const action = String(args.action ?? '')
+        if (!['reopen', 'reassign', 'reset_review'].includes(action)) throw new Error('action must be one of reopen / reassign / reset_review')
+        const reason = String(args.reason ?? '').trim()
+        if (reason.length === 0) throw new Error('every repair needs a reason; it is recorded in the audit trail')
+        let outcome = null
+        const state = await store.mutateState(agent, (current) => {
+          if (current === null) throw new Error('no workflow run exists yet')
+          requireWritableRun(current, 'team_flow_repair')
+          const item = W.findItem(current, String(args.item_id ?? ''))
+          const entry = { at: now, by: membership.name, action, reason: reason.slice(0, 4000) }
+          if (action === 'reopen') {
+            item.report = null
+            item.reportSeq = W.currentReportSeq(item) + 1
+            item.status = W.ITEM_STATUS.PENDING
+            item.approvedAt = null
+            item.approvedBy = null
+            item.overrideReason = null
+            item.updatedAt = now
+            for (const review of item.reviews) if (review.status === 'pending') review.status = 'superseded'
+            entry.detail = 'report cleared; earlier verdicts invalidated by a new report version'
+          } else if (action === 'reassign') {
+            const owner = assertMemberName(args.owner, 'owner')
+            if (item.status === W.ITEM_STATUS.APPROVED) throw new Error(`item "${item.id}" is approved; reopen it before reassigning`)
+            entry.detail = `owner ${item.owner} -> ${owner}`
+            item.owner = owner
+            if (item.status === W.ITEM_STATUS.ESCALATED) item.status = W.ITEM_STATUS.PENDING
+            item.updatedAt = now
+          } else {
+            const reviewer = assertMemberName(args.reviewer, 'reviewer')
+            for (const review of item.reviews) if (review.status === 'pending') review.status = 'superseded'
+            if (!item.reviewers.includes(reviewer)) item.reviewers.push(reviewer)
+            const review = W.openReview(item, reviewer, { now, actor: membership.name })
+            entry.detail = `round ${review.round} assigned to ${reviewer}`
+          }
+          item.repairLog = [...(item.repairLog ?? []), entry]
+          W.appendEvent(current, { at: now, type: `repair/${action}`, actor: membership.name, detail: `${item.id}: ${reason.slice(0, 160)}` })
+          outcome = { item }
+          return current
+        })
+        const item = outcome.item
+        const syncWarnings = []
+        const notified = []
+
+        if (action === 'reopen') {
+          try {
+            const task = item.taskId === null ? null : ctx.agentTeams.getTask(agent, item.taskId)
+            if (task !== null && task.status === 'completed') {
+              await ctx.agentTeams.updateTask(agent, { taskId: item.taskId, expectedRevision: task.revision, action: 'reopen' })
+            }
+          } catch (error) {
+            syncWarnings.push(`backing Team task not reopened: ${error instanceof Error ? error.message : String(error)}`)
+          }
+          const failure = await sendPeer(
+            ctx,
+            agent,
+            item.owner,
+            `[HANDOFF] ${item.id} "${item.subject}" was reopened by the Lead for rework.\nReason: ${reason}\nAction: re-read team_flow_status, redo the work inside ${item.writeScopes.join(', ') || 'the declared scope'}, then call team_flow_report again.`,
+            exec.signal,
+          )
+          if (failure === null) notified.push(item.owner)
+          else syncWarnings.push(failure)
+        } else if (action === 'reassign') {
+          try {
+            const task = item.taskId === null ? null : ctx.agentTeams.getTask(agent, item.taskId)
+            if (task !== null && (task.status === 'pending' || task.status === 'in_progress')) {
+              await ctx.agentTeams.updateTask(agent, { taskId: item.taskId, expectedRevision: task.revision, action: 'reassign', owner: item.owner })
+            }
+          } catch (error) {
+            syncWarnings.push(`backing Team task not reassigned: ${error instanceof Error ? error.message : String(error)}`)
+          }
+          const failure = await sendPeer(
+            ctx,
+            agent,
+            item.owner,
+            `[HANDOFF] You are now the owner of ${item.id} "${item.subject}".\nReason for reassignment: ${reason}\nAction: call team_flow_status, do the work inside ${item.writeScopes.join(', ') || 'the declared scope'}, then report with team_flow_report.`,
+            exec.signal,
+          )
+          if (failure === null) notified.push(item.owner)
+          else syncWarnings.push(failure)
+        } else {
+          const target = W.pendingReview(item)?.reviewer ?? item.reviewers[0]
+          if (!isLiveMember(ctx, agent, target)) {
+            syncWarnings.push(`reviewer "${target}" is not in the roster; spawn it, then reset the review again`)
+          } else {
+            const failure = await sendPeer(ctx, agent, target, reviewRequestMessage(state, item), exec.signal)
+            if (failure === null) notified.push(target)
+            else syncWarnings.push(failure)
+          }
+        }
+
+        const status = W.buildStatus(state, {
+          me: { name: membership.name, role: membership.role },
+          role: membership.role,
+          settings: state.settings,
+          members: [],
+          artifacts: {},
+        })
+        return {
+          item_id: item.id,
+          action,
+          item_status: item.status,
+          notified,
+          sync_warnings: syncWarnings,
+          next_actions: status.next_actions,
+        }
+      },
+    },
+  ]
+  return definitions.map((definition) => ({
+    ...definition,
+    execute: async (args, exec) => compactJson(await definition.execute(args, exec)),
+  }))
+}
