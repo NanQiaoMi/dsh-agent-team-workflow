@@ -251,6 +251,7 @@ export function buildTools({ ctx, settings, store, version }) {
             },
             description: 'Work items; each becomes one shared Team task plus one owner brief (or an open-queue entry a peer claims).',
           },
+          workers: { type: 'array', items: { type: 'string' }, description: 'Teammate names to spawn as the claim pool for assignment:"open" items; the plan returns ready-made queue prompts.' },
           replace: { type: 'boolean', description: 'Archive the existing run and start a new one.' },
         },
         required: ['objective', 'acceptance_criteria', 'items'],

@@ -746,6 +746,7 @@ test('open-queue plan publishes work, a peer claims it, and the channel records 
     assert.equal(planResult.queue_spawn.length, 1)
     assert.equal(planResult.queue_spawn[0].name, 'impl2')
     assert.equal(planResult.spawn.length, 0, 'open items do not produce owner spawns')
+    assert.ok(byName(tools, 'team_flow_plan').parameters.properties.workers, 'the live schema must declare the workers pool parameter')
     assert.match(planResult.queue_spawn[0].prompt, /team_flow_work \{action:"claim"/)
 
     // The queue is visible to a peer before it is claimed.

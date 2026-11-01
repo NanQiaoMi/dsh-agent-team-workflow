@@ -39,6 +39,7 @@
 | [`docs/10-dashboard-verification.md`](docs/10-dashboard-verification.md) | 看板验证记录：30 例离线测试、真实黑板 dry-run、待人工确认的端到端步骤 |
 | [`docs/11-dashboard-live-rootcause.md`](docs/11-dashboard-live-rootcause.md) | **「View 不出现」根因**：client 启动图静默跳过（`exports` 漏导 `./package.json`）+ live 只读验证方法 |
 | [`docs/12-peer-collaboration.md`](docs/12-peer-collaboration.md) | **对等协作层设计**：channel / 开放队列 / 评审邀请 / 提案投票 / 交接、state v2、快照 v2、UI 契约 |
+| [`docs/13-collaboration-live-run.md`](docs/13-collaboration-live-run.md) | **对等协作 live run**：3 成员 / 3 开放项 / 8 分钟，抢单、直连问答、提案投票、互邀评审、gate 全记录 + 看板截图 |
 | [`packages/agent-team-workflow/`](packages/agent-team-workflow/) | 可安装插件包（零外部依赖，纯 ESM） |
 
 ## 快速开始
@@ -85,6 +86,13 @@ Lead 会 `team_flow_plan` → 用返回的 spawn 简报 spawn 队友 → worker 
 | 协商 DoD/范围 | `team_flow_decide {action:"propose", kind:"dod|scope|replan", ...}`，受影响成员各投一票；接受的 dod 提案自动并入 DoD；平票升级 Lead 仲裁（`resolve`） |
 | 任务交接 | `team_flow_work {action:"handoff_offer", to:"<member>"}`，对方 accept 后所有权与共享任务一起转移 |
 | 看板 | 会话头部 View →「团队看板」：频道、提案投票、待认领、peer↔peer 拓扑边、详情抽屉协作记录 |
+
+## live 记录
+
+- [`docs/08-live-run.md`](docs/08-live-run.md)：v1 委派式 live run（4 成员 / 2 并行项 / 5 分钟）；
+- [`docs/13-collaboration-live-run.md`](docs/13-collaboration-live-run.md)：**v2 对等协作 live run**（3 成员 / 3 个开放项 / 8 分钟）——
+  Lead 只做了 `team_flow_plan` 与 `team_flow_gate` 两次调用，其余抢单、提问/回答、提案投票、互邀评审全部由成员之间完成；
+  看板截图见 `docs/evidence/dashboard/collab-*.png`。
 
 ## 实时监控看板
 
