@@ -3,7 +3,7 @@
 独立 reviewer 的原始发现见 [`06-review-findings.md`](06-review-findings.md)（未被作者修改，保留原貌）。
 本文逐条记录处理决定：**修复 / 部分修复 / 明确不接受（并说明理由与替代缓解）**，附验证方式。
 
-审阅快照：`2026-11-01T10:28Z`；修复后新增 16 个测试用例（总数 41），全绿。
+审阅快照：第一轮 `2026-11-01T10:28Z`（R-01~R-18）、第二轮 `2026-11-01T10:40Z`（R-19~R-24）。修复后新增 20 个测试用例（总数 45），全绿。
 
 | 编号 | 级别 | 处理 | 说明 |
 | --- | --- | --- | --- |
@@ -143,3 +143,54 @@
 | 写范围不校验实际 diff（R-06） | 部分 | 越界写未申报则门禁不可见 | 评审与 Lead 最终 diff 复核；需要时接 `ctx.fs`/git（扩展点） |
 | 注入与 schema 固定成本（R-17） | 部分 | 每会话约 3–4k tokens 额外上下文 | 不需要工作流的会话可关闭 bundle（`plugin_manager set_bundle`） |
 | live 团队流程未在最终代码代上跑 | 环境限制 | 真实模型行为未观测 | 重启后按 `docs/05` §5 的步骤做一次 smoke run |
+
+
+---
+
+# 第二轮复审（R-19 ~ R-24）处理
+
+复审方式：reviewer 不采信作者自述，重新逐文件读 10:40 代码 + 用 `/tmp` 探针驱动真实 `buildTools` 复现。结论：**blocker 0 / major 1 / minor 2 / nit 3**。全部已修复。
+
+| 编号 | 级别 | 处理 | 说明 |
+| --- | --- | --- | --- |
+| R-19 | major | **已修复** | 批准型 verdict 的 findings 记为「已接受观察」 |
+| R-20 | minor | **已修复** | 返修预算改为 item 生命周期累计 |
+| R-21 | minor | **已修复** | override 预览的下一步回显完整 finalize 参数 |
+| R-22 | nit | **已修复** | `reset_review` 的 reviewer 缺省时自动选下一位 |
+| R-23 | nit | **已修复** | §7.2 与 §9 的黑板说法统一 |
+| R-24 | nit | **已修复** | status 区分 `rework_rounds` / `submitted_rounds`，过滤 superseded |
+
+## R-19 `approve_with_nits` + findings 卡死 → 已修复（方案 a）
+
+- **改法**：批准型 verdict（approve / approve_with_nits）带 findings 时，引擎在提交瞬间把每条 finding 标为 `resolution.state = 'accepted_by_reviewer'`。因此 G4 只统计**非批准** review 的未决 finding，`applyReport` 的"未决意见不得重报"守卫也不会误伤；作者不再被要求回应 nits。
+- **一致性**：04「只剩 nit → approve_with_nits 早停」与 G4 不再矛盾；`approvedMessage` 语义保持"nothing further"。
+- **验证**：engine "approve_with_nits accepts its observations instead of deadlocking the gate"（已批准、`unresolvedFindings=0`、gate pass、resolution=accepted_by_reviewer）。
+
+## R-20 re-report 重置返修预算 → 已修复
+
+- **改法**：新增 `item.reworkTotal`，每次**非批准** verdict 自增；`reworkRounds()` 直接返回该累计值（不再按 `reportSeq` 过滤）；`applyReport` 不重置；只有 Lead 的 `team_flow_repair {action:"reopen"}` 清零（显式重启）。
+- **验证**：engine "re-reporting does not reset the rework budget"（两轮 report→changes→respond 后第三轮回合触发 escalated，elc=1）。
+
+## R-21 override 预览 → finalize 陷阱 → 已修复
+
+- **改法**：gate 的 `next_actions` 在"预览带 overrides 且通过"时回显完整参数：`team_flow_gate {finalize:true, overrides:[{"item_id":"W1","reason":"..."}]}`；同时保留"overrides 只在通过 + finalize 时落盘"的语义。
+- **验证**：integration "a preview that needs overrides tells the Lead to pass them to finalize"（预览 next_actions 含 overrides/W1；不带 overrides finalize 失败；带上成功且报告含 `Lead override`）。
+
+## R-22 `reset_review` reviewer 可选/必填不一致 → 已修复
+
+- **改法**：缺省时取 `outstandingReviewers(item)[0] ?? item.reviewers[0]`，再走成员名校验；都没有时给出明确错误。
+- **验证**：integration "reset_review defaults to the next outstanding reviewer…"（不带 reviewer 成功）。
+
+## R-23 文档自相矛盾 → 已修复
+
+- `docs/03` §7.2 改为"插件**无法检测**手改，见 §9"；`docs/04` 早停处补注"nits 记为评审已接受，无需 respond"。
+
+## R-24 status 面板字段 → 已修复
+
+- **改法**：`verdicts` 只保留 `status==='submitted'`（排除 pending/superseded，并附 `report_seq`）；`reviews` 同时回显 `rework_rounds`（门禁预算口径）与 `submitted_rounds`（全部已提交 verdict）。详细记录改用独立字段 `review_records`，不再覆盖摘要对象（修复过程中还发现并修掉了这个键冲突）。
+- **验证**：integration "reset_review defaults… and status reports rework rounds"（rework_rounds=1、submitted_rounds=1、verdicts 过滤正确）。
+
+## 复审结论（作者认同）
+
+- 走工具路径：**不诚实 agent 无法在未真正审阅的情况下让 run 收敛**（批准版本绑定、自审拒绝、依赖前置、escalation 不改状态、证据/命令/评审证据强制）。
+- 剩余两条绕过均为**显式边界**：① 成员用 fs/bash 直接改写 `state.json`（平台能力边界，插件不做伪防篡改）；② Lead 使用 per-item override（设计内风险接受，报告标注 waived/override）。两者都已写进 `docs/03` §9 与 README「已知边界」。

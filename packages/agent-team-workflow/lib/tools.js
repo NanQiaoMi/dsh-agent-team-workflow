@@ -973,11 +973,16 @@ export function buildTools({ ctx, settings, store, version }) {
             }
           }
         }
+        const overrideArgs = overrides.map((override) => ({ item_id: override.itemId, reason: override.reason }))
         const nextActions =
           args.finalize === true && gate.pass
             ? [`Run finalized. Report: ${reportPath ?? '(artifacts disabled)'}. Give the user the committed deliverable and the verification evidence; do not re-plan.`]
             : gate.pass
-              ? ['Gate passes. Call team_flow_gate {finalize:true} to converge the run and write the report.']
+              ? [
+                  overrideArgs.length === 0
+                    ? 'Gate passes. Call team_flow_gate {finalize:true} to converge the run and write the report.'
+                    : `Gate passes only with the overrides you supplied, and they are persisted only by a passing finalize. Call team_flow_gate {finalize:true, overrides:${JSON.stringify(overrideArgs)}}.`,
+                ]
               : ['Gate does not pass yet. Read item_gates failures and steer the owners/reviewers; do not finalize.']
         return {
           pass: gate.pass,
@@ -1121,6 +1126,7 @@ export function buildTools({ ctx, settings, store, version }) {
           if (action === 'reopen') {
             item.report = null
             item.reportSeq = W.currentReportSeq(item) + 1
+            item.reworkTotal = 0
             item.status = W.ITEM_STATUS.PENDING
             item.approvedAt = null
             item.approvedBy = null
@@ -1136,7 +1142,9 @@ export function buildTools({ ctx, settings, store, version }) {
             if (item.status === W.ITEM_STATUS.ESCALATED) item.status = W.ITEM_STATUS.PENDING
             item.updatedAt = now
           } else {
-            const reviewer = assertMemberName(args.reviewer, 'reviewer')
+            const candidate = args.reviewer === undefined ? (W.outstandingReviewers(item)[0] ?? item.reviewers[0]) : args.reviewer
+            if (candidate === undefined) throw new Error('reset_review needs a reviewer: the item declares no reviewers and none was given')
+            const reviewer = assertMemberName(candidate, 'reviewer')
             for (const review of item.reviews) if (review.status === 'pending') review.status = 'superseded'
             if (!item.reviewers.includes(reviewer)) item.reviewers.push(reviewer)
             const review = W.openReview(item, reviewer, { now, actor: membership.name })

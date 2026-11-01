@@ -58,7 +58,7 @@ worker 收到简报后：
 3. 只在声明写范围内修改；跑真实验证命令；
 4. `team_flow_report`：summary + files + commands[{command, exit_code}] + evidence + open_questions + risks（+ deviation）。
 
-引擎：把 item 置 `in_review`、自动创建第 1 轮评审、`send_message` 通知 reviewer、完成 backing task（rework 时会 reopen）。
+引擎：把 item 置 `in_review`、自动创建第 1 轮评审、`send_message` 通知 reviewer、完成 backing task（rework 时会 reopen）。**重新 report 会增加报告版本、使旧批准失效，但不会重置返修预算**（预算在 item 生命周期内累计，只有 Lead 的 `repair reopen` 才清零）。
 
 两条硬规则：**存在未回应的 review finding 时，重新 report 会被拒绝**（必须先 `team_flow_review_respond`，不能用"再交一版"绕过意见）；若依赖项在报告时尚未 approved，会记录 `sequence_warnings` 并在门禁里作为 warning 呈现。
 
@@ -90,7 +90,7 @@ Lead 在所有 item approved 后：
 
 1. `team_flow_gate {}` → 预览各 item 门禁与失败原因；
 2. 处理：让 owner 补证据 / 让 reviewer 复审 / 对可接受残余风险用 `overrides:[{item_id, reason}]`；
-3. `team_flow_gate {finalize:true}` → 全绿时收敛：`phase=finalized`，写 `report.md`，关闭 backing tasks。
+3. `team_flow_gate {finalize:true}` → 全绿时收敛：`phase=finalized`，写 `report.md`，关闭 backing tasks。**若预览时用过 `overrides`，finalize 必须把同样的 overrides 再传一次**（引擎会在预览的 `next_actions` 里回显完整参数）；override 只在"通过 + finalize"时落盘。
 
 **只有这里算完成**。未过门禁时 finalize 会抛错并列出失败项。
 
@@ -242,7 +242,7 @@ kind：`blocker` | `conflict` | `scope_change` | `decision` | `arbitration`。`b
 | 文档 | 与真实代码一致、示例可运行、术语一致 | 抽查示例可执行 |
 | 集成 | 依赖满足、冲突已解、端到端门禁绿 | 全绿 |
 
-**早停**：只剩 nit → `approve_with_nits` 结束；两轮修改无实质 diff → 记录并结束；成员连续两次无产出 → Lead 介入。
+**早停**：只剩 nit → `approve_with_nits` 结束（随附的 observations 会被记为「评审已接受」，不需要作者逐条 respond，也不阻塞门禁）；两轮修改无实质 diff → 记录并结束；成员连续两次无产出 → Lead 介入。
 
 ---
 

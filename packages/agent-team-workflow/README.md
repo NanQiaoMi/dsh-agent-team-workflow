@@ -69,7 +69,7 @@ lib/tools.js        8 个工具定义与执行
 locale/{en,zh}.json 插件管理器展示元数据
 icon.svg            插件图标
 cordis.patch.yml    bundle 补丁（新增一行，不覆盖原生 Team 行）
-test/               41 个离线用例（engine 24 / tools 12 / plugin 5）
+test/               45 个离线用例（engine 26 / tools 14 / plugin 5）
 ```
 
 ## 验证
@@ -79,7 +79,7 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 "$NODE" --test test/engine.test.mjs test/tools.integration.test.mjs test/plugin.test.mjs
 ```
 
-41 个用例：计划校验与波次、批准绑定报告版本、返修轮预算、多 reviewer、门禁六类、override/waived、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。
+45 个用例：计划校验与波次、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。
 
 ## 边界
 

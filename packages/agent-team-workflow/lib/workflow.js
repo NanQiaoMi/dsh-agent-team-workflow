@@ -331,19 +331,19 @@ export function submittedRounds(item) {
 }
 
 /**
-* Count the rework rounds of the current report: one round is a submitted
-* non-approving verdict that forced changes. Approvals by other reviewers do
-* not consume the rework budget, so a multi-reviewer item can still iterate.
+* Count the rework rounds of one item. One round is a submitted non-approving
+* verdict that forced changes; approvals by other reviewers do not consume the
+* budget, so a multi-reviewer item can still iterate.
+*
+* The counter is cumulative for the item's lifetime on purpose: a fresh report
+* must not reset it, otherwise an author could re-report after every response
+* and never reach the escalation threshold. Only the Lead's explicit
+* `reopen` repair clears it.
 * @param item - item to inspect.
-* @returns number of non-approving verdicts for the current report.
+* @returns number of non-approving verdicts ever submitted for this item.
 */
 export function reworkRounds(item) {
-  const seq = currentReportSeq(item)
-  return item.reviews.filter((review) => {
-    if (review.status !== 'submitted') return false
-    if ((Number.isInteger(review.reportSeq) ? review.reportSeq : 0) !== seq) return false
-    return !isApproving(review.verdict)
-  }).length
+  return Number.isInteger(item.reworkTotal) ? item.reworkTotal : 0
 }
 
 /** @returns unresolved findings across the current report's submitted reviews. */
@@ -495,6 +495,22 @@ export function applyReviewSubmit(state, input) {
   review.findings = findings
   review.evidenceChecked = input.evidenceChecked
   review.submittedAt = input.now
+  if (isApproving(input.verdict)) {
+    // Approving with observations is an early stop, not a rework request: the
+    // reviewer accepts the work, so its findings are recorded as accepted and
+    // never block the gate or assign work to the author.
+    for (const finding of findings) {
+      finding.resolution = {
+        state: 'accepted_by_reviewer',
+        evidence: null,
+        note: 'recorded together with an approving verdict',
+        at: input.now,
+        by: input.reviewer,
+      }
+    }
+  } else {
+    item.reworkTotal = reworkRounds(item) + 1
+  }
   item.updatedAt = input.now
   appendEvent(state, { at: input.now, type: 'review/submitted', actor: input.reviewer, detail: `${item.id} round ${review.round}: ${input.verdict}` })
 
@@ -844,12 +860,16 @@ export function buildStatus(state, input) {
       blocked_by: item.blockedBy,
       reported: item.report !== null,
       reviews: {
-        rounds_used: submittedRounds(item),
+        // `rework_rounds` is the number the gate budgets; `submitted_rounds`
+        // counts every submitted verdict including approvals. They differ by
+        // design and are both surfaced so the Lead never has to guess.
+        rework_rounds: reworkRounds(item),
+        submitted_rounds: submittedRounds(item),
         max_rounds: input.settings.maxReviewRounds,
         pending_reviewer: pending?.reviewer ?? null,
         verdicts: item.reviews
-          .filter((review) => review.status !== 'pending')
-          .map((review) => ({ reviewer: review.reviewer, verdict: review.verdict, round: review.round })),
+          .filter((review) => review.status === 'submitted')
+          .map((review) => ({ reviewer: review.reviewer, verdict: review.verdict, round: review.round, report_seq: review.reportSeq ?? 0 })),
         latest_summary: latest?.summary ?? null,
       },
       open_findings: unresolvedFindings(item).length,
@@ -857,8 +877,11 @@ export function buildStatus(state, input) {
       override: item.overrideReason ?? null,
       ...(input.detailItemId === item.id
         ? {
+            // Detailed records get their own keys: overwriting the compact
+            // `reviews` summary with the raw array would break every reader
+            // that asks for the counters.
             report: item.report,
-            reviews: item.reviews,
+            review_records: item.reviews,
           }
         : {}),
     }

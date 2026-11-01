@@ -140,7 +140,9 @@ pending ─claim/开工─► running ─report─► reported ─(需评审)─
 - 想重新提交，必须先逐条回应未决 finding（否则 report 被拒）；
 - 多 reviewer 时逐位批准，全部到位才算 approved。
 
-**轮次预算按「返修轮」计**：`reworkRounds` = 当前版本内非批准 verdict 的数量（其他 reviewer 的 approve 不消耗预算）。`maxReviewRounds`（默认 2，1–5）耗尽后**自动升级 Lead 仲裁**；blocker 被 `rebut` 直接升级；同一 item 不会重复生成仲裁 escalation。
+**轮次预算按「返修轮」计，且在 item 生命周期内累计**：`reworkTotal` = 该 item 历史上非批准 verdict 的数量（其他 reviewer 的 approve 不消耗预算；**重新 report 不会清零**，只有 Lead 的显式 `repair reopen` 会重置）。`maxReviewRounds`（默认 2，1–5）耗尽后**自动升级 Lead 仲裁**；blocker 被 `rebut` 直接升级；同一 item 不会重复生成仲裁 escalation。
+
+**批准型 verdict 的 findings 是「已接受的观察」**：`approve` / `approve_with_nits` 附带 finding 时，引擎把它们标记为 `accepted_by_reviewer`，不要求作者回应、也不进 G4 门禁——这样"只剩 nit → 早停"与门禁不会互相矛盾。
 
 ### 5.4 状态迁移的授权规则（工具层强制）
 
@@ -165,7 +167,7 @@ pending ─claim/开工─► running ─report─► reported ─(需评审)─
 | **G2 证据合格** | 至少 1 条**非空命令**、所有 `exit_code` 为整数、并至少引用 1 条 evidence（`evidence_optional` 项跳过证据要求） | 只断言未验证，或空命令占位 |
 | **G3 评审批准** | 所有声明 reviewer 最新 verdict ∈ {approve, approve_with_nits} | 未签核 / 有未决改动 |
 | **G3b 评审证据** | 批准型评审必须声明 `evidence_checked`（`requireReviewEvidence`，默认开） | 橡皮图章式批准 |
-| **G4 findings 清零** | 无未响应 finding | 评审意见被忽略 |
+| **G4 findings 清零** | 无未响应的**非批准** finding（批准型 verdict 的 observation 记为 `accepted_by_reviewer`） | 返修意见被忽略 |
 | **G5 写范围纪律** | 报告文件 ⊆ 声明 scope；`strictScopes=true` 时越界即失败，否则 warning（**基于自报，见 §9**） | 越界改别人文件 |
 | **G5b 依赖顺序** | 所有 `blocked_by` 已 approved（或被 Lead override 接受） | 在未完成依赖上构建 |
 | **G6 独立性与升级** | reviewer ≠ owner；reviewer 为 fresh context（fork 则 warning）；无未解决 blocking escalation | 自审 / 绕过升级 |
@@ -199,7 +201,7 @@ Override 只豁免"已在 failures 中列出的具体项"，不会把 item 变�
 | 原子落盘 | 临时文件 + `rename` |
 | 损坏可诊断 | JSON 解析失败抛 `WORKFLOW_STATE_CORRUPT` 并给路径 |
 | 成员 cwd 可能不同 | 一律用 **Lead 的 cwd** 推导 artifact 路径（`membership.root.session`） |
-| 成员不手改黑板 | L1 明文禁止；手改会在下次状态机校验时产生不一致 |
+| 成员不手改黑板 | L1 明文禁止；插件**无法检测**手改，见 §9 的边界说明 |
 
 ### 7.3 为什么用文件而不是 session 事件
 

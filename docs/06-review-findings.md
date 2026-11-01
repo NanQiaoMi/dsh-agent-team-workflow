@@ -1,173 +1,104 @@
-# 06 · 对抗性审阅发现（独立 reviewer）
+# 06 · 对抗性审阅发现（独立 reviewer，最终复审版）
 
-**审阅基线**：`packages/agent-team-workflow` @ 2026-11-01T10:28+08:00（`index.js c273b277`、`lib/workflow.js 3d959705`、`lib/store.js 36dc6abf`、`lib/tools.js bffdf6b5`、`lib/protocol.js 715b4d2d`、`package.json 24744175`）；文档 01–05 同快照。方法是逐文件通读 + 对照本机 DSH 安装目录源码 + `/tmp` 一次性脚本驱动真实工具适配器复现（脚本不写入工作区）。
+**审阅基线**：原始发现 R-01~R-18 针对 `2026-11-01T10:28` 快照（已交给作者，处理记录见 [`07-review-resolution.md`](07-review-resolution.md)）。作者在 10:33–10:42 做了大幅修复，本文件是**不采信自述的独立复审**：重新逐文件通读 10:40 代码（`index.js c273b277`、`lib/tools.js d33f51c3`、`lib/workflow.js a3ecfd33`、`lib/store.js 308631eb`、`lib/protocol.js a66bce7c`、`package.json 24744175`）+ 对照 DSH 安装目录源码 + 运行 `node --test`（41/41 通过）+ `/tmp` 一次性脚本驱动真实 `buildTools` 适配器复现。R 编号沿用原编号（07 的引用仍然有效），新增问题从 R-19 起。
 
 ## 结论摘要
 
-1. **不诚实的 owner 可以让 run 收敛，而最终产物没有被完整审阅**：批准结论没有绑定到 report 版本（R-01，blocker，已用真实 `buildTools` 适配器复现，且不需要 Lead override）。
-2. 身份与权限本身可靠（见「已核查未发现问题」）；真正的治理弱点在别处：轮次预算按 verdict 计数（R-03）、升级后没有恢复路径（R-04）、`team_flow_escalate` 是任意成员可触发的 item 状态后门（R-02）。
-3. Gate 的「强制」大多只是形状校验：评审证据、真实 diff、依赖顺序、黑板完整性都不进判定（R-05/R-06/R-07/R-11）；03 §9、04 §8、`protocol.js` 的多处「强制」声明与实现不符。
-4. 持久化/并发有两处真实缺口：`team_flow_plan` 不走 store 锁（R-09）；`writeArtifacts:false` 实际不可用（R-10）。
-5. 测试 `25/25` 全绿，但上述路径均无用例覆盖；全绿不等于正确。
+1. **原 blocker R-01 已修复且经独立复现确认**：批准与 `reportSeq` 绑定；approved 后 re-report 被拒，`team_flow_repair reopen` 后重报只开新评审，gate 因 `review not approved by: rev` 失败；多 reviewer 下旧批准不再继承。
+2. R-02、R-03（核心语义）、R-04、R-05、R-07、R-08、R-09、R-10、R-12、R-13、R-14、R-15、R-16、R-18 共 15 项复核为**已修复**（证据见下表）。
+3. **仍存在的真实缺陷 6 项**：R-19（major，`approve_with_nits` 带 nits 的常见收尾路径卡死）、R-20（minor，re-report 可重置返修预算、绕过自动升级）、R-21（minor，override 预览后按 next_actions finalize 必失败），及 3 个 nit。
+4. R-06（写范围只查自报）、R-11（黑板可被成员直接改写）、R-17（固定注入成本）作者明确降级/不接受，**复核同意其理由**，但必须作为边界写进最终交付（03 §9、README 已如实标注）。
+5. **最终判断**：「不诚实 agent 能否在没被真正审阅的情况下让 run 收敛？」——**走工具路径：不能**（批准版本绑定、自审拒绝、依赖前置、escalation 不再改状态、证据/命令形状强制）。**剩余绕过只有两条**：直接改写 `state.json`（R-11，平台边界，无法用插件自证）或 Lead 行使 per-item override（设计上的显式风险接受，报告会标 `waived`/`overridden`）。二者都已从"隐形默认路径"降级为"文档声明的例外"。
 
 | 严重度 | 数量 | 编号 |
 | --- | --- | --- |
-| blocker | 1 | R-01 |
-| major | 10 | R-02 ~ R-11 |
-| minor | 6 | R-12 ~ R-17 |
-| nit | 1 | R-18 |
+| blocker | 0 | — |
+| major | 1 | R-19 |
+| minor | 2 | R-20、R-21 |
+| nit | 3 | R-22、R-23、R-24 |
+| 已复核修复 | 15 | R-01~R-05、R-07~R-10、R-12~R-16、R-18 |
+| 明确接受的边界 | 3 | R-06、R-11、R-17 |
 
----
+## R-01~R-18 复核状态
 
-### R-01 [blocker] `lib/workflow.js:380`（配合 :271-311）— 批准结论不绑定 report 版本，最终产物可在无复审的情况下收敛
+| 编号 | 原级别 | 复核 | 独立证据（代码/探针） |
+| --- | --- | --- | --- |
+| R-01 批准不绑定报告版本 | blocker | ✅ 修复 | `reportSeq` 绑定 workflow.js:275-329、:417；探针 `/tmp/atw-final.mjs` A/B：re-report 只开新一轮、旧批准 invalidated |
+| R-02 escalate 改 item 状态 | major | ✅ 修复 | 探针 E：对已 approved 项 escalate 后 `item.status='approved'`；tools.js 的 escalate 只追加记录 |
+| R-03 轮次按 verdict 计数 | major | ✅ 核心修复（残留 R-20） | `reworkRounds` workflow.js:340-349；多 reviewer 不再提前升级（探针 C 未升级） |
+| R-04 无恢复路径 | major | ✅ 修复 | `team_flow_repair`（tools.js:1082-1220）；探针 A（reopen）/D（reset_review）生效，Lead-only |
+| R-05 门禁不校验证据 | major | ✅ 修复 | 探针 I：空命令/无 evidence 现在门禁失败；批准无 `evidence_checked` 工具层即拒（tools.js:700-706） |
+| R-06 写范围只查自报 | major | ↔ 降级 | docs/03:229 已如实写"不解析 git diff、不 stat 未申报文件"；01 §4.7 原始硬要求未实现 |
+| R-07 依赖顺序不进门禁 | major | ✅ 修复 | 探针 `/tmp/atw-dep.mjs`：依赖未批准时 report 抛 `WORKFLOW_DEPENDENCY_NOT_APPROVED`；gate G5b workflow.js:666-669 |
+| R-08 黑板不按 Team 隔离 | major | ✅ 修复 | 探针 G：两 root 路径 `.agentteam/teams/<sessionId>/state.json` 不同；store.js `teamIdOf/statePath` |
+| R-09 plan 不走锁 | major | ✅ 修复 | plan 整体在 `store.lock`（tools.js:281）；旧任务清理在新板落盘后（tools.js:346） |
+| R-10 writeArtifacts:false 不可用 | major | ✅ 修复 | store.js write-through 内存态；探针 H：status 能看到 run、report 成功 |
+| R-11 黑板可被成员改写 | major | ↔ 不接受（边界） | readState 仍信任文件（store.js:113-130）；docs/03:232 已改为「不提供」防篡改 |
+| R-12 override 全量豁免 | minor | ✅ 基本修复（残留 R-21） | 探针 H：返回 `waived` 列表；仅 `finalize+pass` 时落盘（tools.js:929-933）；报告头区分 override |
+| R-13 status 不自足 | minor | ✅ 修复 | status 默认含 DoD/reviewers/task revision/repair_log；`{item_id}` 附完整 report/reviews（workflow.js:840-863） |
+| R-14 不校验成员名 | minor | ✅ 修复 | workflow.js:228、:245 校验 owner/reviewer 形状；repair 同样校验（tools.js:68-73） |
+| R-15 workerContext 硬编码 | minor | ✅ 修复 | `renderWorkerBrief(..., contextMode)` protocol.js:68、:124；plan next_actions 引用实际值 |
+| R-16 简报指不存在的 revision | minor | ✅ 修复 | 简报改指 `team_task_get` / `team_flow_status {item_id}`（protocol.js:94）；status 回 task revision |
+| R-17 固定注入成本 | minor | ↔ 部分 | 实测 policy 3360 B、8 工具 schema 9918 B（≈3.7k tokens/会话）；README:99 已标注成本与关闭开关 |
+| R-18 未用状态/事后可改 | nit | ✅ 修复 | REPORTED 已删；ABORTED 在 replace 归档时写入；finalize 后 report/submit/respond/escalate/repair 有 phase 守卫；文本 clip 上限 |
 
-**问题**：`applyReport` 只把 *pending* review 置 `superseded`（:373-375）；历史 `approve` 永不失效。`allReviewersApproved`/`outstandingReviewers` 只看每个 reviewer 的最后一条记录（:271-311），不比较 verdict 与当前 `item.report` 的先后。两条路径可达：
-- **A（零新评审收敛）**：rev 批准 v1 → owner 自己调 `team_flow_escalate{blocking:true,item_id}`（任意成员可把 item 状态翻成 escalated，见 R-02）→ `team_flow_report` 交 v2（换文件、换命令）→ `applyReport` 因 `allReviewersApproved` 为真直接把 item 置 approved（:380-383）→ Lead 裁决 escalation → `team_flow_gate{finalize:true}` **pass=true / finalized=true**，report.md 写的是 v2，而 v2 没有任何 verdict。
-- **B（多 reviewer 部分审阅）**：reviewers=[rev1,rev2]；rev1 批准 v1 → owner 在 rev2 pending 时 re-report v2 → rev2 批准 v2 → item approved、gate pass=true；rev1 的批准被计为对 v2 的批准（reviews 实际为 `rev1:approve, rev2:superseded, rev2:approve`）。
+## 仍存在的问题
 
-**真实失败场景**：`/tmp/atw-repro.mjs` A/B 段（真实 `buildTools`+临时 workspace）。A 段输出：`report v2 -> status=approved reviewer=null`、`finalize -> pass=true finalized=true`、`converged content files=['src/rewritten.js']`。B 段 `/tmp/atw-gateB.mjs` 输出 `pass=true failures=[]`，`final files=['src/a.js','src/bad.js']`。
-**建议修复**：item 增加 `reportSeq`，report 时递增并把所有历史 verdict 标记 stale；`allReviewersApproved`/`outstandingReviewers`/`evaluateGates` 只统计 `review.reportSeq === item.reportSeq` 的 verdict；删除 `applyReport` 的 auto-approve 捷径（:380-383），统一重开评审。
-**如何验证**：engine 单测：approve → （escalate → report v2）后 `outstandingReviewers(item).length === 1`，且 gate 必须因 pending review 失败；当前实现会 pass。
+### R-19 [major] `lib/workflow.js:503-507`（配合 :688-689、:790、:795-815）— `approve_with_nits` 带 finding 时 item 已批准但门禁失败，且无人被指派回应
 
-### R-02 [major] `lib/tools.js:959` — `team_flow_escalate` 是任何成员对任意 item 的状态后门
+**问题**：批准型 verdict（含 `approve_with_nits`）直接置 `APPROVED`（:503-507），不再开后续评审；`evaluateGates` 仍把未决 finding 判失败（:688-689）；`nextActions` 对 Lead 输出 "All items are approved → finalize"（:790），对 owner 没有任何动作（:795-815）；作者收到的是 "approved … nothing further"（protocol.js:237），不提示 respond。文档 04:245 的"只剩 nit → approve_with_nits 结束（早停）"与门禁 G4 自相矛盾。
+**真实失败场景**：`/tmp/atw-final2.mjs` §2：`item status=approved`、`unresolved findings=1`、`gate pass=false ["1 unresolved review finding(s)"]`、author `next_actions=["No action is assigned…"]`、消息文本无 respond 指令。这是 nits 收尾的最常见路径，Lead 会持续收到 "finalize" 指令并持续失败，必须手工介入；模型可能就此把 run 卡死或错误 override。
+**建议修复**：二选一——(a) 批准型 verdict 的 findings 记为"已接受 nits"，G4 只统计**非批准** review 的未决 finding（与 04:245 早停一致）；(b) 保持 G4 严格，但 item approved 且有当前版本未决 finding 时，`nextActions` 给 owner 输出 `team_flow_review_respond` 动作，并在 `approvedMessage` 里写"仍有 nits 需 respond"。
+**如何验证**：engine 测试 approve_with_nits + nit finding → 方案 a 期望 gate pass，方案 b 期望 author next_actions 含 `review_respond`；当前两者皆否（探针 §2）。
 
-**问题**：任何成员（teammate 也可以）对任意 `item_id` 传 `blocking:true`，就把该 item 置为 `ESCALATED`；不校验 owner、不校验当前状态（甚至 `approved` 也能翻）、resolve 后也不恢复。它不在 03 §5.4 的迁移授权表里，却是 R-01 路径 A 的放大器，也可用来 DoS 同伴的 item。
-**真实失败场景**：repro A 段第一步：`item status after escalation = escalated`（此前 approved）；随后同一 item 被 re-report 并自动 approve。另：repro C 末行重复 report 产生第二条 escalation（`escalations=2`）。
-**建议修复**：escalate 只追加 escalation 记录，不改 `item.status`；需要暂停时新增显式 action（仅 owner/Lead、限定状态白名单），resolve 时由派生状态恢复。
-**如何验证**：integration test：teammate 对已批准 item 调 escalate 后断言 `item.status === 'approved'`；或跑 repro A 第一步。
+### R-20 [minor] `lib/workflow.js:340-349, 417, 443-461` — 作者可用 re-report 重置返修预算，绕过"轮次耗尽自动升级"
 
-### R-03 [major] `lib/workflow.js:309-311, 384, 512` — 轮次预算按“verdict 条数”计，多 reviewer 项第一次返修就超限
+**问题**：`reworkRounds` 只统计**当前 `reportSeq`** 的非批准 verdict（:340-349），而每次 report 使 `reportSeq++`（:417）并重开评审；`applyReport` 已不再检查预算（:443-461）。作者在每次 respond 后重新 report（合法动作，会 supersede pending review），rework 计数永远回到 0，永远不会 escalate。03:143 的"超限自动升级、不允许静默循环"因此不成立。
+**真实失败场景**：`/tmp/atw-final.mjs` C 段（10:40 代码）：3 轮"report → request_changes → respond"后 `escalations=0`、`reportSeq=3`，无限循环不升级，只消耗 token。
+**建议修复**：把返修计数绑定到 item 生命周期（累加 repair/rework 记录），或禁止存在 pending review 时 re-report（必须先 respond 让同一版本完成复审）。
+**如何验证**：C 段循环 5 次断言 `escalations>=1`；当前为 0。
 
-**问题**：`submittedRounds()` 统计所有 `status==='submitted'` 的 review（每个 reviewer 每条 verdict 各算 1），而 03:137 / 01:487 / 04 阶段 4 定义“一轮 = 作者 report + 一个 verdict / 第 1 轮 + 1 次返修”。`reviewers ≥ 2` 时，首轮全部批准已消耗完默认预算 2；第二个 reviewer 的第一次 `request_changes` 在 respond 时立即触发 escalated（:512-524）。
-**真实失败场景**：repro C：rev1 approve(1) + rev2 request_changes(2) → author 修复并 respond → `escalated=true`、gate `review not approved by: rev2`；04:263 指示 Lead“reopen 后重新 report”，但 re-report 再次命中 :384-394 生成**第二条** escalation（repro C 末行）。多 reviewer 项因此无法承受任何返修。
-**建议修复**：引入 `reviewRound`（每次 report 后重置的返修轮）与 verdict 计数分离，预算只按 reviewRound 计；超限时若同一 item 已有未解决 arbitration 则复用而不是新建。
-**如何验证**：engine 单测（2 reviewers、max=2）：rev1 approve、rev2 request_changes、respond 后期望 `escalated===false && nextReview.round===2`。
+### R-21 [minor] `lib/tools.js:904-933, 980` — 带 overrides 的 gate 预览返回 pass，但按 next_actions finalize（不带 overrides）必然失败
 
-### R-04 [major] `lib/workflow.js:702` + 全工具集 — 升级后没有 reopen/reassign/reset 路径，“仲裁”实际只能 override
+**问题**：`overrides` 仅在 `finalize && gate.pass` 时落盘生效（:929-933）；预览时只回 `pass:true` 和 `waived`，而 `next_actions` 固定为 "Call team_flow_gate {finalize:true} …"（:980），不含"重复传入相同 overrides"。模型照做则 gate 重新计算（无 overrides）→ 失败。
+**真实失败场景**：`/tmp/atw-final2.mjs` §1：preview `pass=true, waived=[4 项]`、next 指令无 overrides；`finalize:true`（无 overrides）→ "the gate did not pass"；再带 overrides 才成功。模型可能在两步之间来回打转或放弃收敛。
+**建议修复**：预览阶段把 overrides 落盘为 pending（finalize 时复用），或 `next_actions` 明确回显 `{overrides:[…]}`，或区分 `pass_preview` 与 `pass_final`。
+**如何验证**：§1 脚本；断言 preview.next_actions 含 overrides 或 finalize 不带参数即可通过。
 
-**问题**：`next_actions`（:701-702）明确让 Lead“either reopen the item or record a gate override”，但 7 个工具里没有 reopen/reassign/reset-round；04 §7 多处“reopen 后重新 report”“改计划需重跑”不可执行。reviewer 未 spawn/失败/名字拼错时 pending review 永久挂起，无 reassign；轮次耗尽后 re-report 只会再 escalate（R-03）。
-**真实失败场景**：repro C 中 escalation 被 Lead resolve 后 item 仍 `escalated`，gate 永远失败；唯一出路是 per-item override（R-12），而它同时豁免报告/证据/评审全部检查。`team_flow_plan` 的名字拼错即形成死 run（R-14）。
-**建议修复**：新增 Lead-only repair 动作（reopen item / reset review round / reassign owner|reviewer，写 event 与原因）；或至少把 04 §7 的恢复步骤改成“用 override 并在报告中记录”，删掉不存在的 reopen 指令。
-**如何验证**：`grep -c "name: 'team_flow_"` 只有 7 个；断言 next_actions 中出现的 `reopen` 无对应工具；复现 C 后尝试修复（当前无 API）。
+### R-22 [nit] `lib/tools.js:1092` vs `:1139` — `reset_review` 的 `reviewer` 描述为可选，实现必填
 
-### R-05 [major] `lib/workflow.js:589-645` — Gate 不检查评审证据，“签核”用一个空数组即可通过
+**问题**：工具 schema 写"defaults to the next outstanding reviewer"，代码 `assertMemberName(args.reviewer)`（:1139）在缺省时报 `reviewer "" is not a spawnable member name`；docs/04 工具表也标 `reviewer?` 可选。
+**建议修复**：缺省时取 `W.outstandingReviewers(item)[0] ?? item.reviewer[0]`，或把 schema/文档改为必填。
+**如何验证**：`/tmp/atw-final.mjs` D 段（不带 reviewer → 报错）；修好后不带 reviewer 应成功或给出明确必填错误。
 
-**问题**：`evaluateGates` 对 review 只做 reviewer≠owner 与 fork warning，从不读 `review.evidenceChecked`、`finding.file/line`；G2 只要求 commands 非空且 `exitCode` 为整数——`{command:"", exit_code:0}` 也算合格。03:217“门禁要求 `evidence_checked` 非空、findings 命名到 file:line”、04:274“空评审…门禁判失败/警告”、`protocol.js:40`“Approving without evidence is a gate failure”三处声明均不成立。
-**真实失败场景**：repro I：report `files:[]`、`commands:[{command:"",exit_code:0}]`、`evidence:[]` + review `evidence_checked:[]` → `gate pass=true finalized=true`。这是文档承诺的强制项缺失，不是“评审可以敷衍”的已知残余风险。
-**建议修复**：G2 校验 command.trim() 非空且 report.evidence 非空（evidenceOptional 例外）；approve/approve_with_nits 要求 `evidenceChecked.length>0`；finding 要求 file 非空（blocker/major 要求 line）。同时更正上述三处文档/注入文本。
-**如何验证**：engine 单测 approve with `evidenceChecked:[]` → gate fail；repro I 断言 `pass===false`。
+### R-23 [nit] `docs/03-architecture.md:202` vs `:232` — 同一文档对"手改黑板能否被发现"结论相反
 
-### R-06 [major] `lib/workflow.js:612-622` — 写范围纪律只检查“自报 files”，不校验实际改动
+**问题**：§7.2 仍写"手改会在下次状态机校验时产生不一致"（:202），与 §9 的"黑板防篡改：不提供"（:232）矛盾；R-11 的修复只改了后者。另 04:245 的 nit 早停与 G4 冲突（并入 R-19）。
+**建议修复**：把 §7.2 该句改为"手改不会被检测，见 §9"，并在 04 早停处补"nit findings 需 respond 或由 Lead 接受"。
+**如何验证**：grep 两处矛盾句；文档评审。
 
-**问题**：`outside` 只遍历 `item.report.files`（owner 自己填的数组），不 stat、不比对 git diff/工作区实际变更；`strictScopes` 默认 false（`config.js:30`）→ 即使自报越界也只是 warning。01:554 的硬要求“完成时校验（比较实际 diff 路径与声明 scope）”未实现；03:216 声称绕过工具改文件会被后续校验发现也不成立。
-**真实失败场景**：worker 用 bash 改了 `src/other/` 或在 scope 外新建文件，但 `report.files` 只填 scope 内路径 → outside 为空 → G5 通过（repro E 的 report 只填 `src/a.js` 时即如此）。
-**建议修复**：report 时（或 gate 时）用 `ctx.fs`/`git status` 求实际变更集合与 `writeScopes` 比对，未声明变更即 fail；至少把 `strictScopes` 默认改 true；文档如实降级为“自报 + Lead 抽查”。
-**如何验证**：临时 workspace 在 report 前手写一个 scope 外文件、report 不列它 → 断言 gate fail（当前 pass）。
+### R-24 [nit] `lib/workflow.js:830-855` — status 的 `verdicts` 包含 superseded 记录（verdict=null），`rounds_used` 用提交数而非返修轮
 
-### R-07 [major] `lib/workflow.js:396` + `:630-634` — 依赖顺序既不进状态机也不进门禁
+**问题**：`verdicts` 仅过滤 `status!=='pending'`（:851），superseded review 会以 `verdict:null` 混入面板；`rounds_used` 仍是 `submittedRounds`（:847，含批准），与门禁使用的 `reworkRounds` 语义不同，Lead 无法从 status 判断真实返修轮。
+**建议修复**：过滤 superseded；同时回显 `rework_rounds` 与 `submitted_rounds` 两个字段并注明含义。
+**如何验证**：构造 superseded 记录后读 status；对比 gate 使用的 `reworkRounds`。
 
-**问题**：`applyReport` 不检查 `item.blockedBy` 是否 approved；item gate 没有依赖项；只有 report 之后的 `syncTaskComplete` 尝试 native claim，失败降级为 warning（`tools.js:84-102`）。05:186 声称“完成顺序必须由治理层自己保证（本包用 DAG + gate）”，不成立。
-**真实失败场景**：repro E：W2(blocked_by W1) 在 W1 尚未开工时 report → in_review → rev 批准 → `gate: W2 pass=true`，`sync_warnings=["backing Team task task-2 not synchronized: TEAM_TASK_BLOCKED"]`。若 W1 之后以不同接口实现，run 仍可收敛，W2 的验收建立在旧契约上。
-**建议修复**：`applyReport` 前置 `blockedBy.every(id => findItem(id).status === APPROVED)`；native claim 失败升级为 item gate failure；gate 增加依赖检查。
-**如何验证**：复现 E 断言 report W2 抛错或 gate W2 fail。
+## 已核查未发现问题的项（复审确认）
 
-### R-08 [major] `lib/store.js:61-83` — 黑板只按 cwd 定位，不按 Team 隔离
-
-**问题**：state 路径 = `workingDir(root)/artifactsDir/state.json`，与 `teamId`/root agent 无关；`tryMembership()` 对任何顶层 Session 返回 `role:'lead'`（`roster.js:63-90`），因此同一 workspace 的第二个普通会话也是 Lead，可以读/override/finalize/replace 第一个 Team 的 run；注入的 `team:workflow-state` context 还会把别的 run 摘要读进无关会话（`store.js:112-119`、`index.js:88-95`）。
-**真实失败场景**：repro G：两个 lead agent 的 `statePath` 完全相同。Session B 对 A 的 run 调 `team_flow_gate{finalize}`（B 是 lead → `requireLead` 通过）或 `plan{replace}`（删掉 A 的 backing tasks）。用户同时开两个会话即触发。
-**建议修复**：state 按 teamId 分目录/文件名，读改时校验 `state.teamId === membership.root.id`；不匹配时明确报错；`team:workflow-state` 只在同一 team 时展示。
-**如何验证**：fake ctx 两个 root agent 断言 statePath 不同；或重启后两会话 live 复现。
-
-### R-09 [major] `lib/tools.js:258,330`（及 :262-277）— plan/replace 不走 store 锁，replace 清理顺序不可靠
-
-**问题**：`team_flow_plan` 直接 `readState → (await createTask…) → writeState`，未用 `mutateState/withLock`；而其它成员的 report/review 都在锁内做 read-modify-write（`store.js:147-158`）。plan 的 `writeState` 可与它们交错：report 已读旧 state → plan 写新 run → report 把旧 state 写回，导致新 run 丢失/黑板与 native tasks 不一致。`writeState` 临时名 `${pid}.${Date.now()}.tmp`（`store.js:134`）在并发同毫秒下可能同名。另：replace 先删旧 tasks（:266-277）再建新 tasks，创建失败时旧 `state.json` 保留但 backing tasks 已删；删除按 items 数组倒序，真实 board 拒绝删除仍有 dependents 的 blocker（`task-board.js:200-205`），items 非拓扑序时留下僵尸 task。
-**真实失败场景**：Lead 在 worker 正在 report 时 `plan{replace:true}`（04 阶段 6 明确允许重跑）→ worker 的 report 静默丢失，或旧 run 状态覆盖新 state。
-**建议修复**：plan 的全部 state 读写放进 `store.mutateState`；旧 task 清理放到新 state 落盘之后（失败可重试）；按 waves 逆序删除。
-**如何验证**：并发脚本（20 次 report 与 plan replace 同时触发）断言新 run items 不丢失；注意 fake harness 不复现 dependents 守卫，需真机或按 `task-board.js` 语义补 fake。
-
-### R-10 [major] `lib/store.js:126-131` — `writeArtifacts:false` 不可用：plan 之后所有工具都看不到 run
-
-**问题**：`writeArtifacts=false` 时 `writeState` 只更新 prompt summary、不写文件；而 `readState` 只读文件（:90-97）。所以 plan 返回 run_id 后，status 返回 `run_id:null, phase:"none"`，report 报 “no workflow run exists yet”。04:264 把它当“artifacts 不可写时的内存模式”兜底，实际是半死状态；prompt context 仍显示 run 存在（summary 已缓存），自相矛盾。
-**真实失败场景**：repro H：`plan run_id=run-…` → `status run_id=null phase=none` → `report error=no workflow run exists yet`。
-**建议修复**：store 增加内存 state Map，`readState` 先查内存、`mutateState` 写内存（`writeArtifacts` 只控制是否落盘）；或删除该配置项并在文档写“workspace 必须可写”。
-**如何验证**：integration test 用 `resolveSettings({writeArtifacts:false})` 跑完整流程；repro H 断言 status.run_id===plan.run_id。
-
-### R-11 [major] `lib/store.js:90-110` — 黑板无完整性校验，任何成员可直接伪造评审/阶段
-
-**问题**：`state.json` 是普通工作区文件，`readState` 只校验 `runId` 是字符串，随后完全信任 items/reviews/phase；无 hash/签名/append-only，gate 也不复核。任何 teammate 用 fs/bash 写入一条 `{reviewer:'rev',verdict:'approve'}` + 一份 report，gate 即通过——这是 R-01 之外另一条“零审阅收敛”路径，且不需要 reviewer 参与。03:216 / 04 §8#8 声称“手改 state.json 会造成状态机不一致、后续工具会报错”，不成立。
-**真实失败场景**：worker 直接改 `.agentteam/state.json`（路径公开在 `team_flow_status.artifacts.state_path`）→ 伪造 approve/report → Lead 跑 gate → pass；审计 events 也可被一并改写。
-**建议修复**：至少给 state 增加 Lead 写入的 HMAC/事件哈希链并在 gate 前校验；更符合 DSH 设计（02 §F.1 会话日志是唯一真源）的做法是把 verdict 落到 native task description/session log，state 只作缓存；文档如实标注“黑板可被成员改写，不是独立证据”。
-**如何验证**：fake store 写一份伪造 approve 的 state.json，调 gate 观察 pass（当前 pass 即证明）；作为 tamper 测试固化。
-
-### R-12 [minor] `lib/workflow.js:636` + `lib/tools.js:835-839` — override 是 per-item 全量豁免，且预览调用也会永久落盘
-
-**问题**：`pass = failures.length===0 || override!==null`，override 可让“无 report/无评审/未决 finding”的 item 通过（repro F：`pass=true`，failures 仍列 no report/no command/review not approved）；工具返回只有 `pass:true`，被豁免项只出现在 gate 明细；`finalize:false` 时也把 reason 写进 `item.overrideReason`。报告固定打印 “All required gates passed”（`protocol.js:332`），与表格中的 no+failures 并存。
-**真实失败场景**：Lead 预览 gate 时误传 overrides → item 永久带 override，后续 sub-check 持续被豁免；用户看到的报告头部是“全部通过”。
-**建议修复**：override 仅豁免显式列出的 failure 并在结果中返回 `waived` 列表；`pass` 之外增加 `overridden_items`；overrides 仅在 finalize 时落盘；报告头部区分“含 N 项 Lead 风险接受”。
-**如何验证**：repro F 断言 `item_gates[0].waived` 存在；当前输出已记录。
-
-### R-13 [minor] `lib/workflow.js:739-767` — status 黑板不自足：缺 DoD/声明的 reviewer/report 明细
-
-**问题**：items 只回传 id/subject/owner/role/status/task_id/write_scopes/blocked_by/reported/reviews/open_findings/report_summary/override；没有 definition_of_done、reviewers、report.files/commands/evidence/risks。reviewer 的 next_actions 说“inspect the reported files and evidence”却拿不到这些字段；`autoNotify:false`（`config.js:34`）时 reviewer 收不到 reviewRequestMessage，只能绕过工作流工具直接读 state.json（路径在 artifacts 里）或工作区文件。01:638 宣称“任何成员可在不读聊天记录的情况下恢复上下文”，工具面不成立。
-**真实失败场景**：关闭 autoNotify 或通知丢失：reviewer 调 `team_flow_status` 后不知道作者改了哪些文件、跑了什么命令、DoD 是什么（DoD 只在 spawn brief 里）。
-**建议修复**：status 增加 item.definition_of_done / item.reviewers / report 明细（或提供 `team_flow_get item` 工具）。
-**如何验证**：repro J 输出 item keys（无 definition_of_done/reviewers/report）；断言补齐。
-
-### R-14 [minor] `lib/workflow.js:227,242-249` — 计划期不校验 owner/reviewer 是否是可 spawn 的成员名
-
-**问题**：只校验非空/非 lead/不重复；真实 spawn 要求 lower-kebab-case 且非 “lead”（`roster.js:404-405`）。`owner:"Alice_1"` 或 `reviewer:"Rev A"` 会被 plan 接受，随后 spawn_teammate 抛 `TEAM_INVALID_MEMBER_NAME`；reviewer 拼错/未 spawn 时 run 卡死（R-04），无修复路径；`reviewer:'lead'` 只 warning。
-**真实失败场景**：模型写 `owner:"Impl_1"`（常见）→ plan 成功 → 全队无法 spawn → 只能 `plan{replace}` 重来并丢失全部进度。
-**建议修复**：plan 校验 owner/reviewers 匹配 `/^[a-z0-9]+(?:-[a-z0-9]+)*$/` 且 ≠ 'lead'（至少 owner）；reviewer 为 'lead' 升为 error，或要求至少 1 个非 lead reviewer。
-**如何验证**：engine 单测 `plan(owner:'Impl_1')` 期望 error；当前返回无 error。
-
-### R-15 [minor] `lib/protocol.js:115,161` — `workerContext` 配置被 spawn 简报硬编码覆盖
-
-**问题**：`buildPolicy`/plan next_actions 让 Lead 使用 `settings.workerContext`（`protocol.js:38`、`tools.js:342`），但 `renderWorkerBrief`/`renderReviewerBrief` 一律返回 `context:'fresh'`；配置 `workerContext:'fork'` 时 plan 返回的 `spawn[].context` 与 next_actions/policy 指令矛盾，gate 的 fork warning（`workflow.js:626`）也永远不会对 configured reviewer 触发。
-**真实失败场景**：`cordis.patch.yml` 配 `workerContext: fork` 想复用 Lead 上下文 → 实际仍 fresh；或 Lead 按 next_actions 传 fork 而简报自称 fresh，行为不一致。
-**建议修复**：`brief.context = settings.workerContext`（reviewer 可单列配置），plan.next_actions 引用 `brief.context`。
-**如何验证**：`resolveSettings({workerContext:'fork'})` 下断言 `plan.spawn[0].context==='fork'` 且 next_actions 一致。
-
-### R-16 [minor] `lib/protocol.js:91` — worker 简报让“从 team_flow_status 拿 task revision”，status 从不返回 revision
-
-**问题**：简报说 claim backing task “using the revision from team_flow_status”，但 `buildStatus` 的 item 只有 `task_id`，没有 task revision（repro J keys）；worker 只能再调 `team_task_get/list`。`protocol.js:39` 的“claim with the current revision”同样没给来源。
-**真实失败场景**：模型按简报用错 revision → `TEAM_TASK_STALE_REVISION`/参数错误，多浪费一步；在长回合里增加放弃概率。
-**建议修复**：简报改为“先 team_task_get(task_id) 取 revision”；或 status item 增加 `task_revision`。
-**如何验证**：repro J 输出无 revision；grep 简报文本。
-
-### R-17 [minor] `index.js:39-51` + `lib/protocol.js:31-51` — 每个顶层会话固定承担 ~3.3k token 注入成本，且与原生 team 工具重复
-
-**问题**：`tryMembership(root)` 对任何顶层会话返回 lead（`roster.js:89`），所以每个普通会话都装 7 把工具 + `team:workflow` 段。实测：policy 3360 B；7 个工具 name+description+parameters 合计 8878 B；worker brief 2298 B / reviewer brief 2026 B。按 ~3.5 B/token 约 3.3k tokens/成员/请求，即便该会话从不组队；内容与原生 team policy（同 order 600 段）大量重复（claim/CAS/消息纪律）。
-**真实失败场景**：日常单 agent 会话也带工作流宪法与 7 个工具定义，增加成本与误用面（模型可能对不存在的 run 调 `team_flow_plan`，得到 “no run exists”）。
-**建议修复**：把工具/段落安装延迟到“本 Team 首次 spawn 或 run 存在时”；给工具加 `deferLoading: true`；把 policy 压到 1 KB 内并与原生 team policy 去重。
-**如何验证**：按本文件字节数复测；对比未装插件 profile 的 system prompt/tool schema 长度。
-
-### R-18 [nit] `lib/workflow.js:14-32` / `lib/protocol.js:332` — 未使用状态、finalize 后仍可改板、报告措辞
-
-**问题**：`ITEM_STATUS.REPORTED`、`RUN_PHASE.ABORTED` 从未被写入（03 §5.1/5.2 却画出 aborted/reported 状态）；finalize 后 `escalate`/`review_respond` 仍可改黑板（无 phase guard）；override 导致 gate pass 时报告仍打印 “All required gates passed”；report.summary/finding.claim 无 MAX_TEXT 上限（只有 events 截断），state.json 可被单条超长 finding 撑大。
-**真实失败场景**：状态图与实现不一致误导 Lead/读者；finalize 后的新 escalation 让“已收敛”报告与状态不符。
-**建议修复**：删除/实现未用状态；finalize 后工具加 phase 守卫；报告头区分 override；对 report/finding 文本设上限。
-**如何验证**：grep 无 REPORTED/ABORTED 写入点；finalize 后调 escalate 观察 state 变化。
-
----
-
-## 已核查未发现问题的项
-
-- **身份与权限**：所有工具只从 `exec.agent` + `ctx.agentTeams.membership()` 取调用者，没有可传 caller 的参数；`requireLead` 用 `membership.role`；report/respond 用 owner 名、submit 用 `pending.reviewer` 名，均为 roster 真值；`'lead'` 被 spawn 保留（`roster.js:404`），未发现同名冒充。Lead-only 工具对 teammate 确实拒绝（工具测试覆盖）。✓
-- **并发（mutateState 覆盖的路径）**：report/review/respond/gate/escalate-resolve 的 read-modify-write 在 per-path promise 锁内串行，`writeState` 同目录 tmp+rename；两个成员同时 report/review 不会丢更新。✓（plan 例外见 R-09）
-- **DSH API 契约**：7 个 output schema 通过 dsh-tools 真实 `assertSupportedJsonSchema`；`execute` 返回 JSON 归一化值；per-Agent 安装/拆除与官方 `tool-agent-team` 范式一致；`agent/created|disposed` payload、`systemPrompt.section/context` 与 TEAM_POLICY/TEAM_IDENTITY order、`workingDirectory.get/defaultDirectory`、`sendMessage{target,content,signal}`、`createTask/updateTask/getTask`（含 deleted tombstone、claim taskReady、complete/reopen 前置）逐项核对一致；零外部 import（仅 `node:fs/promises`、`node:path`）。✓
-- **bundle 清单**：`cordis.patch.yml` 纯 insert、`dsh.bundle.patch`、locale meta 形状正确；审阅期间作者补了 `files` 的 `lib/*.js`（上一快照缺失，已修复）。✓
-- **测试**：`NODE=…/node; "$NODE" --test test/engine.test.mjs test/tools.integration.test.mjs test/plugin.test.mjs` → `tests 25 / pass 25 / fail 0`。测试绿不代表无缺陷：R-01/03/04/06/07/08/10/11 均无用例。
-- **spawn 简报自包含性**：worker/reviewer 简报含身份、使命/AC、DoD、scope、依赖、任务 id、步骤与沟通规则，fresh context 基本可独立开工；仅 R-16（revision 来源）为实际缺口。
+- **身份与权限**：所有工具只从 `exec.agent` + `ctx.agentTeams.membership()` 取调用者，无可传 caller 的参数；`requireLead` 用 `membership.role`；report/respond 用 owner 名、submit 用 `pending.reviewer` 名；`'lead'` 被 spawn 保留。新增 `team_flow_repair` 同样 Lead-only。✓
+- **并发（mutateState 覆盖的路径）**：report/review/respond/gate/escalate/repair 均在 per-path promise 锁内 read-modify-write；plan 现在也走同一把 `store.lock`（tools.js:281）；tmp+rename 同目录且文件名含随机后缀。✓
+- **DSH API 契约**：8 个 output schema 通过真实 `assertSupportedJsonSchema`（integration test）；execute 返回 JSON 归一化值；per-Agent 安装/拆除与官方 `tool-agent-team` 范式一致；`agent/created|disposed` payload、`systemPrompt.section/context` 与 order、`workingDirectory.get/defaultDirectory`、`sendMessage{target,content,signal}`、`createTask/updateTask/getTask`（含 deleted tombstone、claim taskReady、complete/reopen 前置）逐项一致；零外部 import（仅 `node:fs/promises`、`node:path`）。✓
+- **bundle 清单**：`cordis.patch.yml` 纯 insert、`dsh.bundle.patch`、locale meta 形状正确；`files` 含 `lib/*.js`。✓
+- **测试**：`NODE=…/node; "$NODE" --test test/engine.test.mjs test/tools.integration.test.mjs test/plugin.test.mjs` → `tests 41 / pass 41 / fail 0`；新增断言覆盖了 R-01/02/03/04/05/07/08/10/12/13/14/15/16。✓
+- **spawn 简报自包含性**：worker/reviewer 简报含身份、使命/AC、DoD、scope、依赖、task id/revision 来源、步骤与沟通规则；双重角色成员只产出一份 brief（03 §11.1）。✓
 
 ## 未能验证/需作者确认
 
-1. **最终代码代的 live 行为**：05 §5 已声明未验证；我观察到本会话可用的是骨架代 `team_workflow_info` 而非 7 个正式工具（与 05 §5 “link 包不参与 HMR”一致）。我未被允许重启，无法确认真实模型是否遵守注入协议、是否触发 R-01 等路径——离线复现只证明机制可达，不证明模型会走到。
-2. **R-08 真实两会话**：用源码 + 路径计算 + fake agents 证明；未用两个 live Session 实测（需新会话/重启）。
-3. **R-09 交错时序**：由源码推理 + fake（未构造真实并发写文件的竞争窗口）；建议作者用 20 轮并发脚本确认。
-4. **`TeamTaskId` 字符串 id 兼容性**：只读源码（branding 恒等 + 内部按字符串查找），未 live 调用 `getTask/updateTask`。
-5. **R-09 后半（dependents 守卫导致僵尸 task）**：只读 `task-board.js:200-205`，fake harness 不复现该守卫，未在真实 board 上跑 replace。
-6. **R-10 真实不可写目录**：用 fake ctx 复现；未在只读 workspace 实测。
-7. **文档 03/04/05 在审阅期间仍在写**（mtime 10:19–10:27）；本文件按 10:28 快照的章节/行号引用，作者后续改动可能已修复部分条目。
-8. **评审独立性属组织问题**：同模型扮演的两个 teammate 无法被插件证明“真独立”；按设计边界理解，不计入缺陷。
-9. **R-11 威胁模型**：按“不诚实 agent 会使用 fs/bash”假设；若产品明确假设成员只走工具，请作者确认并把该假设写进文档。
-10. **动态成员中途退出**（reviewer 被 dispose）后的 gate/next_actions 行为：只做静态推理（`memberByName` 缺失时无 warning），未实测。
+1. **live 代际**：仍未重启；本会话可见的是骨架代 `team_workflow_info`（05 §5 已声明 V7 未验证、link 包不参与 HMR）。复审结论来自代码 + 离线探针，真实模型行为未观测。
+2. **R-19/R-20/R-21 的真实模型触发频率**：机制由探针证明可达；模型是否真的踩（nits 收尾、反复 re-report、override 两步）需 live run 统计。
+3. **R-09 的并发交错**：代码路径已复核（同一 path 的锁），但未构造真实并发写文件的竞争窗口实测（fake harness 无法复现 FS 竞态）。
+4. **双重角色 reviewer 的调度时序**：03 §11.1 仅保证"只 spawn 一次"；若该成员工作项在后续波次而其评审项在前一波次，review 可能等不到成员被 spawn（静态推理，未实测）。
+5. **41 个测试的独立性**：新增用例由作者与实现同源编写；我用独立探针复核了 A/B/C/E/F/G/H/I/依赖场景，其余（repair 权限、Team 隔离、内存模式）以源码 + 用例阅读为准。
+6. **`TeamTaskId` 字符串 id 兼容性**：只读源码（branding 恒等 + 内部字符串查找），未 live 调用。
+7. **文档 03/04/05/07 在 10:40–10:42 仍有改动**；本文件按 10:40 代码 + 10:42 文档引用，作者后续改动可能已修复 R-19~R-24 中的部分项。
+8. **评审独立性属组织问题**：同模型扮演的两个 teammate 无法由插件证明"真独立"；按设计边界理解，不计入缺陷。

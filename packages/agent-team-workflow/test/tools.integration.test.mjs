@@ -588,7 +588,7 @@ test('status detail exposes the report and review records a reviewer needs', () 
     const detailed = await byName(tools, 'team_flow_status').execute({ item_id: 'W1' }, { agent: harness.ctx.agents.list().find((agent) => agent.id === 'session-rev'), signal: EXEC_SIGNAL })
     assert.equal(detailed.items[0].report.summary, 'did it')
     assert.equal(detailed.items[0].report.commands[0].exitCode, 0)
-    assert.equal(detailed.items[0].reviews[0].reviewer, 'rev')
+    assert.equal(detailed.items[0].review_records[0].reviewer, 'rev')
   })
 })
 
@@ -611,5 +611,96 @@ test('a forked worker context is reported when the plugin is configured that way
     assert.equal(planned.spawn[0].context, 'fork')
     assert.match(planned.next_actions.join(' '), /fork/)
     assert.match(planned.spawn[0].prompt, /team_task_get/)
+  })
+})
+
+test('a preview that needs overrides tells the Lead to pass them to finalize', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test' })
+    const impl = harness.addTeammate('impl')
+    const rev = harness.addTeammate('rev')
+    await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'Override flow',
+        acceptance_criteria: ['works'],
+        items: [{ id: 'W1', subject: 'Work', owner: 'impl', write_scopes: ['src/'], definition_of_done: ['done'], reviewers: ['rev'] }],
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    // A report with a missing exit code fails G2, which the Lead then accepts.
+    await byName(tools, 'team_flow_report').execute(
+      { item_id: 'W1', summary: 'done, unverified', files: ['src/a.js'], commands: [{ command: 'npm test', exit_code: null }], evidence: ['manual check'] },
+      { agent: impl, signal: EXEC_SIGNAL },
+    )
+    await byName(tools, 'team_flow_review_submit').execute(
+      { item_id: 'W1', verdict: 'approve', summary: 'ok under override', findings: [], evidence_checked: ['read src/a.js'] },
+      { agent: rev, signal: EXEC_SIGNAL },
+    )
+    const overrides = [{ item_id: 'W1', reason: 'CI unavailable in this environment; manual check accepted' }]
+    const preview = await byName(tools, 'team_flow_gate').execute({ overrides }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assert.equal(preview.pass, true)
+    assert.match(preview.next_actions.join(' '), /overrides/)
+    assert.match(preview.next_actions.join(' '), /W1/)
+
+    // Following the preview instruction without the overrides must fail…
+    await assert.rejects(
+      byName(tools, 'team_flow_gate').execute({ finalize: true }, { agent: harness.lead, signal: EXEC_SIGNAL }),
+      /did not pass/,
+    )
+    // …and passing them again finalizes, with the waiver visible in the report.
+    const finalized = await byName(tools, 'team_flow_gate').execute({ finalize: true, overrides }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assert.equal(finalized.finalized, true)
+    const reportText = await readFile(join(cwd, '.agentteam', 'teams', 'session-lead', 'report.md'), 'utf8')
+    assert.match(reportText, /Lead override/)
+  })
+})
+
+test('reset_review defaults to the next outstanding reviewer and status reports rework rounds', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test' })
+    const impl = harness.addTeammate('impl')
+    const rev = harness.addTeammate('rev')
+    await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'Reset defaults',
+        acceptance_criteria: ['works'],
+        items: [{ id: 'W1', subject: 'Work', owner: 'impl', write_scopes: ['src/'], definition_of_done: ['done'], reviewers: ['rev'] }],
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    await byName(tools, 'team_flow_report').execute(
+      { item_id: 'W1', summary: 'v1', files: ['src/a.js'], commands: [{ command: 'true', exit_code: 0 }], evidence: ['ok'] },
+      { agent: impl, signal: EXEC_SIGNAL },
+    )
+    await byName(tools, 'team_flow_review_submit').execute(
+      {
+        item_id: 'W1',
+        verdict: 'request_changes',
+        summary: 'one issue',
+        findings: [{ id: 'F1', severity: 'major', file: 'src/a.js', line: 1, claim: 'bug' }],
+        evidence_checked: ['read src/a.js'],
+      },
+      { agent: rev, signal: EXEC_SIGNAL },
+    )
+    await byName(tools, 'team_flow_review_respond').execute(
+      { item_id: 'W1', responses: [{ finding_id: 'F1', state: 'fixed', evidence: 'patched' }] },
+      { agent: impl, signal: EXEC_SIGNAL },
+    )
+    const status = await byName(tools, 'team_flow_status').execute({ item_id: 'W1' }, { agent: rev, signal: EXEC_SIGNAL })
+    assert.equal(status.items[0].reviews.rework_rounds, 1, 'gate budget counts non-approving verdicts')
+    assert.equal(status.items[0].reviews.submitted_rounds, 1)
+    assert.equal(status.items[0].reviews.verdicts.length, 1, 'superseded/pending reviews are excluded')
+    assert.equal(status.items[0].reviews.verdicts[0].verdict, 'request_changes')
+
+    // reset_review without a reviewer picks the outstanding one.
+    const reset = await byName(tools, 'team_flow_repair').execute(
+      { item_id: 'W1', action: 'reset_review', reason: 'reviewer unavailable' },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    assert.equal(reset.item_status, 'in_review')
   })
 })

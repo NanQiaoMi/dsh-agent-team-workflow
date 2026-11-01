@@ -508,3 +508,53 @@ test('a multi-reviewer item can absorb one rework round without escalation', () 
   const approved = W.applyReviewSubmit(state, { itemId: 'W1', reviewer: 'rev2', verdict: 'approve', summary: 'ok', findings: [], evidenceChecked: ['re-read'], now: NOW })
   assert.equal(approved.item.status, W.ITEM_STATUS.APPROVED)
 })
+
+test('approve_with_nits accepts its observations instead of deadlocking the gate', () => {
+  const state = run([item()])
+  W.applyReport(state, { itemId: 'W1', caller: 'impl', report: report(), now: NOW, settings: SETTINGS })
+  const submitted = W.applyReviewSubmit(state, {
+    itemId: 'W1',
+    reviewer: 'rev',
+    verdict: 'approve_with_nits',
+    summary: 'ship it, with two cosmetic observations',
+    findings: [
+      { id: 'F1', severity: 'nit', file: 'src/core/run.js', line: 3, claim: 'naming could be clearer' },
+      { id: 'F2', severity: 'minor', claim: 'consider a JSdoc note' },
+    ],
+    evidenceChecked: ['read src/core/run.js'],
+    now: NOW,
+  })
+  assert.equal(submitted.item.status, W.ITEM_STATUS.APPROVED)
+  assert.equal(W.unresolvedFindings(state.items[0]).length, 0, 'approved observations are not rework')
+  assert.equal(state.items[0].reviews[0].findings[0].resolution.state, 'accepted_by_reviewer')
+  const gate = W.evaluateGates(state, { settings: SETTINGS, members: [], nativeTasks: [], overrides: [], now: NOW })
+  assert.equal(gate.pass, true, 'an early stop with nits must be able to converge')
+})
+
+test('re-reporting does not reset the rework budget', () => {
+  const state = run([item()])
+  let responded = null
+  for (let round = 1; round <= 2; round += 1) {
+    W.applyReport(state, { itemId: 'W1', caller: 'impl', report: report({ summary: `version ${round}` }), now: NOW, settings: SETTINGS })
+    W.applyReviewSubmit(state, {
+      itemId: 'W1',
+      reviewer: 'rev',
+      verdict: 'request_changes',
+      summary: `round ${round}`,
+      findings: [{ id: 'F1', severity: 'major', file: 'src/core/run.js', line: round, claim: `issue ${round}` }],
+      evidenceChecked: ['read it'],
+      now: NOW,
+    })
+    responded = W.applyReviewRespond(state, {
+      itemId: 'W1',
+      author: 'impl',
+      responses: [{ findingId: 'F1', state: 'fixed', evidence: `patched ${round}` }],
+      now: NOW,
+      settings: SETTINGS,
+    })
+    if (round === 1) assert.equal(responded.escalated, false)
+  }
+  assert.equal(responded.escalated, true, 'a third report cycle must not reset the budget')
+  assert.equal(state.items[0].status, W.ITEM_STATUS.ESCALATED)
+  assert.equal(state.escalations.length, 1)
+})

@@ -7,8 +7,8 @@
 
 | # | 验证项 | 方法 | 结论 |
 | --- | --- | --- | --- |
-| V1 | 引擎状态机正确性（计划校验、版本绑定、返修轮、升级、门禁、override、多 reviewer） | 离线单元测试 24 例 | ✅ 全绿 |
-| V2 | 8 个工具的参数/返回/权限/失败路径、评审/修复/内存态 | 集成测试 12 例（真实 `dsh-tools` 的 JSON-Schema 校验器） | ✅ 全绿 |
+| V1 | 引擎状态机正确性（计划校验、版本绑定、累计返修轮、nits 早停、升级、门禁、override、多 reviewer） | 离线单元测试 26 例 | ✅ 全绿 |
+| V2 | 8 个工具的参数/返回/权限/失败路径、评审/修复/内存态/override 传递 | 集成测试 14 例（真实 `dsh-tools` 的 JSON-Schema 校验器） | ✅ 全绿 |
 | V3 | 插件装配：per-Agent 注册/拆除、提示注入、配置开关、Team 隔离 | 装配测试 5 例（服务替身） | ✅ 全绿 |
 | V4 | bundle 能被 DSH 安装并激活（同一份清单与安装机制） | `plugin_manager install_bundle` → `application: applied`；`fiberPhase: active` | ✅ 已验证 |
 | V5 | per-Agent 工具注册 + 提示注入在本运行时真实生效 | 骨架版（同机制、仅 1 个诊断工具）被本 Agent 实际调用成功 | ✅ 已验证（骨架代） |
@@ -49,12 +49,12 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 实测结果（审阅修复后，原文见 [`evidence/test-run.txt`](evidence/test-run.txt)）：
 
 ```
-ℹ tests 41
-ℹ pass 41
+ℹ tests 45
+ℹ pass 45
 ℹ fail 0
 ```
 
-### 3.1 引擎（`test/engine.test.mjs`，24 例）
+### 3.1 引擎（`test/engine.test.mjs`，26 例）
 
 | 用例 | 覆盖点 |
 | --- | --- |
@@ -79,8 +79,10 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 | 证据质量（R-05） | 空命令、无 evidence、批准无 `evidence_checked` 均判失败 |
 | 成员名校验（R-14） | owner/reviewer 必须 lower-kebab-case |
 | 全量放弃评审 | 计划被标记警告 |
+| nits 早停（R-19） | `approve_with_nits` 的 findings 记为 `accepted_by_reviewer`，门禁通过、不指派返修 |
+| 累计返修预算（R-20） | 重新 report 不清零；第三轮返修触发升级 |
 
-### 3.2 工具集成（`test/tools.integration.test.mjs`，12 例）
+### 3.2 工具集成（`test/tools.integration.test.mjs`，14 例）
 
 - 8 个工具的 output schema 全部通过真实 `assertSupportedJsonSchema`；
 - 全链路：plan → status → report → review → gate → finalize（断言 `.agentteam/report.md` 与 `state.json` 落盘、backing task 状态、自动通知收件人）；
@@ -92,7 +94,9 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 - 内存模式（`writeArtifacts:false`）完整可用且不写工作区；
 - escalation 不改 item 状态；`team_flow_repair` 的 reopen 生效且非 Lead 被拒；
 - `status {item_id}` 返回完整 report/reviews；task revision 可见；
-- `workerContext:"fork"` 真正生效。
+- `workerContext:"fork"` 真正生效；
+- override 预览的 `next_actions` 回显参数，finalize 不带 overrides 会失败、带上则收敛且报告标注；
+- `status` 区分 `rework_rounds` / `submitted_rounds`，verdicts 不含 pending/superseded；`reset_review` 缺省 reviewer 可用。
 
 ### 3.3 装配（`test/plugin.test.mjs`，5 例）
 
