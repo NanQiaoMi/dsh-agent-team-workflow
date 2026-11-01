@@ -222,6 +222,25 @@ DSH 的 session 投影与事件类型属于运行时契约，插件**不应**新
 
 ---
 
+## 8.5 对等协作层（workflow v2）
+
+v1 的协调全部经过 Lead（委派式）。v2 加了一层**成员之间的直接协作协议**，目标是与 Claude Agent Teams 的
+"peer 互相沟通、共同推进"对齐，而不只是"Lead 派活、成员回报"。
+
+| 机制 | 黑板字段 | 工具 | 规则 |
+| --- | --- | --- | --- |
+| 对等频道 | `channel[]`（≤200，kind/refs/replyTo） | `team_flow_talk` | 成员直投（原生 `sendMessage`）+ 落板；Lead 不中转 |
+| 开放队列 | `items[].assignment="open"` + `claim` | `team_flow_work {action:"claim"/"release"}` | 无主项谁认领谁做；认领同时 claim 原生任务；未报告可释放 |
+| 互邀评审 | `reviewRequests[]` + `pendingReviewer` | `team_flow_work {action:"request_review"/"take_review"}` | 报告后可指名邀请或开放邀请；只有被邀请者能提交 verdict |
+| 议题协商 | `proposals[]`（kind/status/votes/tally） | `team_flow_decide {propose/vote/withdraw/resolve}` | 受影响成员各一票；`dod` 通过自动并入 DoD；平票升级 Lead 仲裁 |
+| 任务交接 | `items[].handoffs[]` | `team_flow_work {action:"handoff_offer/accept/decline"}` | 接受后 owner/claim/共享任务一起转移 |
+
+协作与门禁的关系（仍然强制，不被"协作"绕过）：
+- 开放队列的 item 被认领后与委派 item 走**完全相同**的报告/评审/门禁路径；
+- 未裁决的阻断提案（`dod`/`scope`/`replan`，含 escalated）会**拒绝 approve 并让 gate 失败**，直到成员投票或 Lead 仲裁；
+- 开放邀请/指名邀请都必须由 owner 之外的成员接受，自审仍被禁止；
+- 所有协作动作写 `events` + `channel`，看板可回放"谁在什么时候和谁协商了什么"。
+
 ## 9. 诚实边界：哪些是「强制」，哪些只是「约定 + 检查」
 
 | 能力 | 本插件提供 | 强度 | 残留风险 |

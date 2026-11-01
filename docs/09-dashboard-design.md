@@ -148,6 +148,33 @@ changes_requested=warn、escalated/pending failed=error、pending=idle。样式�
 **容错**：`run=null` → 空态卡片（提示"让 Lead 运行 team_flow_plan"）但仍渲染 team 拓扑；字段缺失一律用可选链 + 兜底；
 组件抛错不能白屏（顶层 try/catch 渲染错误卡片）。**可见文案全部走 `t()`**（zh/en 两套）。
 
+## 4b. v2 对等协作（快照与面板扩展）
+
+workflow v2 的协作数据进入快照（`SNAPSHOT_VERSION = 2`，只加字段，v1 快照仍可渲染）：
+
+```jsonc
+"collaboration": {
+  "channel": [{ "id","at","from","to","kind","text","itemId","findingId","proposalId","replyTo" }], // ≤60
+  "proposals": [{ "id","at","by","kind","itemId","text","status",
+                  "votes":[{"by","vote","comment","at"}],
+                  "tally":{ "yes","no","abstain","affected","total" },
+                  "resolvedAt","resolution" }],                                                   // ≤32
+  "openQueue": ["W3"],
+  "pendingReviews": [{ "itemId","requestedBy","reviewer","at" }],
+  "handoffs": [{ "itemId","by","to","reason","status","at" }],
+  "edges": [{ "from","to","count","kinds" }]                                                      // peer↔peer，≤64
+}
+```
+`items[]` 新增 `assignment` / `claim` / `reviewRequests` / `handoffs` / `thread`（≤20）/ `openProposals`。
+v1 黑板输出全空数组对象（非 null）。
+
+UI 增量：
+1. **协作频道**面板：消息流（from→to、kind 徽章、item 引用可点）、筛选 chip（全部/提问/回答/提案/交接/状态）；
+2. **提案与投票**面板：kind/status 徽章、投票条（yes/no/abstain + affected/total）、投票人、resolution；
+3. 流程图新增「待认领」lane（`openQueue`）+ `claim` 徽章 + `openProposals` 标记；
+4. 拓扑新增 peer↔peer 边（按 `edges.count` 加权），与 Lead→成员/owns/reviews 边区分；
+5. 详情抽屉新增「协作记录」（thread / reviewRequests / handoffs / 相关 proposals）。
+
 ## 5. 文件所有权（并行开发，禁止越界）
 
 | 负责人 | 只写这些文件 |

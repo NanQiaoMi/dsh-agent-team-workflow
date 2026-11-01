@@ -16,6 +16,9 @@ window.__ModuleLoader__.load({
     const MAX_MEMBERS = 16
     const MAX_ITEMS = 64
     const MAX_RECORDS = 12
+    /** Peer-collaboration caps mirrored from the Host contract (docs/12 §5). */
+    const CHANNEL_LIMIT = 60
+    const PROPOSAL_LIMIT = 32
 
     // ---------------------------------------------------------------------
     // Copy (zh is the key-set source of truth; the contract test enforces parity)
@@ -170,6 +173,73 @@ window.__ModuleLoader__.load({
       'drawer.none': '无',
       'common.none': '无',
       'common.unknown': '未知',
+      'channel.title': '协作频道',
+      'channel.count': '最近 {n} 条',
+      'channel.empty': '暂无协作消息',
+      'channel.replyTo': '回复 {id}',
+      'channel.filter.all': '全部',
+      'channel.filter.question': '提问',
+      'channel.filter.answer': '回答',
+      'channel.filter.proposal': '提案',
+      'channel.filter.handoff': '交接',
+      'channel.filter.status': '状态',
+      'channel.kind.note': '备注',
+      'channel.kind.question': '提问',
+      'channel.kind.answer': '回答',
+      'channel.kind.proposal': '提案',
+      'channel.kind.objection': '反对',
+      'channel.kind.handoff': '交接',
+      'channel.kind.ack': '收到',
+      'channel.kind.status': '状态',
+      'channel.kind.unknown': '消息',
+      'proposal.title': '提案与投票',
+      'proposal.count': '{n} 条',
+      'proposal.empty': '暂无提案',
+      'proposal.by': '由 {name} 发起',
+      'proposal.blocking': '阻断',
+      'proposal.affected': '受影响 {affected} 人 · 已投 {total} 票',
+      'proposal.resolution': '裁决',
+      'proposal.noVotes': '还没有人投票',
+      'proposal.vote.yes': '同意',
+      'proposal.vote.no': '反对',
+      'proposal.vote.abstain': '弃权',
+      'proposal.kind.dod': '完成定义',
+      'proposal.kind.scope': '范围',
+      'proposal.kind.replan': '重规划',
+      'proposal.kind.review_policy': '评审策略',
+      'proposal.kind.handoff': '交接',
+      'proposal.kind.unknown': '议题',
+      'proposal.status.open': '进行中',
+      'proposal.status.accepted': '已通过',
+      'proposal.status.rejected': '已否决',
+      'proposal.status.withdrawn': '已撤回',
+      'proposal.status.escalated': '已升级',
+      'proposal.status.unknown': '未知',
+      'collab.fromTo': '{from} → {to}',
+      'collab.team': '全队',
+      'topology.peerEdge': '同伴 ↔ 同伴',
+      'flow.claimed': '认领 {name}',
+      'flow.openAssignment': '待认领',
+      'flow.openQueue': '待认领队列',
+      'flow.proposalsOpen': '提案中 {n}',
+      'drawer.assignment': '分派方式',
+      'drawer.assignment.lead': 'Lead 指派',
+      'drawer.assignment.open': '开放队列',
+      'drawer.claim': '认领',
+      'drawer.collab': '协作记录',
+      'drawer.noCollab': '暂无协作记录',
+      'drawer.thread': '讨论串',
+      'drawer.reviewRequests': '评审邀请',
+      'drawer.review.openInvite': '开放邀请',
+      'drawer.review.status.open': '待回应',
+      'drawer.review.status.accepted': '已接受',
+      'drawer.review.status.declined': '已拒绝',
+      'drawer.handoffs': '任务交接',
+      'drawer.handoff.reason': '原因',
+      'drawer.handoff.status.offered': '待回应',
+      'drawer.handoff.status.accepted': '已接受',
+      'drawer.handoff.status.declined': '已拒绝',
+      'drawer.relatedProposals': '相关提案',
     }
 
     const en = {
@@ -321,6 +391,73 @@ window.__ModuleLoader__.load({
       'drawer.none': 'none',
       'common.none': 'none',
       'common.unknown': 'unknown',
+      'channel.title': 'Collaboration channel',
+      'channel.count': 'latest {n}',
+      'channel.empty': 'No collaboration messages yet',
+      'channel.replyTo': 'reply to {id}',
+      'channel.filter.all': 'all',
+      'channel.filter.question': 'question',
+      'channel.filter.answer': 'answer',
+      'channel.filter.proposal': 'proposal',
+      'channel.filter.handoff': 'handoff',
+      'channel.filter.status': 'status',
+      'channel.kind.note': 'note',
+      'channel.kind.question': 'question',
+      'channel.kind.answer': 'answer',
+      'channel.kind.proposal': 'proposal',
+      'channel.kind.objection': 'objection',
+      'channel.kind.handoff': 'handoff',
+      'channel.kind.ack': 'ack',
+      'channel.kind.status': 'status',
+      'channel.kind.unknown': 'message',
+      'proposal.title': 'Proposals and votes',
+      'proposal.count': '{n} item(s)',
+      'proposal.empty': 'No proposals yet',
+      'proposal.by': 'by {name}',
+      'proposal.blocking': 'blocking',
+      'proposal.affected': 'affected {affected} · votes {total}',
+      'proposal.resolution': 'resolution',
+      'proposal.noVotes': 'No votes yet',
+      'proposal.vote.yes': 'yes',
+      'proposal.vote.no': 'no',
+      'proposal.vote.abstain': 'abstain',
+      'proposal.kind.dod': 'DoD',
+      'proposal.kind.scope': 'scope',
+      'proposal.kind.replan': 'replan',
+      'proposal.kind.review_policy': 'review policy',
+      'proposal.kind.handoff': 'handoff',
+      'proposal.kind.unknown': 'topic',
+      'proposal.status.open': 'open',
+      'proposal.status.accepted': 'accepted',
+      'proposal.status.rejected': 'rejected',
+      'proposal.status.withdrawn': 'withdrawn',
+      'proposal.status.escalated': 'escalated',
+      'proposal.status.unknown': 'unknown',
+      'collab.fromTo': '{from} → {to}',
+      'collab.team': 'team',
+      'topology.peerEdge': 'peer ↔ peer',
+      'flow.claimed': 'claimed by {name}',
+      'flow.openAssignment': 'unclaimed',
+      'flow.openQueue': 'Open queue',
+      'flow.proposalsOpen': '{n} proposal(s)',
+      'drawer.assignment': 'assignment',
+      'drawer.assignment.lead': 'assigned by Lead',
+      'drawer.assignment.open': 'open queue',
+      'drawer.claim': 'claim',
+      'drawer.collab': 'Collaboration record',
+      'drawer.noCollab': 'No collaboration records',
+      'drawer.thread': 'thread',
+      'drawer.reviewRequests': 'review requests',
+      'drawer.review.openInvite': 'open invite',
+      'drawer.review.status.open': 'open',
+      'drawer.review.status.accepted': 'accepted',
+      'drawer.review.status.declined': 'declined',
+      'drawer.handoffs': 'handoffs',
+      'drawer.handoff.reason': 'reason',
+      'drawer.handoff.status.offered': 'offered',
+      'drawer.handoff.status.accepted': 'accepted',
+      'drawer.handoff.status.declined': 'declined',
+      'drawer.relatedProposals': 'related proposals',
     }
 
     // ---------------------------------------------------------------------
@@ -333,9 +470,16 @@ window.__ModuleLoader__.load({
     const VERDICT_TONES = { approve: 'success', approve_with_nits: 'success', request_changes: 'warn', block: 'error' }
     const SEVERITY_TONES = { blocker: 'error', major: 'error', minor: 'warn', nit: 'idle' }
     const EVENT_FAMILIES = ['all', 'review', 'escalation', 'repair', 'report']
+    const CHANNEL_KIND_TONES = { note: 'idle', question: 'brand', answer: 'success', proposal: 'warn', objection: 'error', handoff: 'brand', ack: 'idle', status: 'idle' }
+    const PROPOSAL_STATUS_TONES = { open: 'brand', accepted: 'success', rejected: 'error', withdrawn: 'idle', escalated: 'error' }
+    const VOTE_TONES = { yes: 'success', no: 'error', abstain: 'idle' }
+    const REVIEW_REQUEST_TONES = { open: 'warn', accepted: 'success', declined: 'idle' }
+    const HANDOFF_TONES = { offered: 'warn', accepted: 'success', declined: 'idle' }
+    const CHANNEL_FILTERS = ['all', 'question', 'answer', 'proposal', 'handoff', 'status']
+    const PROPOSAL_BLOCKING_KINDS = ['dod', 'scope', 'replan']
     const FLOW = {
       cardWidth: 180,
-      cardHeight: 112,
+      cardHeight: 126,
       columnGap: 64,
       rowGap: 28,
       padX: 12,
@@ -370,6 +514,11 @@ window.__ModuleLoader__.load({
       return Array.isArray(value) ? value : []
     }
 
+    /** @returns whether the value is a plain record (not an array, not null). */
+    function isRecord(value) {
+      return value !== null && typeof value === 'object' && !Array.isArray(value)
+    }
+
     /** @returns `[ISO string] -> epoch ms`, `NaN` when unparsable. */
     function parseTime(value) {
       if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -387,6 +536,12 @@ window.__ModuleLoader__.load({
     function linkPath(x1, y1, x2, y2) {
       const mid = (y1 + y2) / 2
       return 'M' + round1(x1) + ',' + round1(y1) + ' C' + round1(x1) + ',' + round1(mid) + ' ' + round1(x2) + ',' + round1(mid) + ' ' + round1(x2) + ',' + round1(y2)
+    }
+
+    /** @returns a sideways cubic path between two peer nodes (peer↔peer links). */
+    function peerPath(x1, y1, x2, y2) {
+      const midX = (x1 + x2) / 2
+      return 'M' + round1(x1) + ',' + round1(y1) + ' C' + round1(midX) + ',' + round1(y1) + ' ' + round1(midX) + ',' + round1(y2) + ' ' + round1(x2) + ',' + round1(y2)
     }
 
     /** @returns a human message for a thrown value. */
@@ -488,6 +643,42 @@ window.__ModuleLoader__.load({
       return tr('drawer.resolution.' + value, undefined, value)
     }
 
+    /** @returns a translated channel-message-kind label (docs/12 §2). */
+    function channelKindLabel(tr, kind) {
+      const value = str(kind, 'note')
+      return tr('channel.kind.' + value, undefined, tr('channel.kind.unknown'))
+    }
+
+    /** @returns a translated proposal-kind label. */
+    function proposalKindLabel(tr, kind) {
+      const value = str(kind, 'dod')
+      return tr('proposal.kind.' + value, undefined, tr('proposal.kind.unknown'))
+    }
+
+    /** @returns a translated proposal-status label. */
+    function proposalStatusLabel(tr, status) {
+      const value = str(status, 'open')
+      return tr('proposal.status.' + value, undefined, tr('proposal.status.unknown'))
+    }
+
+    /** @returns a translated review-request status label. */
+    function reviewRequestStatusLabel(tr, status) {
+      const value = str(status, 'open')
+      return tr('drawer.review.status.' + value, undefined, value)
+    }
+
+    /** @returns a translated handoff status label. */
+    function handoffStatusLabel(tr, status) {
+      const value = str(status, 'offered')
+      return tr('drawer.handoff.status.' + value, undefined, value)
+    }
+
+    /** @returns `yes` / `no` / `abstain` (unknown votes read as abstain). */
+    function normalizeVoteValue(value) {
+      const vote = str(value, 'abstain')
+      return vote === 'yes' || vote === 'no' || vote === 'abstain' ? vote : 'abstain'
+    }
+
     // ---------------------------------------------------------------------
     // Snapshot normalization (never throws; all fields optional)
     // ---------------------------------------------------------------------
@@ -548,6 +739,12 @@ window.__ModuleLoader__.load({
         openFindings: num(item.openFindings, 0),
         override: typeof item.override === 'string' && item.override !== '' ? item.override : null,
         repairLog: normalizeRepairLog(item),
+        assignment: str(item.assignment, 'lead') === 'open' ? 'open' : 'lead',
+        claim: normalizeClaimOrNull(item.claim),
+        reviewRequests: toArray(item.reviewRequests).filter(isRecord).map(normalizeReviewRequest),
+        handoffs: toArray(item.handoffs).filter(isRecord).map(normalizeHandoff),
+        thread: toArray(item.thread).filter(isRecord).map(normalizeChannelEntry),
+        openProposals: num(item.openProposals, 0),
       }
     }
 
@@ -656,6 +853,146 @@ window.__ModuleLoader__.load({
       return {
         boardSource: str(diagnostics.boardSource, 'missing'),
         warnings: toArray(diagnostics.warnings).map((value) => str(value)).filter(Boolean).slice(0, 8),
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // Peer collaboration (docs/12 §5): one channel, proposals with tallies,
+    // open queue, review invitations, handoffs, and peer-message edges.
+    // Every field is optional so a v1 snapshot renders the v1 board.
+    // ---------------------------------------------------------------------
+
+    function normalizeChannelEntry(raw) {
+      const entry = isRecord(raw) ? raw : {}
+      const refs = isRecord(entry.refs) ? entry.refs : {}
+      return {
+        id: str(entry.id, '?'),
+        at: parseTime(entry.at),
+        from: str(entry.from, '?'),
+        to: str(entry.to, 'team'),
+        kind: str(entry.kind, 'note'),
+        text: str(entry.text),
+        itemId: str(entry.itemId, str(refs.itemId)),
+        findingId: str(entry.findingId, str(refs.findingId)),
+        proposalId: str(entry.proposalId, str(refs.proposalId)),
+        replyTo: str(entry.replyTo),
+      }
+    }
+
+    function normalizeVote(raw) {
+      const vote = isRecord(raw) ? raw : {}
+      return {
+        by: str(vote.by, '?'),
+        at: parseTime(vote.at),
+        vote: normalizeVoteValue(vote.vote),
+        comment: str(vote.comment),
+      }
+    }
+
+    function normalizeProposal(raw) {
+      const proposal = isRecord(raw) ? raw : {}
+      const votes = toArray(proposal.votes).filter(isRecord).map(normalizeVote)
+      const tallyRaw = isRecord(proposal.tally) ? proposal.tally : {}
+      const tally = {
+        yes: num(tallyRaw.yes, votes.filter((vote) => vote.vote === 'yes').length),
+        no: num(tallyRaw.no, votes.filter((vote) => vote.vote === 'no').length),
+        abstain: num(tallyRaw.abstain, votes.filter((vote) => vote.vote === 'abstain').length),
+        affected: num(tallyRaw.affected, votes.length),
+        total: num(tallyRaw.total, Math.max(num(tallyRaw.affected, votes.length), votes.length)),
+      }
+      return {
+        id: str(proposal.id, '?'),
+        at: parseTime(proposal.at),
+        by: str(proposal.by, '?'),
+        kind: str(proposal.kind, 'unknown'),
+        itemId: str(proposal.itemId),
+        text: str(proposal.text),
+        status: str(proposal.status, 'open'),
+        votes,
+        tally,
+        resolvedAt: parseTime(proposal.resolvedAt),
+        resolution: str(proposal.resolution),
+      }
+    }
+
+    function normalizeClaim(raw) {
+      const claim = isRecord(raw) ? raw : {}
+      const lease = num(claim.leaseMinutes, Number.NaN)
+      return {
+        by: str(claim.by),
+        at: parseTime(claim.at),
+        leaseMinutes: Number.isFinite(lease) ? lease : null,
+        note: str(claim.note),
+      }
+    }
+
+    /** @returns the claim, or null when the item is unclaimed/malformed. */
+    function normalizeClaimOrNull(raw) {
+      if (!isRecord(raw)) return null
+      const claim = normalizeClaim(raw)
+      return claim.by === '' ? null : claim
+    }
+
+    function normalizeReviewRequest(raw) {
+      const request = isRecord(raw) ? raw : {}
+      const status = str(request.status, 'open')
+      return {
+        by: str(request.by, '?'),
+        at: parseTime(request.at),
+        reviewer: str(request.reviewer),
+        status: status === 'open' || status === 'accepted' || status === 'declined' ? status : 'open',
+        respondedAt: parseTime(request.respondedAt),
+        response: str(request.response),
+      }
+    }
+
+    function normalizeHandoff(raw) {
+      const handoff = isRecord(raw) ? raw : {}
+      const status = str(handoff.status, 'offered')
+      return {
+        itemId: str(handoff.itemId),
+        by: str(handoff.by, '?'),
+        at: parseTime(handoff.at),
+        to: str(handoff.to, '?'),
+        reason: str(handoff.reason),
+        status: status === 'offered' || status === 'accepted' || status === 'declined' ? status : 'offered',
+        respondedAt: parseTime(handoff.respondedAt),
+      }
+    }
+
+    function normalizePeerEdge(raw) {
+      const edge = isRecord(raw) ? raw : {}
+      return {
+        from: str(edge.from, '?'),
+        to: str(edge.to, '?'),
+        count: Math.max(1, num(edge.count, 1)),
+        kinds: toArray(edge.kinds).map((value) => str(value)).filter(Boolean),
+      }
+    }
+
+    function normalizePendingReview(raw) {
+      const pending = isRecord(raw) ? raw : {}
+      return {
+        itemId: str(pending.itemId),
+        requestedBy: str(pending.requestedBy, '?'),
+        reviewer: str(pending.reviewer),
+        at: parseTime(pending.at),
+      }
+    }
+
+    /** @returns the normalized `run.collaboration` block (`present=false` for v1). */
+    function normalizeCollaboration(run) {
+      const raw = isRecord(run) && isRecord(run.collaboration) ? run.collaboration : null
+      if (raw === null) {
+        return { channel: [], proposals: [], openQueue: [], pendingReviews: [], handoffs: [], edges: [] }
+      }
+      return {
+        channel: toArray(raw.channel).filter(isRecord).map(normalizeChannelEntry),
+        proposals: toArray(raw.proposals).filter(isRecord).map(normalizeProposal),
+        openQueue: toArray(raw.openQueue).map((value) => str(value)).filter(Boolean),
+        pendingReviews: toArray(raw.pendingReviews).filter(isRecord).map(normalizePendingReview),
+        handoffs: toArray(raw.handoffs).filter(isRecord).map(normalizeHandoff),
+        edges: toArray(raw.edges).filter(isRecord).map(normalizePeerEdge),
       }
     }
 
@@ -788,7 +1125,7 @@ window.__ModuleLoader__.load({
      * reviewer→item links.
      * @returns `{ lead, memberNodes, itemNodes, edges }`.
      */
-    function computeTopology(team, items) {
+    function computeTopology(team, items, collaboration) {
       const leadName = team.me && team.me.name ? team.me.name : ''
       const lead = { x: 50, y: 13, name: leadName }
       const memberSpread = spreadNodes(team.members.length, 45, 39, 57)
@@ -815,6 +1152,8 @@ window.__ModuleLoader__.load({
       }
       const byName = new Map()
       for (const node of memberNodes) if (!byName.has(node.member.name)) byName.set(node.member.name, node)
+      // Peer links may target the Lead too (a member can message the Lead directly).
+      if (leadName !== '' && !byName.has(leadName)) byName.set(leadName, { x: lead.x, y: lead.y, key: 'lead' })
       for (const node of itemNodes) {
         const owner = byName.get(node.item.owner)
         if (owner !== undefined) {
@@ -834,11 +1173,37 @@ window.__ModuleLoader__.load({
           })
         }
       }
+      const peerEdges = []
+      for (const edge of toArray(collaboration && collaboration.edges)) {
+        if (edge.from === edge.to) continue
+        const fromNode = byName.get(edge.from)
+        const toNode = byName.get(edge.to)
+        if (fromNode === undefined || toNode === undefined) continue
+        const weight = Math.max(1, Math.min(9, num(edge.count, 1)))
+        peerEdges.push({
+          key: 'peer-' + edge.from + '-' + edge.to,
+          from: edge.from,
+          to: edge.to,
+          count: weight,
+          kinds: edge.kinds,
+          d: peerPath(fromNode.x, fromNode.y, toNode.x, toNode.y),
+          width: round1(1 + weight * 0.28),
+          opacity: round1(Math.min(0.9, 0.35 + weight * 0.07)),
+        })
+      }
+      // docs/12 §6: once peers talk to each other, de-emphasize the Lead spokes
+      // so the board reads "peers collaborating", not only "Lead dispatching".
+      const hasPeerEdges = peerEdges.length > 0
+      if (hasPeerEdges) {
+        for (const edge of edges) if (edge.className === 'atw-edge--lead') edge.className = 'atw-edge--lead atw-edge--lead-muted'
+      }
       return {
         lead,
         memberNodes,
         itemNodes,
         edges,
+        peerEdges,
+        hasPeerEdges,
         memberWidth: nodeWidth(memberSpread.perRow, 34, 9),
         itemWidth: nodeWidth(itemSpread.perRow, 11, 5),
       }
@@ -912,7 +1277,7 @@ window.__ModuleLoader__.load({
 .atw-card-id{flex:none;font-size:12px;font-weight:600}
 .atw-card-subject{max-height:30px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;font-size:12px;line-height:15px}
 .atw-card-meta{overflow:hidden;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:15px;white-space:nowrap;text-overflow:ellipsis}
-.atw-card-flags{display:flex;align-items:center;gap:5px;margin-top:auto;overflow:hidden;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:15px}
+.atw-card-flags{display:flex;align-items:center;gap:5px;flex-wrap:wrap;max-height:32px;margin-top:auto;overflow:hidden;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:15px}
 .atw-card-pending{overflow:hidden;color:var(--dsw-alias-state-warn-primary);white-space:nowrap;text-overflow:ellipsis}
 .atw-topo-canvas{position:relative;height:280px;border-radius:8px;background:var(--dsw-alias-bg-base);overflow:hidden}
 .atw-topo-svg{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;color:var(--dsw-alias-label-secondary)}
@@ -995,6 +1360,46 @@ window.__ModuleLoader__.load({
 .atw-record-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
 .atw-record-summary{color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
 .atw-right{min-width:0;margin-left:auto}
+.atw-collab{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:12px;align-items:start;min-width:0}
+@media (max-width:1180px){.atw-collab{grid-template-columns:minmax(0,1fr)}}
+.atw-flow-stack{display:flex;flex-direction:column;gap:8px;min-width:0}
+.atw-open-queue{display:flex;flex-direction:column;gap:6px;min-width:0}
+.atw-open-queue-label{color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.atw-open-queue-cards{display:flex;gap:8px;flex-wrap:wrap;min-width:0}
+.atw-open-card{display:flex;flex-direction:column;gap:2px;box-sizing:border-box;width:168px;padding:6px 9px;border:1px dashed var(--dsw-alias-border-l2);border-radius:8px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:16px;text-align:left;cursor:pointer;min-width:0}
+.atw-open-card:hover{background:var(--dsw-alias-bg-overlay)}
+.atw-open-card:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.atw-open-card-head{display:flex;align-items:center;gap:4px;min-width:0}
+.atw-open-card-subject{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.atw-open-card-meta{overflow:hidden;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:15px;white-space:nowrap;text-overflow:ellipsis}
+.atw-channel{display:flex;flex-direction:column;max-height:340px;overflow:auto}
+.atw-channel-item{display:flex;flex-direction:column;gap:2px;min-width:0;padding:5px 12px;border-bottom:0.5px solid var(--dsw-alias-border-l1)}
+.atw-channel-item:last-child{border-bottom:none}
+.atw-channel-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
+.atw-channel-from{min-width:0;max-width:46%;overflow:hidden;font-size:12px;line-height:17px;white-space:nowrap;text-overflow:ellipsis}
+.atw-channel-time{margin-left:auto;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;white-space:nowrap}
+.atw-channel-ref{box-sizing:border-box;border:0.5px solid var(--dsw-alias-border-l2);border-radius:999px;background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;font-size:11px;line-height:16px;padding:0 7px;cursor:pointer}
+.atw-channel-ref:hover{background:var(--dsw-alias-bg-overlay)}
+.atw-channel-ref:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.atw-channel-text{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;font-size:12px;line-height:17px;overflow-wrap:anywhere}
+.atw-proposal-list{display:flex;flex-direction:column;gap:8px;max-height:340px;overflow:auto}
+.atw-proposal{display:flex;flex-direction:column;gap:4px;box-sizing:border-box;min-width:0;padding:7px 8px;border:0.5px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}
+.atw-proposal--blocking{border-color:var(--dsw-alias-state-warn-primary)}
+.atw-proposal-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
+.atw-proposal-by{color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px}
+.atw-proposal-text{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:12px;line-height:17px;overflow-wrap:anywhere}
+.atw-proposal-tally{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.atw-proposal-meta{color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px}
+.atw-proposal-voters{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.atw-proposal-resolution{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:17px;overflow-wrap:anywhere}
+.atw-edge--peer{color:var(--dsw-alias-state-warn-primary);opacity:.6}
+.atw-edge--lead-muted{opacity:.22}
+.atw-legend-line--peer{border-top-color:var(--dsw-alias-state-warn-primary);opacity:.8}
+.atw-collab-list{display:flex;flex-direction:column;gap:6px;min-width:0}
+.atw-collab-row{display:flex;flex-direction:column;gap:2px;box-sizing:border-box;min-width:0;padding:5px 7px;border:0.5px solid var(--dsw-alias-border-l1);border-radius:6px;background:var(--dsw-alias-bg-layer-1)}
+.atw-collab-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
+.atw-collab-text{font-size:12px;line-height:17px;overflow-wrap:anywhere}
+.atw-collab-sub{color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;overflow-wrap:anywhere}
 @keyframes atw-pulse{0%,100%{opacity:1}50%{opacity:.45}}
 @media (prefers-reduced-motion:reduce){.atw-node--st-running{animation:none}}
 `
@@ -1124,6 +1529,9 @@ window.__ModuleLoader__.load({
       if (reviews.pendingReviewer !== '') className += ' atw-card--pending-review'
       if (selected) className += ' atw-card--selected'
       const open = Number.isFinite(item.openFindings) && item.openFindings > 0
+      const claimBy = item.claim === null ? '' : item.claim.by
+      const claimable = item.assignment === 'open' && claimBy === '' && item.status === 'pending'
+      const proposalsOpen = Number.isFinite(item.openProposals) && item.openProposals > 0
       return h(
         'div',
         {
@@ -1155,9 +1563,38 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'atw-card-flags' },
           h('span', { key: 'round' }, tr('flow.round', { submitted: reviews.submittedRounds, max: reviews.maxRounds })),
+          claimBy !== '' ? badge(tr('flow.claimed', { name: claimBy }), 'brand', 'claim') : null,
+          claimable ? badge(tr('flow.openAssignment'), 'warn', 'open') : null,
+          proposalsOpen ? badge(tr('flow.proposalsOpen', { n: item.openProposals }), 'warn', 'proposals') : null,
           open ? badge(tr('flow.findings', { n: item.openFindings }), 'warn', 'findings') : null,
           reviews.pendingReviewer !== '' ? h('span', { key: 'pending', className: 'atw-card-pending' }, tr('flow.pendingReviewer', { name: reviews.pendingReviewer })) : null,
         ),
+      )
+    }
+
+    function renderOpenQueueCard(view, entry) {
+      const tr = view.tr
+      const item = entry.item
+      const subject = item === null ? '' : item.subject
+      return h(
+        'div',
+        {
+          key: entry.key,
+          className: 'atw-open-card',
+          role: 'button',
+          tabIndex: 0,
+          title: entry.id + (subject !== '' ? ' · ' + subject : ''),
+          onClick: () => view.actions.toggleItem(entry.id),
+          onKeyDown: (event) => {
+            if (event && (event.key === 'Enter' || event.key === ' ')) {
+              event.preventDefault()
+              view.actions.toggleItem(entry.id)
+            }
+          },
+        },
+        h('div', { className: 'atw-open-card-head' }, h('span', { className: 'atw-card-id' }, entry.id), badge(tr('flow.openAssignment'), 'warn', 'open')),
+        h('div', { className: 'atw-open-card-subject' }, str(subject, tr('drawer.none'))),
+        h('div', { className: 'atw-open-card-meta' }, tr('flow.owner', { name: tr('drawer.none') })),
       )
     }
 
@@ -1223,18 +1660,31 @@ window.__ModuleLoader__.load({
                 layout.cards.map((card) => renderItemCard(view, card)),
               ),
             )
+      const collaboration = normalizeCollaboration(run)
+      const byId = new Map()
+      for (const card of layout.cards) if (!byId.has(card.item.id)) byId.set(card.item.id, card.item)
+      const queue = collaboration.openQueue.map((id, index) => ({ key: 'open-' + index + '-' + id, id, item: byId.get(id) || null }))
+      const lane =
+        queue.length === 0
+          ? null
+          : h(
+              'div',
+              { className: 'atw-open-queue' },
+              h('div', { className: 'atw-open-queue-label' }, tr('flow.openQueue')),
+              h('div', { className: 'atw-open-queue-cards' }, queue.map((entry) => renderOpenQueueCard(view, entry))),
+            )
       return h(
         'section',
         { className: 'atw-panel' },
         panelHead(tr('flow.title'), tr('flow.hint')),
-        h('div', { className: 'atw-panel-body' }, body),
+        h('div', { className: 'atw-panel-body' }, h('div', { className: 'atw-flow-stack' }, lane, body)),
       )
     }
 
     function renderTopologyPanel(view, team, run) {
       const tr = view.tr
       const items = run ? toArray(run.items).map(normalizeItem) : []
-      const topology = computeTopology(team, items)
+      const topology = computeTopology(team, items, normalizeCollaboration(run))
       const hint = tr('topology.members') + ' ' + team.members.length + ' · ' + tr('topology.items') + ' ' + items.length
       const empty = team.members.length === 0 && items.length === 0
       return h(
@@ -1247,12 +1697,25 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { className: 'atw-topo-canvas' },
-            topology.edges.length > 0
+            topology.edges.length > 0 || topology.peerEdges.length > 0
               ? h(
                   'svg',
                   { className: 'atw-topo-svg', viewBox: '0 0 100 100', preserveAspectRatio: 'none', 'aria-hidden': true },
                   topology.edges.map((edge) =>
                     h('path', { key: edge.key, className: 'atw-edge ' + edge.className, d: edge.d, vectorEffect: 'non-scaling-stroke' }),
+                  ),
+                  topology.peerEdges.map((edge) =>
+                    h(
+                      'path',
+                      {
+                        key: edge.key,
+                        className: 'atw-edge atw-edge--peer',
+                        d: edge.d,
+                        style: { strokeWidth: edge.width, opacity: edge.opacity },
+                        vectorEffect: 'non-scaling-stroke',
+                      },
+                      h('title', null, edge.from + ' ↔ ' + edge.to + ' · ' + edge.count),
+                    ),
                   ),
                 )
               : null,
@@ -1298,6 +1761,7 @@ window.__ModuleLoader__.load({
             legendLine('legend-lead', tr('topology.leadEdge')),
             legendLine('legend-owns', tr('topology.ownsEdge'), 'atw-legend-line--owns'),
             legendLine('legend-reviews', tr('topology.reviewsEdge'), 'atw-legend-line--review'),
+            topology.hasPeerEdges ? legendLine('legend-peer', tr('topology.peerEdge'), 'atw-legend-line--peer') : null,
           ),
         ),
       )
@@ -1538,7 +2002,285 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function renderDrawer(view, item) {
+    function renderChannelRow(view, entry, index, options) {
+      const tr = view.tr
+      const to = entry.to === 'team' || entry.to === '' ? tr('collab.team') : entry.to
+      const reply = entry.replyTo === '' ? undefined : tr('channel.replyTo', { id: entry.replyTo })
+      const showRef = !(options !== undefined && options.hideRef === true)
+      return h(
+        'div',
+        { key: 'channel-' + index + '-' + entry.id, className: 'atw-channel-item', title: reply },
+        h(
+          'div',
+          { className: 'atw-channel-head' },
+          badge(channelKindLabel(tr, entry.kind), CHANNEL_KIND_TONES[entry.kind] || 'idle', 'kind'),
+          h('span', { className: 'atw-channel-from' }, tr('collab.fromTo', { from: entry.from, to })),
+          showRef && entry.itemId !== ''
+            ? h(
+                'button',
+                { key: 'ref', type: 'button', className: 'atw-channel-ref', title: entry.itemId, onClick: () => view.actions.toggleItem(entry.itemId) },
+                entry.itemId,
+              )
+            : null,
+          h('span', { className: 'atw-channel-time' }, relativeTime(entry.at, view.now, tr)),
+        ),
+        h('div', { className: 'atw-channel-text' }, entry.text),
+      )
+    }
+
+    /** Newest-first channel stream with kind filters (docs/12 §6.1). */
+    function renderChannelPanel(view, run) {
+      const tr = view.tr
+      const collaboration = normalizeCollaboration(run)
+      const ordered = collaboration.channel.slice().sort((left, right) => {
+        const a = Number.isFinite(left.at) ? left.at : 0
+        const b = Number.isFinite(right.at) ? right.at : 0
+        return a - b
+      })
+      const capped = ordered.slice(-CHANNEL_LIMIT).reverse()
+      const active = view.channelFilter
+      const filtered = active === 'all' ? capped : capped.filter((entry) => entry.kind === active)
+      const head = h(
+        'div',
+        { className: 'atw-panel-head' },
+        h(
+          'span',
+          { className: 'atw-panel-title' },
+          tr('channel.title'),
+          h('span', { className: 'atw-panel-hint' }, ' ' + tr('channel.count', { n: filtered.length })),
+        ),
+        h(
+          'div',
+          { className: 'atw-filters' },
+          CHANNEL_FILTERS.map((family) =>
+            h(
+              'button',
+              {
+                key: family,
+                type: 'button',
+                className: 'atw-filter' + (active === family ? ' atw-filter--active' : ''),
+                onClick: () => view.actions.setChannelFilter(family),
+              },
+              tr('channel.filter.' + family),
+            ),
+          ),
+        ),
+      )
+      const body =
+        filtered.length === 0
+          ? h('div', { className: 'atw-panel-body' }, h('div', { className: 'atw-muted' }, tr('channel.empty')))
+          : h(
+              'div',
+              { className: 'atw-panel-body atw-panel-body--flush' },
+              h('div', { className: 'atw-channel' }, filtered.map((entry, index) => renderChannelRow(view, entry, index))),
+            )
+      return h('section', { className: 'atw-panel' }, head, body)
+    }
+
+    function renderProposalCard(view, proposal, index) {
+      const tr = view.tr
+      const tally = proposal.tally
+      const blocking = proposal.status === 'open' && PROPOSAL_BLOCKING_KINDS.indexOf(proposal.kind) !== -1
+      return h(
+        'div',
+        { key: 'proposal-' + index + '-' + proposal.id, className: 'atw-proposal' + (blocking ? ' atw-proposal--blocking' : '') },
+        h(
+          'div',
+          { className: 'atw-proposal-head' },
+          badge(proposalKindLabel(tr, proposal.kind), 'idle', 'kind'),
+          badge(proposalStatusLabel(tr, proposal.status), PROPOSAL_STATUS_TONES[proposal.status] || 'idle', 'status'),
+          blocking ? badge(tr('proposal.blocking'), 'warn', 'blocking') : null,
+          proposal.itemId !== ''
+            ? h(
+                'button',
+                { key: 'ref', type: 'button', className: 'atw-channel-ref', title: proposal.itemId, onClick: () => view.actions.toggleItem(proposal.itemId) },
+                proposal.itemId,
+              )
+            : null,
+          h('span', { className: 'atw-proposal-by' }, tr('proposal.by', { name: proposal.by })),
+          h('span', { className: 'atw-channel-time' }, relativeTime(proposal.at, view.now, tr)),
+        ),
+        h('div', { className: 'atw-proposal-text' }, proposal.text),
+        h(
+          'div',
+          { className: 'atw-proposal-tally' },
+          badge(tr('proposal.vote.yes') + ' ' + tally.yes, 'success', 'yes'),
+          badge(tr('proposal.vote.no') + ' ' + tally.no, 'error', 'no'),
+          badge(tr('proposal.vote.abstain') + ' ' + tally.abstain, 'idle', 'abstain'),
+          h('span', { className: 'atw-proposal-meta' }, tr('proposal.affected', { affected: tally.affected, total: tally.total })),
+        ),
+        proposal.votes.length === 0
+          ? h('div', { className: 'atw-proposal-meta' }, tr('proposal.noVotes'))
+          : h(
+              'div',
+              { className: 'atw-proposal-voters' },
+              proposal.votes.map((vote, voterIndex) => badge(vote.by, VOTE_TONES[vote.vote] || 'idle', 'voter-' + voterIndex)),
+            ),
+        proposal.resolution !== '' ? h('div', { className: 'atw-proposal-resolution' }, tr('proposal.resolution') + ': ' + proposal.resolution) : null,
+      )
+    }
+
+    /** Newest-first proposal list with tallies and voters (docs/12 §6.2). */
+    function renderProposalsPanel(view, run) {
+      const tr = view.tr
+      const collaboration = normalizeCollaboration(run)
+      const ordered = collaboration.proposals.slice().sort((left, right) => {
+        const a = Number.isFinite(left.at) ? left.at : 0
+        const b = Number.isFinite(right.at) ? right.at : 0
+        return a - b
+      })
+      const proposals = ordered.slice(-PROPOSAL_LIMIT).reverse()
+      const body =
+        proposals.length === 0
+          ? h('div', { className: 'atw-panel-body' }, h('div', { className: 'atw-muted' }, tr('proposal.empty')))
+          : h(
+              'div',
+              { className: 'atw-panel-body' },
+              h('div', { className: 'atw-proposal-list' }, proposals.map((proposal, index) => renderProposalCard(view, proposal, index))),
+            )
+      return h('section', { className: 'atw-panel' }, panelHead(tr('proposal.title'), tr('proposal.count', { n: proposals.length })), body)
+    }
+
+    /** Drawer block: this item's thread, review invitations, handoffs, proposals. */
+    function renderCollabSection(view, item, collaboration) {
+      const tr = view.tr
+      const blocks = []
+      const thread = item.thread.slice(-MAX_RECORDS)
+      if (thread.length > 0) {
+        blocks.push(
+          h(
+            'div',
+            { key: 'thread', className: 'atw-section' },
+            h('div', { className: 'atw-section-title' }, tr('drawer.thread')),
+            h('div', { className: 'atw-collab-list' }, thread.map((entry, index) => renderChannelRow(view, entry, index, { hideRef: true }))),
+          ),
+        )
+      }
+      const reviewRequests =
+        item.reviewRequests.length > 0
+          ? item.reviewRequests
+          : toArray(collaboration.pendingReviews)
+              .filter((pending) => pending.itemId !== '' && pending.itemId === item.id)
+              .map((pending) => ({ by: pending.requestedBy, at: pending.at, reviewer: pending.reviewer, status: 'open', respondedAt: Number.NaN, response: '' }))
+      if (reviewRequests.length > 0) {
+        blocks.push(
+          h(
+            'div',
+            { key: 'review-requests', className: 'atw-section' },
+            h('div', { className: 'atw-section-title' }, tr('drawer.reviewRequests')),
+            h(
+              'div',
+              { className: 'atw-collab-list' },
+              reviewRequests.map((request, index) =>
+                h(
+                  'div',
+                  { key: 'review-request-' + index, className: 'atw-collab-row' },
+                  h(
+                    'div',
+                    { className: 'atw-collab-head' },
+                    h(
+                      'span',
+                      { className: 'atw-collab-text' },
+                      tr('collab.fromTo', { from: request.by, to: request.reviewer === '' ? tr('drawer.review.openInvite') : request.reviewer }),
+                    ),
+                    badge(reviewRequestStatusLabel(tr, request.status), REVIEW_REQUEST_TONES[request.status] || 'idle'),
+                    h('span', { className: 'atw-collab-sub' }, relativeTime(request.at, view.now, tr)),
+                  ),
+                  request.response !== '' ? h('div', { className: 'atw-collab-sub' }, request.response) : null,
+                ),
+              ),
+            ),
+          ),
+        )
+      }
+      const handoffs =
+        item.handoffs.length > 0
+          ? item.handoffs
+          : toArray(collaboration.handoffs).filter((handoff) => handoff.itemId !== '' && handoff.itemId === item.id)
+      if (handoffs.length > 0) {
+        blocks.push(
+          h(
+            'div',
+            { key: 'handoffs', className: 'atw-section' },
+            h('div', { className: 'atw-section-title' }, tr('drawer.handoffs')),
+            h(
+              'div',
+              { className: 'atw-collab-list' },
+              handoffs.map((handoff, index) =>
+                h(
+                  'div',
+                  { key: 'handoff-' + index, className: 'atw-collab-row' },
+                  h(
+                    'div',
+                    { className: 'atw-collab-head' },
+                    h('span', { className: 'atw-collab-text' }, tr('collab.fromTo', { from: handoff.by, to: handoff.to })),
+                    badge(handoffStatusLabel(tr, handoff.status), HANDOFF_TONES[handoff.status] || 'idle'),
+                    h('span', { className: 'atw-collab-sub' }, relativeTime(handoff.at, view.now, tr)),
+                  ),
+                  handoff.reason !== '' ? h('div', { className: 'atw-collab-sub' }, tr('drawer.handoff.reason') + ': ' + handoff.reason) : null,
+                ),
+              ),
+            ),
+          ),
+        )
+      }
+      const related = collaboration.proposals.filter((proposal) => proposal.itemId !== '' && proposal.itemId === item.id)
+      if (related.length > 0) {
+        blocks.push(
+          h(
+            'div',
+            { key: 'related-proposals', className: 'atw-section' },
+            h('div', { className: 'atw-section-title' }, tr('drawer.relatedProposals')),
+            h(
+              'div',
+              { className: 'atw-collab-list' },
+              related.map((proposal, index) =>
+                h(
+                  'div',
+                  { key: 'related-proposal-' + index, className: 'atw-collab-row' },
+                  h(
+                    'div',
+                    { className: 'atw-collab-head' },
+                    badge(proposalKindLabel(tr, proposal.kind), 'idle'),
+                    badge(proposalStatusLabel(tr, proposal.status), PROPOSAL_STATUS_TONES[proposal.status] || 'idle'),
+                    h(
+                      'span',
+                      { className: 'atw-collab-sub' },
+                      tr('proposal.vote.yes') +
+                        ' ' +
+                        proposal.tally.yes +
+                        ' · ' +
+                        tr('proposal.vote.no') +
+                        ' ' +
+                        proposal.tally.no +
+                        ' · ' +
+                        tr('proposal.vote.abstain') +
+                        ' ' +
+                        proposal.tally.abstain,
+                    ),
+                  ),
+                  h('div', { className: 'atw-collab-text' }, proposal.text),
+                  proposal.resolution !== ''
+                    ? h('div', { className: 'atw-collab-sub' }, tr('proposal.resolution') + ': ' + proposal.resolution)
+                    : null,
+                ),
+              ),
+            ),
+          ),
+        )
+      }
+      if (blocks.length === 0) {
+        return h(
+          'div',
+          { key: 'collab', className: 'atw-section' },
+          h('div', { className: 'atw-section-title' }, tr('drawer.collab')),
+          h('div', { className: 'atw-muted' }, tr('drawer.noCollab')),
+        )
+      }
+      return h('div', { key: 'collab', className: 'atw-section' }, h('div', { className: 'atw-section-title' }, tr('drawer.collab')), blocks)
+    }
+
+    function renderDrawer(view, item, collaboration) {
       const tr = view.tr
       const report = normalizeReport(item.report)
       const sections = []
@@ -1546,6 +2288,14 @@ window.__ModuleLoader__.load({
         kvRow('subject', tr('drawer.subject'), str(item.subject, tr('drawer.none'))),
         kvRow('owner', tr('drawer.owner'), str(item.owner, tr('common.unknown'))),
         kvRow('role', tr('drawer.role'), str(item.role, tr('common.unknown'))),
+        kvRow('assignment', tr('drawer.assignment'), tr('drawer.assignment.' + item.assignment, undefined, item.assignment)),
+        kvRow(
+          'claim',
+          tr('drawer.claim'),
+          item.claim === null
+            ? tr('common.none')
+            : item.claim.by + (Number.isFinite(item.claim.at) ? ' · ' + relativeTime(item.claim.at, view.now, tr) : ''),
+        ),
         kvRow('status', tr('drawer.status'), badge(statusLabel(tr, item.status), statusTone(item.status))),
         kvRow('wave', tr('drawer.wave'), item.wave > 0 ? String(item.wave) : tr('drawer.none')),
         kvRow('reviewers', tr('drawer.reviewers'), item.reviewers.length > 0 ? item.reviewers.join(', ') : tr('drawer.none')),
@@ -1744,6 +2494,7 @@ window.__ModuleLoader__.load({
         )
       }
       sections.push(h('div', { key: 'repair', className: 'atw-section' }, h('div', { className: 'atw-section-title' }, tr('drawer.repairLog')), repairRows))
+      sections.push(renderCollabSection(view, item, isRecord(collaboration) ? collaboration : { proposals: [] }))
 
       return h(
         'aside',
@@ -1787,7 +2538,9 @@ window.__ModuleLoader__.load({
         if (notes !== null) content.push(notes)
         return h('div', { className: 'atw-scroll' }, content)
       }
+      const collaboration = normalizeCollaboration(run)
       content.push(h('div', { className: 'atw-main' }, renderFlowPanel(view, run), renderTopologyPanel(view, team, run)))
+      content.push(h('div', { className: 'atw-collab' }, renderChannelPanel(view, run), renderProposalsPanel(view, run)))
       content.push(
         h(
           'div',
@@ -1801,7 +2554,7 @@ window.__ModuleLoader__.load({
       if (notes !== null) content.push(notes)
       const items = toArray(run.items).map(normalizeItem)
       const selected = view.selectedItemId === null ? null : items.find((item) => item.id === view.selectedItemId) || null
-      if (selected !== null) content.push(renderDrawer(view, selected))
+      if (selected !== null) content.push(renderDrawer(view, selected, collaboration))
       return h('div', { className: 'atw-scroll' }, content)
     }
 
@@ -1852,6 +2605,7 @@ window.__ModuleLoader__.load({
       const [paused, setPaused] = React.useState(false)
       const [selectedItemId, setSelectedItemId] = React.useState(null)
       const [filter, setFilter] = React.useState('all')
+      const [channelFilter, setChannelFilter] = React.useState('all')
       const [copiedPath, setCopiedPath] = React.useState(null)
 
       /** Newest snapshot, so event handlers never read a stale closure. */
@@ -1991,6 +2745,7 @@ window.__ModuleLoader__.load({
         toggleItem: (id) => setSelectedItemId((value) => (value === id ? null : id)),
         closeItem: () => setSelectedItemId(null),
         setFilter: (value) => setFilter(value),
+        setChannelFilter: (value) => setChannelFilter(value),
         copy: (text, key) => {
           const value = str(text)
           if (value === '') return
@@ -2019,6 +2774,7 @@ window.__ModuleLoader__.load({
         tr,
         paused,
         filter,
+        channelFilter,
         selectedItemId,
         copiedPath,
         lastUpdated,

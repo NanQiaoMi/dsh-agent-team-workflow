@@ -5,15 +5,18 @@
  * even Node built-ins), does not read files, does not touch Cordis, and never
  * mutates its input. `dashboard-route.js` feeds it plain data read from the
  * blackboard and the Team board, and the Web client consumes the JSON it
- * returns — so the whole shape of docs/09 §2 can be unit-tested offline.
+ * returns — so the whole shape of docs/09 §2 and the peer-collaboration layer
+ * of docs/12 §5 can be unit-tested offline.
  *
  * Rules this module keeps:
  * - **Never throw on board data.** Every field is read defensively; a missing,
  *   wrongly typed, or absurdly large value degrades to null / [] / 0 instead of
  *   failing the whole snapshot request.
  * - **Every array is bounded.** `events` (200), `items` (64), `members` (16),
- *   `records` (12), `tasks`/`escalations` (64) and the long free-text fields
- *   are truncated, so one corrupt board cannot produce a multi-megabyte body.
+ *   `records` (12), `tasks`/`escalations` (64), plus the collaboration caps of
+ *   docs/12 §5 — `channel` (60), `proposals` (32), votes (16), `handoffs` (64),
+ *   `thread` (20), `edges` (64) — and the long free-text fields are truncated,
+ *   so one corrupt board cannot produce a multi-megabyte body.
  * - **Deterministic.** The same input yields the same output; the only clock
  *   read is the documented `generatedAt` fallback when the caller passes no
  *   `now`.
@@ -22,10 +25,16 @@
  * `changesRequested`, `reworkRounds`, `pendingReviewer`, `openFindings`,
  * `writeScopes`, `definitionOfDone`, `acceptanceCriteria`, `finalizedAt`,
  * `statePath`).
+ *
+ * Version 2 adds the peer-collaboration layer of docs/12 §5: a
+ * `run.collaboration` block plus collaboration fields on every item. A
+ * version-1 board (one with no collaboration fields at all) still yields the
+ * same base snapshot with `collaboration` present but empty, so old runs stay
+ * viewable instead of failing.
  */
 
 /** Snapshot schema version; bump only for a breaking shape change. */
-export const SNAPSHOT_VERSION = 1
+export const SNAPSHOT_VERSION = 2
 
 /** Ceilings that keep one snapshot bounded (see docs/09 §2). */
 const MAX_EVENTS = 200
@@ -42,6 +51,20 @@ const MAX_EVENT_DETAIL = 500
 const ELLIPSIS = '…'
 /** Documented board provenance values (docs/09 §2 `diagnostics.boardSource`). */
 const BOARD_SOURCES = new Set(['file', 'memory', 'missing'])
+/** Peer-collaboration ceilings (docs/12 §5). */
+const MAX_CHANNEL = 60
+/** Channel text is clipped harder than other free text: it is a chat feed. */
+const MAX_CHANNEL_TEXT = 500
+const MAX_PROPOSALS = 32
+const MAX_VOTES = 16
+const MAX_HANDOFFS = 64
+const MAX_THREAD = 20
+const MAX_EDGES = 64
+/** Defensive per-item caps for the collaboration sub-lists (not in the doc). */
+const MAX_ITEM_REQUESTS = 16
+const MAX_ITEM_HANDOFFS = 16
+/** Proposal kinds that block approval while still open (mirrors the engine). */
+const BLOCKING_PROPOSAL_KINDS = new Set(['dod', 'scope', 'replan'])
 
 /** @returns whether one value is a plain object (not null, not an array). */
 function isRecord(value) {
@@ -103,6 +126,28 @@ function integerOf(value, fallback = null) {
 /** @returns one non-empty string value, or null. */
 function isoOf(value) {
   return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+/** @returns the epoch milliseconds of one timestamp; 0 when unparseable. */
+function parseAt(value) {
+  const parsed = Date.parse(textOf(value))
+  return Number.isNaN(parsed) ? 0 : parsed
+}
+
+/**
+ * Sort records by their `at` timestamp, oldest first.
+ *
+ * Records without a parseable timestamp sort first (they are the least useful
+ * on a live board, and they fall off a cap first). Equal timestamps keep the
+ * original append order, so the output is stable and deterministic.
+ * @param records - records carrying an `at` field.
+ * @returns a sorted copy.
+ */
+function sortByAt(records) {
+  return records
+    .map((record, index) => ({ record, index, time: parseAt(record.at) }))
+    .sort((left, right) => (left.time === right.time ? left.index - right.index : left.time - right.time))
+    .map((entry) => entry.record)
 }
 
 /** @returns whether one verdict string counts as an approval (mirrors the engine). */
@@ -229,13 +274,8 @@ export const normalizeStatus = normalizeItemStatus
 export function tailEvents(events, limit = MAX_EVENTS) {
   const list = recordList(events)
   const max = Number.isFinite(limit) ? Math.max(0, Math.trunc(limit)) : MAX_EVENTS
-  const indexed = list.map((event, index) => {
-    const parsed = Date.parse(textOf(event.at))
-    return { event, index, time: Number.isNaN(parsed) ? 0 : parsed }
-  })
-  indexed.sort((left, right) => (left.time === right.time ? left.index - right.index : left.time - right.time))
-  const start = Math.max(0, indexed.length - max)
-  return indexed.slice(start).map((entry) => entry.event)
+  if (max === 0) return []
+  return sortByAt(list).slice(-max)
 }
 
 /**
@@ -327,7 +367,7 @@ function buildReport(report) {
  * Normalize one work item.
  * @param raw - blackboard item.
  * @param id - the item's resolved id.
- * @param context - `{ waveOf, taskById, maxRounds }`.
+ * @param context - `{ waveOf, taskById, maxRounds, channelEntries, openProposalCounts, stats }`.
  * @returns snapshot item.
  */
 function buildItem(raw, id, context) {
@@ -335,7 +375,8 @@ function buildItem(raw, id, context) {
   const task = taskId.length === 0 ? null : (context.taskById.get(taskId) ?? null)
   const reviews = recordList(raw.reviews)
   const submitted = reviews.filter((review) => textOf(review.status) === 'submitted')
-  const pending = reviews.find((review) => textOf(review.status) === 'pending') ?? null
+  const thread = context.channelEntries.filter((entry) => entry.itemId === id)
+  if (thread.length > MAX_THREAD) context.stats.threadClipped += 1
   return {
     id,
     subject: clip(raw.subject),
@@ -361,7 +402,7 @@ function buildItem(raw, id, context) {
       reworkRounds: countReworkRounds(raw),
       submittedRounds: submitted.length,
       maxRounds: context.maxRounds,
-      pendingReviewer: pending === null ? null : textOf(pending.reviewer) || null,
+      pendingReviewer: pendingReviewerOf(raw),
       verdicts: submitted.slice(-MAX_RECORDS).map((review) => ({
         reviewer: textOf(review.reviewer),
         verdict: textOf(review.verdict) || null,
@@ -372,6 +413,12 @@ function buildItem(raw, id, context) {
     },
     openFindings: countOpenFindings(reviews),
     override: textOf(raw.overrideReason) || null,
+    assignment: textOf(raw.assignment).trim().toLowerCase() === 'open' ? 'open' : 'lead',
+    claim: buildClaim(raw.claim),
+    reviewRequests: recordList(raw.reviewRequests).slice(-MAX_ITEM_REQUESTS).map(buildReviewRequest),
+    handoffs: recordList(raw.handoffs).slice(-MAX_ITEM_HANDOFFS).map(buildItemHandoff),
+    thread: thread.slice(-MAX_THREAD),
+    openProposals: context.openProposalCounts.forItem(id),
   }
 }
 
@@ -548,10 +595,391 @@ function buildTeam(team, warnings) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Peer collaboration (docs/12 §5, snapshot version 2)
+//
+// Every collaboration field is optional on the blackboard: a version-1 board
+// has none of them, so the aggregation degrades to empty lists instead of a
+// null block or an exception. All of it is derived, never written.
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize one channel message and flatten its refs.
+ * @param message - blackboard channel entry.
+ * @returns `{ id, at, from, to, kind, text, itemId, findingId, proposalId, replyTo }`.
+ */
+function buildChannelEntry(message) {
+  const refs = isRecord(message.refs) ? message.refs : {}
+  return {
+    id: textOf(message.id),
+    at: textOf(message.at),
+    from: textOf(message.from),
+    to: textOf(message.to),
+    kind: textOf(message.kind) || 'note',
+    text: clip(message.text, MAX_CHANNEL_TEXT),
+    itemId: isoOf(refs.itemId) ?? isoOf(message.itemId),
+    findingId: isoOf(refs.findingId) ?? isoOf(message.findingId),
+    proposalId: isoOf(refs.proposalId) ?? isoOf(message.proposalId),
+    replyTo: isoOf(message.replyTo),
+  }
+}
+
+/**
+ * Normalize one item claim record; `null` in, `null` out.
+ * @param claim - blackboard `item.claim`.
+ * @returns `{ by, at, leaseMinutes, note }`, or null when the item is unclaimed.
+ */
+function buildClaim(claim) {
+  if (!isRecord(claim)) return null
+  return {
+    by: textOf(claim.by) || null,
+    at: isoOf(claim.at),
+    leaseMinutes: integerOf(claim.leaseMinutes),
+    note: typeof claim.note === 'string' ? clip(claim.note) : null,
+  }
+}
+
+/**
+ * Normalize one peer review invitation (docs/12 §2 `reviewRequests`).
+ * @param request - blackboard review request.
+ * @returns `{ by, at, reviewer, status, respondedAt, response }`.
+ */
+function buildReviewRequest(request) {
+  return {
+    by: textOf(request.by) || null,
+    at: isoOf(request.at),
+    reviewer: isoOf(request.reviewer),
+    status: textOf(request.status) || null,
+    respondedAt: isoOf(request.respondedAt),
+    response: typeof request.response === 'string' ? clip(request.response) : null,
+  }
+}
+
+/**
+ * Normalize one item handoff (docs/12 §2 `items[].handoffs`).
+ * @param handoff - blackboard handoff.
+ * @returns `{ by, at, to, reason, status, respondedAt }`.
+ */
+function buildItemHandoff(handoff) {
+  return {
+    by: textOf(handoff.by) || null,
+    at: isoOf(handoff.at),
+    to: textOf(handoff.to) || null,
+    reason: typeof handoff.reason === 'string' ? clip(handoff.reason) : null,
+    status: textOf(handoff.status) || null,
+    respondedAt: isoOf(handoff.respondedAt),
+  }
+}
+
+/**
+ * Normalize one proposal's votes, oldest first.
+ *
+ * A member changes their vote through the engine, which updates the existing
+ * entry in place, so one voter appears once on a healthy board; this helper
+ * deliberately does not de-duplicate, keeping the tally identical to the
+ * engine's `tallyProposal`. The `votes` array the snapshot exposes is only the
+ * most recent `MAX_VOTES` for rendering, so on an oversized board the tally can
+ * legitimately count more votes than the list shows.
+ * @param votes - raw `proposal.votes`.
+ * @returns normalized votes.
+ */
+function normalizeVotes(votes) {
+  return recordList(votes).map((vote) => ({
+    by: textOf(vote.by),
+    vote: textOf(vote.vote) || null,
+    comment: typeof vote.comment === 'string' ? clip(vote.comment) : null,
+    at: isoOf(vote.at),
+  }))
+}
+
+/**
+ * @param votes - normalized votes of one proposal.
+ * @returns the yes/no/abstain counters, exactly as the engine's
+ *   `tallyProposal` computes them (an unknown vote value counts as abstain).
+ */
+function countVotes(votes) {
+  const tally = { yes: 0, no: 0, abstain: 0 }
+  for (const vote of votes) {
+    if (vote.vote === 'yes') tally.yes += 1
+    else if (vote.vote === 'no') tally.no += 1
+    else tally.abstain += 1
+  }
+  return tally
+}
+
+/**
+ * Count the members affected by one proposal (docs/12 §2).
+ *
+ * An item proposal affects that item's owner plus its reviewers, de-duplicated;
+ * a team-wide proposal affects the whole roster (the Lead is included through
+ * the roster like everyone else). An item id that is not on the board is
+ * treated as team-wide: the dashboard cannot name a narrower electorate from
+ * data it does not have.
+ * @param itemId - proposal item id, or null for a team-wide topic.
+ * @param context - `{ itemsById, memberNames }`.
+ * @returns number of affected members.
+ */
+function affectedCount(itemId, context) {
+  const item = itemId === null ? null : (context.itemsById.get(itemId) ?? null)
+  if (item === null) return context.memberNames.length
+  const names = new Set()
+  const owner = textOf(item.owner)
+  if (owner.length > 0) names.add(owner)
+  for (const reviewer of textList(item.reviewers)) names.add(reviewer)
+  return names.size
+}
+
+/**
+ * Count the blocking proposals of every item, mirroring the engine's
+ * `openBlockingProposals`: a proposal blocks while it is `open` or `escalated`
+ * (a tie is handed to the Lead but still blocks approval until arbitrated),
+ * only for `dod` / `scope` / `replan` (the kinds that block approval), and a
+ * team-wide proposal (no item id) blocks every item. The count is taken over
+ * all proposals, before the display cap.
+ * @param proposals - `state.proposals`.
+ * @returns map of item id -> blocking proposal count.
+ */
+function countOpenProposals(proposals) {
+  const blocking = recordList(proposals).filter((proposal) => {
+    const status = textOf(proposal.status)
+    if (status !== 'open' && status !== 'escalated') return false
+    return BLOCKING_PROPOSAL_KINDS.has(textOf(proposal.kind))
+  })
+  return {
+    forItem(itemId) {
+      return blocking.filter((proposal) => isoOf(proposal.itemId) === null || isoOf(proposal.itemId) === itemId).length
+    },
+  }
+}
+
+/**
+ * Build the bounded proposal list, including each proposal's vote tally.
+ * @param proposals - `state.proposals`.
+ * @param context - `{ itemsById, memberNames, warnings }`.
+ * @returns normalized proposals, oldest first.
+ */
+function buildProposals(proposals, context) {
+  const list = recordList(proposals)
+  if (list.length > MAX_PROPOSALS) context.warnings.push(`collaboration proposals truncated to the most recent ${MAX_PROPOSALS} of ${list.length}`)
+  let truncatedVotes = 0
+  const kept = list.slice(-MAX_PROPOSALS).map((proposal) => {
+    const votes = normalizeVotes(proposal.votes)
+    if (votes.length > MAX_VOTES) truncatedVotes += 1
+    const tally = countVotes(votes)
+    const itemId = isoOf(proposal.itemId)
+    return {
+      id: textOf(proposal.id),
+      at: textOf(proposal.at),
+      by: textOf(proposal.by),
+      kind: textOf(proposal.kind) || null,
+      itemId,
+      text: clip(proposal.text),
+      status: textOf(proposal.status) || 'open',
+      votes: votes.slice(-MAX_VOTES),
+      tally: {
+        yes: tally.yes,
+        no: tally.no,
+        abstain: tally.abstain,
+        affected: affectedCount(itemId, context),
+        // The engine counts every recorded vote here, including one it could
+        // not classify (which it tallies as abstain).
+        total: votes.length,
+      },
+      resolvedAt: isoOf(proposal.resolvedAt),
+      resolution: typeof proposal.resolution === 'string' ? clip(proposal.resolution) : null,
+    }
+  })
+  if (truncatedVotes > 0) context.warnings.push(`proposal votes truncated to the most recent ${MAX_VOTES} in ${truncatedVotes} proposal(s)`)
+  return kept
+}
+
+/**
+ * @param item - raw blackboard item.
+ * @returns whether the item is an unclaimed open-queue item (docs/12 §2).
+ */
+function isOpenQueueItem(item) {
+  if (textOf(item.assignment).trim().toLowerCase() !== 'open') return false
+  if (textOf(item.owner).length > 0) return false
+  return textOf(item.status).trim().toLowerCase() === 'pending'
+}
+
+/**
+ * Resolve the review one item is waiting on, whether the engine stored it as a
+ * pending review record (v1) or as the v2 `pendingReviewer` field (which also
+ * tracks a peer review invitation that nobody has taken yet).
+ * @param item - raw blackboard item.
+ * @returns reviewer name, or null.
+ */
+function pendingReviewerOf(item) {
+  const pending = recordList(item.reviews).find((review) => textOf(review.status) === 'pending')
+  const fromRecord = pending === undefined ? '' : textOf(pending.reviewer)
+  if (fromRecord.length > 0) return fromRecord
+  const declared = textOf(item.pendingReviewer)
+  return declared.length > 0 ? declared : null
+}
+
+/**
+ * Build the review invitations that are still waiting for a taker
+ * (docs/12 §5 `pendingReviews`): who asked, whom they asked, and when.
+ *
+ * A review request with `reviewer: null` is an open invitation, which is why
+ * the entry's `reviewer` can be null; `requestedBy`/`at` come from the matching
+ * open request when the board recorded one.
+ * @param items - kept `{ id, raw }` item entries.
+ * @returns pending review entries.
+ */
+function buildPendingReviews(items) {
+  const entries = []
+  for (const item of items) {
+    const requests = recordList(item.raw.reviewRequests)
+    const open = requests.filter((request) => (textOf(request.status) || 'open') === 'open')
+    const reviewer = pendingReviewerOf(item.raw)
+    if (reviewer === null && open.length === 0) continue
+    const match =
+      reviewer === null
+        ? (open.at(-1) ?? null)
+        : (open.find((request) => textOf(request.reviewer) === reviewer) ??
+           [...requests].reverse().find((request) => textOf(request.reviewer) === reviewer) ??
+           open.at(-1) ??
+           requests.at(-1) ??
+           null)
+    entries.push({
+      itemId: item.id,
+      requestedBy: match === null ? null : textOf(match.by) || null,
+      reviewer: reviewer ?? (match === null ? null : isoOf(match.reviewer)),
+      at: match === null ? null : isoOf(match.at),
+    })
+  }
+  return entries
+}
+
+/**
+ * Flatten the offered handoffs of every item into the run-level handoff list.
+ *
+ * Only `status === 'offered'` transfers are still pending, which is what the
+ * board surfaces; accepted/declined ones stay visible on the item itself.
+ * @param items - kept `{ id, raw }` item entries.
+ * @param warnings - diagnostics array for truncation warnings.
+ * @returns bounded handoffs, ascending by time.
+ */
+function buildRunHandoffs(items, warnings) {
+  const flat = []
+  for (const item of items) {
+    for (const handoff of recordList(item.raw.handoffs)) {
+      if (textOf(handoff.status) !== 'offered') continue
+      flat.push({
+        itemId: item.id,
+        by: textOf(handoff.by) || null,
+        to: textOf(handoff.to) || null,
+        reason: typeof handoff.reason === 'string' ? clip(handoff.reason) : null,
+        status: 'offered',
+        at: isoOf(handoff.at),
+      })
+    }
+  }
+  const sorted = sortByAt(flat)
+  if (sorted.length > MAX_HANDOFFS) {
+    warnings.push(`collaboration handoffs truncated to the most recent ${MAX_HANDOFFS} of ${sorted.length}`)
+    return sorted.slice(-MAX_HANDOFFS)
+  }
+  return sorted
+}
+
+/**
+ * Distill the peer↔peer topology from the channel (docs/12 §5 `edges`).
+ *
+ * One directed message adds 1 to its `from → to` edge. A `to: "team"`
+ * broadcast adds 1 to every other roster member's edge, which is what the
+ * topology panel draws. Both endpoints must be roster members: an edge the
+ * client cannot draw (a peer outside the roster, or one of the engine's
+ * `system` notices such as a vote resolution) is not a `peer↔peer` edge, and
+ * emitting it would make the topology reference nodes that do not exist. Self
+ * edges are dropped. Edges are ranked by message count (descending) and capped.
+ * @param channel - normalized channel entries.
+ * @param memberNames - roster names (the nodes the topology can draw).
+ * @param warnings - diagnostics array for truncation warnings.
+ * @returns directed edges `{ from, to, count, kinds }`.
+ */
+function buildEdges(channel, memberNames, warnings) {
+  const members = []
+  const seen = new Set()
+  for (const name of memberNames) {
+    const member = textOf(name)
+    if (member.length === 0 || seen.has(member)) continue
+    seen.add(member)
+    members.push(member)
+  }
+  const edges = new Map()
+  const add = (from, to, kind) => {
+    if (from.length === 0 || to.length === 0 || from === to) return
+    const key = `${from}\u0000${to}`
+    let edge = edges.get(key)
+    if (edge === undefined) {
+      edge = { from, to, count: 0, kinds: [] }
+      edges.set(key, edge)
+    }
+    edge.count += 1
+    if (!edge.kinds.includes(kind)) edge.kinds.push(kind)
+  }
+  for (const message of channel) {
+    const from = textOf(message.from)
+    if (from.length === 0 || !seen.has(from)) continue
+    const kind = textOf(message.kind) || 'note'
+    const to = textOf(message.to)
+    if (to === 'team') {
+      for (const member of members) add(from, member, kind)
+      continue
+    }
+    if (!seen.has(to)) continue
+    add(from, to, kind)
+  }
+  const ranked = [...edges.values()]
+    .map((edge) => ({ from: edge.from, to: edge.to, count: edge.count, kinds: [...edge.kinds].sort() }))
+    .sort((left, right) => {
+      if (right.count !== left.count) return right.count - left.count
+      if (left.from !== right.from) return left.from < right.from ? -1 : 1
+      return left.to < right.to ? -1 : left.to > right.to ? 1 : 0
+    })
+  if (ranked.length > MAX_EDGES) {
+    warnings.push(`collaboration edges truncated to the ${MAX_EDGES} busiest of ${ranked.length}`)
+    return ranked.slice(0, MAX_EDGES)
+  }
+  return ranked
+}
+
+/**
+ * Build the peer-collaboration block of the run (docs/12 §5).
+ *
+ * A version-1 board has none of the underlying fields; the block is still
+ * returned with every list empty, so the client can render the panel
+ * unconditionally and old runs remain viewable.
+ * @param state - blackboard run record.
+ * @param context - `{ channelEntries, items, itemsById, memberNames, warnings, stats }`.
+ * @returns `{ channel, proposals, openQueue, pendingReviews, handoffs, edges }`.
+ */
+function buildCollaboration(state, context) {
+  const warnings = context.warnings
+  const channelEntries = context.channelEntries
+  let channel = channelEntries
+  if (channelEntries.length > MAX_CHANNEL) {
+    warnings.push(`collaboration channel truncated to the most recent ${MAX_CHANNEL} of ${channelEntries.length} message(s)`)
+    channel = channelEntries.slice(-MAX_CHANNEL)
+  }
+  const proposals = buildProposals(state.proposals, context)
+  const openQueue = context.items.filter((item) => isOpenQueueItem(item.raw)).map((item) => item.id)
+  const pendingReviews = buildPendingReviews(context.items)
+  const handoffs = buildRunHandoffs(context.items, warnings)
+  const edges = buildEdges(channelEntries, context.memberNames, warnings)
+  if (context.stats.threadClipped > 0) {
+    warnings.push(`item threads truncated to the most recent ${MAX_THREAD} message(s) in ${context.stats.threadClipped} item(s)`)
+  }
+  return { channel, proposals, openQueue, pendingReviews, handoffs, edges }
+}
+
 /**
  * Build the run block of the snapshot.
  * @param state - blackboard run record (non-null).
- * @param context - `{ tasks, artifacts, warnings }`.
+ * @param context - `{ tasks, artifacts, memberNames, warnings }`.
  * @returns snapshot run.
  */
 function buildRun(state, context) {
@@ -578,9 +1006,27 @@ function buildRun(state, context) {
     const id = textOf(task.id).trim()
     if (id.length > 0 && !taskById.has(id)) taskById.set(id, task)
   }
+  // The collaboration block and the item threads read one normalized channel.
+  const channelEntries = sortByAt(recordList(state.channel).map(buildChannelEntry))
+  const itemsById = new Map(identified.map((entry) => [entry.id, entry.raw]))
   const settings = isRecord(state.settings) ? state.settings : {}
-  const itemContext = { waveOf: waveInfo.waveOf, taskById, maxRounds: integerOf(settings.maxReviewRounds) }
+  const itemContext = {
+    waveOf: waveInfo.waveOf,
+    taskById,
+    maxRounds: integerOf(settings.maxReviewRounds),
+    channelEntries,
+    openProposalCounts: countOpenProposals(state.proposals),
+    stats: { threadClipped: 0 },
+  }
   const items = kept.map((entry) => buildItem(entry.raw, entry.id, itemContext))
+  const collaboration = buildCollaboration(state, {
+    channelEntries,
+    items: kept,
+    itemsById,
+    memberNames: context.memberNames,
+    warnings,
+    stats: itemContext.stats,
+  })
 
   return {
     id: textOf(state.runId).trim() || textOf(state.id).trim() || null,
@@ -598,12 +1044,13 @@ function buildRun(state, context) {
     gate: buildGate(state.gate),
     escalations: buildEscalations(state.escalations, warnings),
     events: buildEvents(state.events, warnings),
+    collaboration,
     artifacts: buildArtifacts(state.artifacts, context.artifacts),
   }
 }
 
 /**
- * Aggregate one dashboard snapshot (docs/09 §2, version 1).
+ * Aggregate one dashboard snapshot (docs/09 §2 plus docs/12 §5, version 2).
  *
  * The function is total: it never throws for any input, and `run` is `null`
  * when the blackboard is missing — a missing board is an empty state, not an
@@ -634,6 +1081,7 @@ export function buildSnapshot(input) {
       : buildRun(state, {
           tasks: teamInput.tasks,
           artifacts: source.artifacts,
+          memberNames: team.members.map((member) => member.name).filter((name) => name.length > 0),
           warnings,
         })
 

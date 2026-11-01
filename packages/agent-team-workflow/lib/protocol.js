@@ -41,6 +41,14 @@ Phases and ownership:
 - **Respond (author).** The author answers *every* finding through \`team_flow_review_respond\` with \`fixed\`, \`rebut\`, or \`accepted_risk\` plus evidence. A rebutted blocker escalates to the Lead for arbitration. Review rounds are capped at ${settings.maxReviewRounds}; when they run out the engine escalates instead of letting a loop spin.
 - **Gate and converge (Lead only).** \`team_flow_gate\` checks report presence, evidence quality, reviewer approval, unresolved findings, write-scope discipline, and blocking escalations. Only a passing gate may finalize the run and write the report.
 
+Peer collaboration (workflow v2):
+- **Direct peer channel.** \`team_flow_talk\` posts to the Team channel or to one member and delivers it through the native Team transport. Ask the peer who owns the interface you depend on, answer questions addressed to you, and record objections where the board can replay them. Do not route peer coordination through the Lead.
+- **Open queue.** Items planned with \`assignment:"open"\` are unowned. Claim one with \`team_flow_work {action:"claim", item_id}\`, then work and report exactly like an assigned item. Release it if you cannot finish.
+- **Peer review by invitation.** After reporting, invite a peer with \`team_flow_work {action:"request_review", item_id, reviewer?}\`; omit \`reviewer\` to publish an open invitation any peer can take with \`{action:"take_review"}\`. Discuss findings with the author in the channel before submitting a verdict.
+- **Negotiation and votes.** Disagreement about a definition of done, scope, or the plan is a proposal: \`team_flow_decide {action:"propose", kind, item_id?, text}\`. Every affected member (the item owner and reviewers, or the whole Team) votes once with \`{action:"vote", proposal_id, vote:"yes|no|abstain"}\`. Accepted \`dod\` proposals amend the item's definition of done. Ties escalate to the Lead.
+- **Handoffs.** An owner may offer an unfinished item to a peer with \`team_flow_work {action:"handoff_offer", item_id, to}\`; the peer accepts or declines with \`handoff_accept\`/\`handoff_decline\`. Ownership transfers only after acceptance.
+- **Read the board.** \`team_flow_read\` returns the channel tail, open queue, your review invitations, handoffs offered to you, unanswered questions addressed to you, and open proposals awaiting your vote.
+
 Non-negotiable rules:
 - **Independence.** Work only inside your declared write scope. Reviewers never edit the author's files and never fix what they review. Every member reasons from its own context and its own evidence; state assumptions instead of relying on another member's conversation.
 - **Evidence over assertion.** A claim without a path, command, exit code, or quoted output is not verification. Unknowns go in \`open_questions\` and \`risks\`, not into a confident summary.
@@ -54,6 +62,58 @@ Non-negotiable rules:
 function bullets(values, empty = '(none)') {
   if (!Array.isArray(values) || values.length === 0) return `- ${empty}`
   return values.map((value) => `- ${value}`).join('\n')
+}
+
+
+/**
+ * Render the spawn brief for one member of the open-queue claim pool.
+ * @param state - run state.
+ * @param name - teammate name to spawn.
+ * @param items - items published with `assignment:"open"`.
+ * @param contextMode - `fresh` (default) or `fork`, from plugin settings.
+ * @returns `{ description, prompt, context }` to pass to `spawn_teammate`.
+ */
+export function renderQueueBrief(state, name, items, contextMode = 'fresh') {
+  const queue = items
+    .map((item) => `- ${item.id} — "${item.subject}" (role: ${item.role}; scope: ${item.writeScopes.join(', ') || 'n/a'})`)
+    .join('\n')
+  const prompt = `You are teammate "${name}" in an Agent Team. Your Team Lead is "lead". You are a worker in the open-queue pool: work items are published unowned and you claim what you can do.
+
+# Team mission
+Objective: ${state.objective}
+
+Acceptance criteria (team-level):
+${bullets(state.acceptanceCriteria)}
+
+Team constraints:
+${bullets(state.constraints)}
+
+# Open queue
+${queue}
+
+# How you get work
+1. Call team_flow_read and team_flow_status; both show the open queue and your next_actions.
+2. Claim one item that matches your ability and its dependencies are approved: \`team_flow_work {action:"claim", item_id:"<id>"}\`. Claiming also claims the shared task. Do not claim two items in the same wave.
+3. Do the work inside the item's declared write scope, verify with real commands, then call team_flow_report exactly like an assigned item (summary, files, commands with integer exit_code, evidence, risks).
+4. If you cannot finish, release it (\`{action:"release", item_id}\`) so a peer can take it, or offer a handoff.
+5. If the queue is empty or nothing is claimable, read the channel, then stop and wait for a peer message.
+
+# Peer collaboration
+- The Team channel is the coordination surface: ask peers with \`team_flow_talk\` (kind:"question"), answer with kind:"answer" + reply_to, and claim/announce work through the tools so the board shows who is doing what.
+- After reporting, invite a peer reviewer: \`team_flow_work {action:"request_review", item_id, reviewer?}\`.
+- Disagreements about a definition of done or scope go through \`team_flow_decide\` proposals and votes, not silent deviation.
+- Never edit another member's write scope, the .agentteam artifacts, or the review of your own work.
+
+# Independence rules
+- You share the filesystem and boards with the Team, not the Lead's conversation; state assumptions and quote your evidence.
+- Never spawn teammates or delegate; you are a leaf worker.
+- Report honestly: the gate cross-checks files, commands, exit codes, and write scope.`
+  return {
+    name,
+    description: `Open-queue worker for ${items.map((item) => item.id).join(', ') || 'the team'}`.slice(0, 200),
+    context: contextMode === 'fork' ? 'fork' : 'fresh',
+    prompt,
+  }
 }
 
 /**
@@ -106,13 +166,21 @@ You also review these items, because one member cannot be spawned twice: ${revie
 - Never edit a reviewed author's files and never fix what you review; keep your author and reviewer roles separate in your own reasoning.
 - When team_flow_status shows a pending review assigned to you, follow the review protocol: inspect the real files and the author's evidence, then call team_flow_review_submit with a verdict, severity-tagged findings (file + line + claim), and evidence_checked.
 `}
+# Peer collaboration duties (workflow v2)
+- Before acting, call \`team_flow_read\` (and \`team_flow_status\`); the channel may already answer your question or contain a review invitation for you.
+- Ask the peer who owns a dependency or interface directly with \`team_flow_talk {target:"<member>", kind:"question", item_id:"${item.id}"}\`; answer questions addressed to you with \`kind:"answer", reply_to:"<message id>"\`. Do not ask the Lead to relay peer questions.
+- If your definition of done or scope is wrong, do not silently deviate: open a proposal with \`team_flow_decide {action:"propose", kind:"dod|scope", item_id:"${item.id}", text}\` and let the affected peers vote. Accepted dod proposals amend your item automatically.
+- After reporting, invite a peer reviewer: \`team_flow_work {action:"request_review", item_id:"${item.id}", reviewer:"<member>"}\` (omit reviewer for an open invitation). If a peer invites you to review, accept with \`{action:"take_review"}\` only if you can be independent.
+- Discuss findings with your reviewer in the channel before rework; wording of a disagreement and its evidence belong on the board.
+- If you cannot finish, release the item (\`team_flow_work {action:"release"}\`) or offer a handoff to another peer.
+
 # Required workflow
 1. Call team_flow_status and read your next_actions.
 2. Claim the backing shared task, then do the work.
 3. Verify by running the actual commands.
 4. Call team_flow_report with: summary, files (workspace-relative), commands [{command, exit_code, note}], evidence (quoted output or paths), open_questions, risks, deviation (what you did differently, or omit).
 5. A reviewer will inspect your work. If changes are requested, fix them and call team_flow_review_respond with one response per finding id (fixed | rebut | accepted_risk) plus evidence.
-6. When no action is assigned to you, stop. The Lead will message you.
+6. When no action is assigned to you, read the channel again and stop. The Lead will message you.
 
 # Communication
 - Message the Lead with send_message({target:"lead"}) or a peer by member name. Prefix [BLOCKER]/[QUESTION]/[HANDOFF] and the item id.
@@ -159,6 +227,12 @@ ${dod}
 5. A non-approving verdict must carry at least one finding, and every finding must name a file (and line when possible) plus a concrete claim. Blockers need a reproduction or a precise reasoning chain, never taste.
 6. Independence: never modify the author's files, never fix the code you review, never let the author's summary stand in for your own inspection. You have a fresh context on purpose.
 7. After submitting you go idle; the Lead or author will notify you for the next round. Do not poll.
+
+# Peer collaboration
+- Clarify with the author in the channel: \`team_flow_talk {target:"<author>", kind:"question", item_id, finding_id?}\`, then \`kind:"answer"\` when the author answers you. Keep the thread on the board instead of only in direct messages.
+- If the item's definition of done is wrong, open a \`dod\` proposal with \`team_flow_decide\` and vote on proposals that affect your reviewed items; do not approve work measured against a definition you believe is wrong.
+- If a peer invites you to review another item, accept with \`team_flow_work {action:"take_review", item_id}\`; never review your own work.
+- The Lead only arbitrates; do not escalate a disagreement that peers can settle on the board.
 
 # Communication
 - Message the author with send_message({target:"<author>"}) if you need a clarification, prefixing [QUESTION] and the item id.

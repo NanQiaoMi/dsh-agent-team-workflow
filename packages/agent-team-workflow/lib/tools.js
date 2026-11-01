@@ -12,6 +12,7 @@ import * as W from './workflow.js'
 import {
   approvedMessage,
   changesRequestedMessage,
+  renderQueueBrief,
   renderReportMarkdown,
   renderReviewerBrief,
   renderWorkerBrief,
@@ -153,10 +154,16 @@ function normalizeItem(raw, index) {
   const reviewers = Array.isArray(raw?.reviewers) ? [...new Set(raw.reviewers.map((entry) => String(entry).trim()).filter(Boolean))] : []
   const blockedBy = Array.isArray(raw?.blocked_by) ? [...new Set(raw.blocked_by.map((entry) => String(entry).trim()).filter(Boolean))] : []
   const writeScopes = Array.isArray(raw?.write_scopes) ? [...new Set(raw.write_scopes.map((entry) => W.normalizeScope(entry)).filter((entry) => entry.length > 0))] : []
+  const assignment = raw?.assignment === 'open' ? 'open' : 'lead'
   return {
     id: String(raw?.id ?? `W${index + 1}`).trim(),
     subject,
-    owner,
+    owner: assignment === 'open' ? '' : owner,
+    assignment,
+    claim: null,
+    reviewRequests: [],
+    handoffs: [],
+    pendingReviewer: null,
     role: String(raw?.role ?? 'implementer').trim() || 'implementer',
     writeScopes,
     blockedBy,
@@ -184,7 +191,7 @@ function normalizeItem(raw, index) {
 function taskDescription(state, item) {
   return [
     `Workflow run ${state.runId} — item ${item.id} (${item.role}).`,
-    `Owner: ${item.owner}. Reviewers: ${item.reviewers.join(', ') || '(none)'}.`,
+    item.assignment === 'open' ? `Owner: (open queue — claim it with team_flow_work {action:"claim", item_id:"${item.id}"}).` : `Owner: ${item.owner}. Reviewers: ${item.reviewers.join(', ') || '(none)'}.`,
     '',
     'Definition of done:',
     ...item.definitionOfDone.map((entry) => `- ${entry}`),
@@ -230,7 +237,8 @@ export function buildTools({ ctx, settings, store, version }) {
               properties: {
                 id: { type: 'string', description: 'Stable short id such as W1; auto-assigned when omitted.' },
                 subject: { type: 'string', description: 'One-line deliverable title.' },
-                owner: { type: 'string', description: 'Teammate name that will do the work (never "lead").' },
+                owner: { type: 'string', description: 'Teammate name that will do the work (never "lead"); omit when assignment is "open" so a peer claims it.' },
+                assignment: { type: 'string', enum: ['lead', 'open'], description: 'Who picks the item: "lead" assigns owner now (default), "open" publishes it to the queue for a peer to claim.' },
                 role: { type: 'string', description: 'implementer | verifier | researcher | architect | writer.' },
                 write_scopes: { type: 'array', items: { type: 'string' }, description: 'Workspace-relative paths this owner may modify. Must be disjoint from other items in the same wave.' },
                 blocked_by: { type: 'array', items: { type: 'string' }, description: 'Item ids that must be approved first.' },
@@ -239,9 +247,9 @@ export function buildTools({ ctx, settings, store, version }) {
                 reviewers: { type: 'array', items: { type: 'string' }, description: 'Independent reviewer member names; must not include the owner.' },
                 evidence_optional: { type: 'boolean', description: 'Set true only for read-only/research items where no command can be run.' },
               },
-              required: ['subject', 'owner', 'definition_of_done'],
+              required: ['subject', 'definition_of_done'],
             },
-            description: 'Work items; each becomes one shared Team task plus one owner brief.',
+            description: 'Work items; each becomes one shared Team task plus one owner brief (or an open-queue entry a peer claims).',
           },
           replace: { type: 'boolean', description: 'Archive the existing run and start a new one.' },
         },
@@ -255,6 +263,8 @@ export function buildTools({ ctx, settings, store, version }) {
           waves: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
           items: { type: 'array', items: {} },
           spawn: { type: 'array', items: {} },
+          queue_spawn: { type: 'array', items: {} },
+          open_queue: { type: 'array', items: { type: 'string' } },
           reviewer_spawn: { type: 'array', items: {} },
           warnings: { type: 'array', items: { type: 'string' } },
           next_actions: { type: 'array', items: { type: 'string' } },
@@ -368,15 +378,26 @@ export function buildTools({ ctx, settings, store, version }) {
         const state = outcome.state
         const archived = outcome.archivedPaths
 
-        const workerNames = new Set(items.map((item) => item.owner))
-        const workerSpawn = items.map((item) => {
+        const openItems = items.filter((item) => item.assignment === 'open')
+        const assignedItems = items.filter((item) => item.assignment !== 'open')
+        const poolNames = Array.isArray(args.workers) ? args.workers.map((name) => String(name).trim()).filter(Boolean) : []
+        for (const name of poolNames) {
+          assertMemberName(name, 'workers[]')
+          if (new Set(poolNames).size !== poolNames.length) throw new Error('workers repeats a member name')
+        }
+        const workerNames = new Set(assignedItems.map((item) => item.owner))
+        const workerSpawn = assignedItems.map((item) => {
           const reviewing = items.filter((other) => other.reviewers.includes(item.owner)).map((other) => other.id)
           const brief = renderWorkerBrief(state, item, reviewing, settings.workerContext)
           return { kind: 'worker', item_id: item.id, name: brief.name, description: brief.description, context: brief.context, prompt: brief.prompt }
         })
+        const queueSpawn = openItems.length === 0 ? [] : poolNames.map((name) => {
+          const brief = renderQueueBrief(state, name, openItems)
+          return { kind: 'worker-pool', name: brief.name, description: brief.description, context: brief.context, prompt: brief.prompt }
+        })
         const allReviewers = W.collectReviewers(items)
         const reviewerSpawn = allReviewers
-          .filter((reviewer) => reviewer !== 'lead' && !workerNames.has(reviewer))
+          .filter((reviewer) => reviewer !== 'lead' && !workerNames.has(reviewer) && !poolNames.includes(reviewer))
           .map((reviewer) => {
             const reviewed = items.filter((item) => item.reviewers.includes(reviewer))
             const brief = renderReviewerBrief(state, reviewer, reviewed)
@@ -390,7 +411,14 @@ export function buildTools({ ctx, settings, store, version }) {
         ]
         const spawnContexts = [...new Set(workerSpawn.map((entry) => entry.context))].join('/')
         const nextActions = [
-          `Spawn wave 1 owners now: ${(validation.waves[0] ?? []).join(', ') || '(none)'}. Pass each returned spawn prompt verbatim with spawn_teammate and its own context value (${spawnContexts || settings.workerContext}).`,
+          ...(workerSpawn.length > 0
+            ? [`Spawn wave 1 owners now: ${(validation.waves[0] ?? []).filter((id) => assignedItems.some((item) => item.id === id)).join(', ') || '(none)'}. Pass each returned spawn prompt verbatim with spawn_teammate and its own context value (${spawnContexts || settings.workerContext}).`]
+            : []),
+          ...(openItems.length === 0
+            ? []
+            : [queueSpawn.length > 0
+                ? `Open queue: ${openItems.map((item) => item.id).join(', ')}. Spawn the worker pool (${poolNames.join(', ')}) with the returned queue prompts and let them claim items with team_flow_work {action:"claim"}; do not assign by hand.`
+                : `Open queue: ${openItems.map((item) => item.id).join(', ')}. Spawn workers yourself (pass workers:[...] next time for ready-made queue prompts) and tell them to claim with team_flow_work {action:"claim"}.`]),
           ...(reviewerSpawn.length > 0 ? [`Spawn reviewers upfront so review notifications can reach them: ${reviewerSpawn.map((entry) => entry.name).join(', ')}.`] : []),
           ...reviewerNotes,
           'Then call wait_agent and re-read team_flow_status after each change; do not do the workers\' edits yourself.',
@@ -402,6 +430,8 @@ export function buildTools({ ctx, settings, store, version }) {
           waves: validation.waves,
           items: items.map((item) => ({ id: item.id, subject: item.subject, owner: item.owner, task_id: item.taskId, reviewers: item.reviewers, write_scopes: item.writeScopes })),
           spawn: workerSpawn,
+          queue_spawn: queueSpawn,
+          open_queue: openItems.map((item) => item.id),
           reviewer_spawn: reviewerSpawn,
           warnings: [...archived.map((path) => `archived previous run state to ${path}`), ...validation.warnings],
           next_actions: nextActions,
@@ -436,6 +466,7 @@ export function buildTools({ ctx, settings, store, version }) {
           items: { type: 'array', items: {} },
           escalations: { type: 'array', items: {} },
           team: { type: 'array', items: {} },
+          collaboration: {},
           next_actions: { type: 'array', items: { type: 'string' } },
           artifacts: {},
           settings: {},
@@ -1220,6 +1251,428 @@ export function buildTools({ ctx, settings, store, version }) {
           notified,
           sync_warnings: syncWarnings,
           next_actions: status.next_actions,
+        }
+      },
+    },
+
+    // -----------------------------------------------------------------
+    // Peer collaboration (workflow v2): talk, work, decide, read
+    // -----------------------------------------------------------------
+    {
+      name: 'team_flow_talk',
+      description:
+        'Peer channel. Send one message to a teammate or the whole Team and record it on the workflow board. Use it to ask the peer who owns a dependency, answer questions addressed to you, or object to a decision. Delivery uses the native Team transport; the board keeps the thread and the dashboard shows it.',
+      parameters: {
+        type: 'object',
+        properties: {
+          target: { type: 'string', description: 'Teammate name (lower-kebab-case) or "team" to broadcast to every other member.' },
+          kind: { type: 'string', enum: [...W.CHANNEL_KINDS], description: 'Message kind; default "note".' },
+          text: { type: 'string', description: 'Message text, at most 4000 characters.' },
+          item_id: { type: 'string', description: 'Optional work item id this message is about.' },
+          finding_id: { type: 'string', description: 'Optional review finding id this message is about.' },
+          reply_to: { type: 'string', description: 'Optional channel message id this message answers.' },
+        },
+        required: ['target', 'text'],
+        additionalProperties: false,
+      },
+      output: jsonOutput({
+        type: 'object',
+        properties: {
+          message_id: { type: 'string' },
+          from: { type: 'string' },
+          target: { type: 'string' },
+          delivered_to: { type: 'array', items: { type: 'string' } },
+          warnings: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['message_id'],
+      }),
+      async execute(args, exec) {
+        const { agent, membership } = resolveCaller(ctx, exec, 'team_flow_talk')
+        const rawTarget = String(args.target ?? '').trim()
+        const text = String(args.text ?? '').trim()
+        if (text.length === 0) throw new Error('team_flow_talk needs non-empty text')
+        let to = 'team'
+        if (rawTarget !== 'team') {
+          to = rawTarget
+          if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(to)) throw new Error(`target "${to}" is not a member name (lower-kebab-case, digits allowed)`)
+          if (!isLiveMember(ctx, agent, to)) {
+            throw new Error(`"${to}" is not in the live roster; call team_flow_status to see the members, or use target:"team"`)
+          }
+        }
+        let message = null
+        await store.mutateState(agent, (current) => {
+          if (current === null) throw new Error('no workflow run exists yet; the Lead must call team_flow_plan first')
+          requireWritableRun(current, 'team_flow_talk')
+          message = W.postChannelMessage(current, {
+            from: membership.name,
+            to,
+            kind: args.kind,
+            text,
+            itemId: args.item_id,
+            findingId: args.finding_id,
+            replyTo: args.reply_to,
+            now: new Date().toISOString(),
+          })
+          return current
+        })
+        const warnings = []
+        const delivered = []
+        const roster = ctx.agentTeams.listMembers(agent).map((member) => member.name).filter((name) => name !== membership.name)
+        const targets = to === 'team' ? roster : [to]
+        const prefix = `[CHANNEL ${message.id}] ${membership.name}${to === 'team' ? ' (to team)' : ''}${args.item_id ? ` [item ${args.item_id}]` : ''}: `
+        for (const name of targets) {
+          const failure = await sendPeer(ctx, agent, name, `${prefix}${text}`, exec.signal)
+          if (failure === null) delivered.push(name)
+          else warnings.push(failure)
+        }
+        return { message_id: message.id, from: membership.name, target: to, delivered_to: delivered, warnings }
+      },
+    },
+    {
+      name: 'team_flow_work',
+      description:
+        'Peer work coordination: claim an open-queue item, release it, invite a peer to review, accept a review invitation, or hand an unfinished item to a peer (offer / accept / decline). Use it instead of asking the Lead to assign or relay work.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['claim', 'release', 'request_review', 'take_review', 'handoff_offer', 'handoff_accept', 'handoff_decline'],
+            description: 'Coordination action to perform.',
+          },
+          item_id: { type: 'string', description: 'Work item id.' },
+          reviewer: { type: 'string', description: 'request_review only: peer name to invite; omit for an open invitation any peer can take.' },
+          to: { type: 'string', description: 'handoff_offer only: peer to offer the item to.' },
+          reason: { type: 'string', description: 'Optional reason (release/handoff decline).' },
+          note: { type: 'string', description: 'Optional claim note.' },
+          lease_minutes: { type: 'integer', description: 'Optional advisory claim lease in minutes (default 30).' },
+        },
+        required: ['action', 'item_id'],
+        additionalProperties: false,
+      },
+      output: jsonOutput({
+        type: 'object',
+        properties: {
+          item_id: { type: 'string' },
+          action: { type: 'string' },
+          item_status: { type: 'string' },
+          owner: {},
+          reviewer: {},
+          notifications: { type: 'array', items: { type: 'string' } },
+          warnings: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['item_id', 'action'],
+      }),
+      async execute(args, exec) {
+        const { agent, membership } = resolveCaller(ctx, exec, 'team_flow_work')
+        const action = String(args.action ?? '')
+        const itemId = String(args.item_id ?? '').trim()
+        if (itemId.length === 0) throw new Error('team_flow_work needs item_id')
+        const now = new Date().toISOString()
+        let outcome = null
+        let state = null
+        await store.mutateState(agent, (current) => {
+          if (current === null) throw new Error('no workflow run exists yet; the Lead must call team_flow_plan first')
+          requireWritableRun(current, 'team_flow_work')
+          state = current
+          if (action === 'claim') outcome = { kind: 'claim', item: W.claimItem(current, { itemId, caller: membership.name, now, leaseMinutes: args.lease_minutes, note: args.note }) }
+          else if (action === 'release') outcome = { kind: 'release', ...W.releaseItem(current, { itemId, caller: membership.name, now, reason: args.reason }) }
+          else if (action === 'request_review') {
+            const reviewer = args.reviewer === undefined || args.reviewer === null || String(args.reviewer).trim() === '' ? null : String(args.reviewer).trim()
+            if (reviewer !== null && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(reviewer)) throw new Error(`reviewer "${reviewer}" is not a member name (lower-kebab-case, digits allowed)`)
+            if (reviewer !== null && !isLiveMember(ctx, agent, reviewer)) throw new Error(`"${reviewer}" is not in the live roster`)
+            outcome = { kind: 'request_review', item: W.findItem(current, itemId), request: W.requestReviewFromPeer(current, { itemId, caller: membership.name, reviewer, now }) }
+          }
+          else if (action === 'take_review') outcome = { kind: 'take_review', ...W.takeReview(current, { itemId, caller: membership.name, now }) }
+          else if (action === 'handoff_offer') {
+            const to = assertMemberName(args.to, 'to')
+            if (!isLiveMember(ctx, agent, to)) throw new Error(`"${to}" is not in the live roster`)
+            outcome = { kind: 'handoff_offer', item: W.findItem(current, itemId), handoff: W.offerHandoff(current, { itemId, caller: membership.name, to, reason: args.reason, now }) }
+          } else if (action === 'handoff_accept' || action === 'handoff_decline') {
+            outcome = { kind: action, ...W.respondHandoff(current, { itemId, caller: membership.name, accept: action === 'handoff_accept', reason: args.reason, now }) }
+          } else {
+            throw new Error(`unknown action "${action}"`)
+          }
+          return current
+        })
+        const item = outcome.item
+        const notifications = []
+        const warnings = []
+        if (action === 'claim') {
+          const taskId = item.taskId
+          if (typeof taskId === 'string') {
+            try {
+              const task = ctx.agentTeams.getTask(agent, taskId)
+              if (task.status === 'pending') await ctx.agentTeams.updateTask(agent, { taskId, expectedRevision: task.revision, action: 'claim' })
+              else if (task.status !== 'in_progress') warnings.push(`backing Team task ${taskId} is ${task.status}; the board records the claim but the task is not claimable`)
+            } catch (error) {
+              warnings.push(`backing Team task ${taskId} not claimed: ${error instanceof Error ? error.message : String(error)}`)
+            }
+          }
+          const failure = await sendPeer(ctx, agent, 'lead', `[CLAIM] ${membership.name} claimed ${item.id} "${item.subject}" from the open queue.`, exec.signal)
+          if (failure !== null) warnings.push(failure)
+        } else if (action === 'release') {
+          const taskId = item.taskId
+          if (typeof taskId === 'string') {
+            try {
+              const task = ctx.agentTeams.getTask(agent, taskId)
+              if (task.status === 'in_progress') await ctx.agentTeams.updateTask(agent, { taskId, expectedRevision: task.revision, action: 'reopen' })
+            } catch (error) {
+              warnings.push(`backing Team task ${taskId} not reopened: ${error instanceof Error ? error.message : String(error)}`)
+            }
+          }
+          const failure = await sendPeer(ctx, agent, 'lead', `[HANDOFF] ${membership.name} released ${item.id}${args.reason ? `: ${args.reason}` : '.'}`, exec.signal)
+          if (failure !== null) warnings.push(failure)
+        } else if (action === 'request_review') {
+          const request = outcome.request
+          const targets = request.reviewer === null
+            ? ctx.agentTeams.listMembers(agent).map((member) => member.name).filter((name) => name !== membership.name && name !== 'lead')
+            : [request.reviewer]
+          const text = `[REVIEW] ${membership.name} requests a peer review of ${item.id} "${item.subject}".${request.reviewer === null ? ' This is an open invitation: take it with team_flow_work {action:"take_review", item_id:"' + item.id + '"}.' : ' It is addressed to you; accept with team_flow_work {action:"take_review", item_id:"' + item.id + '"}, or decline in the channel.'}`
+          for (const target of targets) {
+            const failure = await sendPeer(ctx, agent, target, text, exec.signal)
+            if (failure === null) notifications.push(target)
+            else warnings.push(failure)
+          }
+        } else if (action === 'take_review') {
+          const owner = item.owner
+          if (typeof owner === 'string' && owner.length > 0) {
+            const failure = await sendPeer(ctx, agent, owner, `[REVIEW] ${membership.name} accepted the review of ${item.id}; findings will arrive through team_flow_review_submit and the channel.`, exec.signal)
+            if (failure === null) notifications.push(owner)
+            else warnings.push(failure)
+          }
+        } else if (action === 'handoff_offer') {
+          const failure = await sendPeer(ctx, agent, outcome.handoff.to, `[HANDOFF] ${membership.name} offers you ${item.id} "${item.subject}"${args.reason ? `: ${args.reason}` : '.'}\nAccept with team_flow_work {action:"handoff_accept", item_id:"${item.id}"} or decline with {action:"handoff_decline"}.`, exec.signal)
+          if (failure === null) notifications.push(outcome.handoff.to)
+          else warnings.push(failure)
+        } else {
+          const taskId = item.taskId
+          if (action === 'handoff_accept' && typeof taskId === 'string') {
+            try {
+              const task = ctx.agentTeams.getTask(agent, taskId)
+              if (task.status === 'pending' || task.status === 'in_progress') {
+                await ctx.agentTeams.updateTask(agent, { taskId, expectedRevision: task.revision, action: 'reassign', owner: membership.name })
+              }
+            } catch (error) {
+              warnings.push(`backing Team task ${taskId} not reassigned: ${error instanceof Error ? error.message : String(error)}`)
+            }
+          }
+          const failure = await sendPeer(ctx, agent, outcome.handoff.by, `[HANDOFF] ${membership.name} ${action === 'handoff_accept' ? 'accepted' : 'declined'} ${item.id}${args.reason ? `: ${args.reason}` : '.'}`, exec.signal)
+          if (failure === null) notifications.push(outcome.handoff.by)
+          else warnings.push(failure)
+        }
+        return {
+          item_id: item.id,
+          action,
+          item_status: item.status,
+          owner: item.owner ?? null,
+          reviewer: action === 'request_review' ? (outcome.request?.reviewer ?? null) : action === 'take_review' ? membership.name : null,
+          notifications,
+          warnings,
+        }
+      },
+    },
+    {
+      name: 'team_flow_decide',
+      description:
+        'Peer decision protocol: open a proposal about a definition of done, scope, re-plan or review policy, vote on proposals that affect you, or withdraw your own. Affected peers (item owner + reviewers, or the whole Team) each vote once; accepted dod proposals amend the item; ties escalate to the Lead.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['propose', 'vote', 'withdraw', 'resolve'], description: 'Decision action. "resolve" is Lead-only arbitration of a tied/escalated proposal.' },
+          kind: { type: 'string', enum: [...W.PROPOSAL_KINDS], description: 'propose only: proposal kind.' },
+          item_id: { type: 'string', description: 'propose only: work item the proposal is about; omit for a team-wide proposal.' },
+          text: { type: 'string', description: 'propose only: proposal text stating what should change and why.' },
+          proposal_id: { type: 'string', description: 'vote/withdraw only: proposal id, e.g. p1.' },
+          vote: { type: 'string', enum: ['yes', 'no', 'abstain'], description: 'vote only: your vote.' },
+          comment: { type: 'string', description: 'vote/resolve: optional rationale recorded with the decision.' },
+          outcome: { type: 'string', enum: ['accepted', 'rejected'], description: 'resolve only: the Lead decision on the proposal.' },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+      output: jsonOutput({
+        type: 'object',
+        properties: {
+          proposal_id: { type: 'string' },
+          status: { type: 'string' },
+          kind: {},
+          item_id: {},
+          votes: {},
+          tally: {},
+          resolution: {},
+          notifications: { type: 'array', items: { type: 'string' } },
+          warnings: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['proposal_id', 'status'],
+      }),
+      async execute(args, exec) {
+        const { agent, membership } = resolveCaller(ctx, exec, 'team_flow_decide')
+        const action = String(args.action ?? '')
+        const now = new Date().toISOString()
+        const members = ctx.agentTeams.listMembers(agent).map((member) => ({ name: member.name, role: member.role }))
+        let outcome = null
+        await store.mutateState(agent, (current) => {
+          if (current === null) throw new Error('no workflow run exists yet; the Lead must call team_flow_plan first')
+          requireWritableRun(current, 'team_flow_decide')
+          if (action === 'propose') {
+            const proposal = W.proposeDecision(current, { by: membership.name, kind: args.kind, itemId: args.item_id ?? null, text: args.text, now })
+            outcome = { kind: 'propose', proposal, affected: W.affectedMembersFor(proposal, current, members) }
+          } else if (action === 'vote') {
+            if (!args.proposal_id) throw new Error('team_flow_decide vote needs proposal_id')
+            outcome = { kind: 'vote', ...W.voteDecision(current, { proposalId: String(args.proposal_id), by: membership.name, vote: args.vote, comment: args.comment, members, now }) }
+          } else if (action === 'withdraw') {
+            if (!args.proposal_id) throw new Error('team_flow_decide withdraw needs proposal_id')
+            outcome = { kind: 'withdraw', proposal: W.withdrawProposal(current, { proposalId: String(args.proposal_id), caller: membership.name, now }) }
+          } else if (action === 'resolve') {
+            requireLead(membership, 'team_flow_decide resolve')
+            if (!args.proposal_id) throw new Error('team_flow_decide resolve needs proposal_id')
+            outcome = { kind: 'resolve', proposal: W.settleProposalByLead(current, { proposalId: String(args.proposal_id), outcome: args.outcome, comment: args.comment, actor: membership.name, now }) }
+          } else {
+            throw new Error(`unknown action "${action}"`)
+          }
+          return current
+        })
+        const notifications = []
+        const warnings = []
+        const proposal = outcome.proposal
+        if (action === 'propose') {
+          for (const name of outcome.affected) {
+            if (name === membership.name) continue
+            const failure = await sendPeer(ctx, agent, name, `[PROPOSAL] ${membership.name} opened ${proposal.id} (${proposal.kind}${proposal.itemId ? ` on ${proposal.itemId}` : ''}): ${proposal.text}\nVote with team_flow_decide {action:"vote", proposal_id:"${proposal.id}", vote:"yes|no|abstain"}.`, exec.signal)
+            if (failure === null) notifications.push(name)
+            else warnings.push(failure)
+          }
+        } else if (action === 'vote') {
+          const tally = outcome.tally
+          if (proposal.by !== membership.name) {
+            const failure = await sendPeer(ctx, agent, proposal.by, `[VOTE] ${membership.name} voted ${args.vote ?? 'yes'} on ${proposal.id}; tally yes=${tally.yes} no=${tally.no} abstain=${tally.abstain} of ${tally.affected} affected.`, exec.signal)
+            if (failure === null) notifications.push(proposal.by)
+            else warnings.push(failure)
+          }
+          if (outcome.resolution === 'escalated') {
+            const failure = await sendPeer(ctx, agent, 'lead', `[DECISION] ${proposal.id} ended in a tie and needs Lead arbitration: ${proposal.text}`, exec.signal)
+            if (failure === null) notifications.push('lead')
+            else warnings.push(failure)
+          }
+        } else if (action === 'resolve') {
+          for (const name of members.map((member) => member.name)) {
+            if (name === membership.name) continue
+            const failure = await sendPeer(ctx, agent, name, `[DECISION] The Lead settled ${proposal.id}: ${proposal.resolution ?? ''}`, exec.signal)
+            if (failure === null) notifications.push(name)
+            else warnings.push(failure)
+          }
+        } else {
+          for (const name of members.map((member) => member.name)) {
+            if (name === membership.name) continue
+            const failure = await sendPeer(ctx, agent, name, `[PROPOSAL] ${membership.name} withdrew ${proposal.id}.`, exec.signal)
+            if (failure === null) notifications.push(name)
+            else warnings.push(failure)
+          }
+        }
+        return {
+          proposal_id: proposal.id,
+          status: proposal.status,
+          kind: proposal.kind,
+          item_id: proposal.itemId,
+          votes: action === 'vote' ? outcome.tally : proposal.votes.length,
+          tally: action === 'vote' ? outcome.tally : null,
+          resolution: action === 'vote' ? (proposal.resolution ?? null) : (proposal.resolution ?? null),
+          notifications,
+          warnings,
+        }
+      },
+    },
+    {
+      name: 'team_flow_read',
+      description:
+        'Read the peer-collaboration context: recent Team channel messages, open proposals, the open queue, review invitations and handoffs addressed to you, unanswered questions, and (with item_id) that item thread. Use it before acting and after any peer message.',
+      parameters: {
+        type: 'object',
+        properties: {
+          item_id: { type: 'string', description: 'Optional work item id to include its thread and review/handoff records.' },
+          limit: { type: 'integer', description: 'How many channel messages to return (default 30, max 100).' },
+        },
+        additionalProperties: false,
+      },
+      output: jsonOutput({
+        type: 'object',
+        properties: {
+          channel: { type: 'array', items: {} },
+          proposals: { type: 'array', items: {} },
+          open_queue: { type: 'array', items: { type: 'string' } },
+          my_review_requests: { type: 'array', items: {} },
+          my_handoffs: { type: 'array', items: {} },
+          questions_to_me: { type: 'array', items: {} },
+          item: {},
+          next_actions: { type: 'array', items: { type: 'string' } },
+          warnings: { type: 'array', items: { type: 'string' } },
+        },
+      }),
+      async execute(args, exec) {
+        const { agent, membership } = resolveCaller(ctx, exec, 'team_flow_read')
+        const state = await requireRun(store, agent, 'team_flow_read')
+        W.ensureCollaboration(state)
+        const limit = Math.min(Math.max(Number.isInteger(args.limit) ? args.limit : 30, 1), 100)
+        const members = ctx.agentTeams.listMembers(agent).map((member) => ({ name: member.name, role: member.role }))
+        const summary = W.collaborationSummary(state, { me: membership.name, role: membership.role, members })
+        const itemId = args.item_id === undefined || args.item_id === null || String(args.item_id).trim() === '' ? null : String(args.item_id).trim()
+        let item = null
+        if (itemId !== null) {
+          const found = W.findItem(state, itemId)
+          item = {
+            id: found.id,
+            subject: found.subject,
+            status: found.status,
+            owner: found.owner ?? null,
+            assignment: found.assignment ?? 'lead',
+            claim: found.claim ?? null,
+            pending_reviewer: W.pendingReview(found)?.reviewer ?? null,
+            review_requests: found.reviewRequests ?? [],
+            handoffs: found.handoffs ?? [],
+            definition_of_done: found.definitionOfDone,
+            open_proposals: W.openBlockingProposals(state, found.id).map((proposal) => proposal.id),
+          }
+        }
+        const channelSource = itemId === null
+          ? state.channel
+          : state.channel.filter((message) => message.refs?.itemId === itemId)
+        const channel = channelSource.slice(-limit).map((message) => ({
+          id: message.id,
+          at: message.at,
+          from: message.from,
+          to: message.to,
+          kind: message.kind,
+          text: message.text,
+          reply_to: message.replyTo ?? null,
+          item_id: message.refs?.itemId ?? null,
+          finding_id: message.refs?.findingId ?? null,
+          proposal_id: message.refs?.proposalId ?? null,
+        }))
+        const proposals = state.proposals.map((proposal) => {
+          const affected = W.affectedMembersFor(proposal, state, members)
+          return {
+            id: proposal.id,
+            kind: proposal.kind,
+            item_id: proposal.itemId,
+            by: proposal.by,
+            status: proposal.status,
+            text: proposal.text,
+            tally: W.tallyProposal(proposal, affected),
+            votes: proposal.votes.map((vote) => ({ by: vote.by, vote: vote.vote, comment: vote.comment })),
+            resolution: proposal.resolution ?? null,
+          }
+        })
+        return {
+          channel,
+          proposals,
+          open_queue: summary.open_queue,
+          my_review_requests: summary.review_invites,
+          my_handoffs: summary.handoffs_to_me,
+          questions_to_me: summary.questions_to_me,
+          item,
+          next_actions: W.nextActions(state, { me: { name: membership.name, role: membership.role }, role: membership.role, members, settings: state.settings }),
+          warnings: [],
         }
       },
     },

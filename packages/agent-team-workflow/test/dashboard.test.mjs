@@ -7,6 +7,9 @@
  * documented contract: empty board, waves and dependency cycles, status
  * normalization, review records and open findings, counts, truncation limits,
  * gate/escalation passthrough, event ordering, and defensive degradation.
+ * Snapshot version 2 also covers the peer-collaboration aggregation of
+ * docs/12 §5: channel, proposals/votes, open queue, review invitations,
+ * handoffs, per-item threads, and the distilled peer→peer edges.
  *
  * Run: node --test test/
  */
@@ -82,6 +85,68 @@ function makeFinding(overrides = {}) {
     ...overrides,
   }
 }
+
+/** Build one blackboard channel message (docs/12 §2). */
+function makeMessage(overrides = {}) {
+  return {
+    id: 'm1',
+    at: NOW,
+    from: 'impl',
+    to: 'team',
+    kind: 'note',
+    text: 'a message',
+    replyTo: null,
+    refs: {},
+    ...overrides,
+  }
+}
+
+/** Build one proposal vote. */
+function makeVote(overrides = {}) {
+  return { by: 'rev', at: NOW, vote: 'yes', comment: null, ...overrides }
+}
+
+/** Build one blackboard proposal (docs/12 §2). */
+function makeProposal(overrides = {}) {
+  return {
+    id: 'p1',
+    at: NOW,
+    by: 'impl',
+    kind: 'dod',
+    itemId: null,
+    text: 'proposal text',
+    status: 'open',
+    votes: [],
+    resolvedAt: null,
+    resolution: null,
+    ...overrides,
+  }
+}
+
+/** Build one peer review invitation (docs/12 §2 `reviewRequests`). */
+function makeReviewRequest(overrides = {}) {
+  return { by: 'impl', at: NOW, reviewer: 'rev', status: 'open', respondedAt: null, response: null, ...overrides }
+}
+
+/** Build one item handoff (docs/12 §2 `items[].handoffs`). */
+function makeItemHandoff(overrides = {}) {
+  return { by: 'impl', at: NOW, to: 'rev', reason: 'hand over', status: 'offered', respondedAt: null, ...overrides }
+}
+
+/** Build one item claim record. */
+function makeClaim(overrides = {}) {
+  return { by: 'impl', at: NOW, leaseMinutes: 30, note: null, ...overrides }
+}
+
+/** The collaboration block a version-1 board must still produce. */
+const EMPTY_COLLABORATION = Object.freeze({
+  channel: [],
+  proposals: [],
+  openQueue: [],
+  pendingReviews: [],
+  handoffs: [],
+  edges: [],
+})
 
 /** Build one blackboard run state the way `createRun` does. */
 function makeState(overrides = {}) {
@@ -193,7 +258,7 @@ test('run=null still returns the team and diagnostics (empty board, not an error
   const snapshot = buildSnapshot(input)
   assert.equal(snapshot.ok, true)
   assert.equal(snapshot.version, SNAPSHOT_VERSION)
-  assert.equal(snapshot.version, 1)
+  assert.equal(snapshot.version, 2)
   assert.equal(snapshot.generatedAt, NOW)
   assert.equal(snapshot.sessionId, 'session-test')
   assert.equal(snapshot.run, null)
@@ -662,4 +727,340 @@ test('buildSnapshot is deterministic for a given input', () => {
   })
   assert.deepEqual(buildSnapshot(input), buildSnapshot(input))
   assert.deepEqual(JSON.parse(JSON.stringify(buildSnapshot(input))), buildSnapshot(input))
+
+  // Collaboration data must be just as deterministic (sorting, ranking, caps).
+  const collaborative = makeState({
+    items: [makeItem({ id: 'W1', assignment: 'open', owner: null, claim: makeClaim() })],
+    channel: [
+      makeMessage({ id: 'm2', at: '2026-11-02T00:00:02.000Z', from: 'impl', to: 'team', kind: 'question', refs: { itemId: 'W1' } }),
+      makeMessage({ id: 'm1', at: '2026-11-02T00:00:01.000Z', from: 'rev', to: 'impl', kind: 'answer', refs: { itemId: 'W1' } }),
+    ],
+    proposals: [makeProposal({ id: 'p1', itemId: 'W1', votes: [makeVote({ by: 'impl' }), makeVote({ by: 'rev', vote: 'no' })] })],
+  })
+  const collaborativeInput = makeInput(collaborative)
+  assert.deepEqual(buildSnapshot(collaborativeInput), buildSnapshot(collaborativeInput))
+})
+
+// ---------------------------------------------------------------------------
+// Peer collaboration (docs/12 §5, snapshot version 2)
+// ---------------------------------------------------------------------------
+
+test('a version-1 board yields an empty collaboration block and v2 item defaults', () => {
+  const run = buildSnapshot(makeInput(makeState({ items: [makeItem()] }))).run
+  // Never null: the client can render the collaboration panels unconditionally.
+  assert.deepEqual(run.collaboration, EMPTY_COLLABORATION)
+  const item = run.items[0]
+  assert.equal(item.assignment, 'lead')
+  assert.equal(item.claim, null)
+  assert.deepEqual(item.reviewRequests, [])
+  assert.deepEqual(item.handoffs, [])
+  assert.deepEqual(item.thread, [])
+  assert.equal(item.openProposals, 0)
+  // An unknown assignment degrades to the documented v1 default.
+  const weird = buildSnapshot(makeInput(makeState({ items: [makeItem({ assignment: 'volunteer' })] }))).run
+  assert.equal(weird.items[0].assignment, 'lead')
+})
+
+test('channel messages keep their refs, sort ascending, and clip text at 500', () => {
+  const channel = [
+    makeMessage({
+      id: 'm2',
+      at: '2026-11-02T00:00:02.000Z',
+      from: 'rev',
+      to: 'impl',
+      kind: 'answer',
+      text: 'x'.repeat(600),
+      replyTo: 'm1',
+      refs: { itemId: 'W1', findingId: 'F1' },
+    }),
+    makeMessage({ id: 'm1', at: '2026-11-02T00:00:01.000Z', from: 'impl', to: 'team', kind: 'question', text: 'why?', refs: { itemId: 'W1' } }),
+    makeMessage({ id: 'm3', at: '2026-11-02T00:00:03.000Z', from: 'lead', to: 'impl', refs: { proposalId: 'p1' } }),
+  ]
+  const messages = buildSnapshot(makeInput(makeState({ channel, items: [makeItem()] }))).run.collaboration.channel
+  assert.deepEqual(
+    messages.map((message) => message.id),
+    ['m1', 'm2', 'm3'],
+  )
+  assert.deepEqual(messages[0], {
+    id: 'm1',
+    at: '2026-11-02T00:00:01.000Z',
+    from: 'impl',
+    to: 'team',
+    kind: 'question',
+    text: 'why?',
+    itemId: 'W1',
+    findingId: null,
+    proposalId: null,
+    replyTo: null,
+  })
+  assert.equal(messages[1].text, `${'x'.repeat(500)}…`)
+  assert.equal(messages[1].findingId, 'F1')
+  assert.equal(messages[1].replyTo, 'm1')
+  assert.equal(messages[2].kind, 'note')
+  assert.equal(messages[2].proposalId, 'p1')
+  assert.equal(messages[2].itemId, null)
+})
+
+test('channel keeps the most recent 60 messages and warns about the truncation', () => {
+  const channel = Array.from({ length: 70 }, (_, index) =>
+    makeMessage({
+      id: `m${index + 1}`,
+      at: new Date(Date.UTC(2026, 10, 2, 0, 0, index)).toISOString(),
+      text: `message-${index + 1}`,
+    }),
+  )
+  const snapshot = buildSnapshot(makeInput(makeState({ channel })))
+  const messages = snapshot.run.collaboration.channel
+  assert.equal(messages.length, 60)
+  assert.equal(messages[0].id, 'm11')
+  assert.equal(messages.at(-1).id, 'm70')
+  const times = messages.map((message) => Date.parse(message.at))
+  assert.deepEqual(times, [...times].sort((left, right) => left - right))
+  assert.ok(snapshot.diagnostics.warnings.some((warning) => /collaboration channel truncated/.test(warning)))
+})
+
+test('proposal tallies count votes and the right affected electorate', () => {
+  const items = [makeItem({ id: 'W1', owner: 'impl', reviewers: ['rev', 'rev'] })]
+  const proposals = [
+    makeProposal({
+      id: 'p1',
+      itemId: 'W1',
+      votes: [makeVote({ by: 'rev', vote: 'yes' }), makeVote({ by: 'impl', vote: 'no' })],
+    }),
+    makeProposal({ id: 'p2', kind: 'scope', itemId: null, votes: [makeVote({ by: 'lead', vote: 'abstain' }), makeVote({ by: 'impl', vote: 'yes' })] }),
+    makeProposal({ id: 'p3', itemId: 'ghost', status: 'accepted', votes: [] }),
+  ]
+  const proposalsOut = buildSnapshot(makeInput(makeState({ items, proposals }))).run.collaboration.proposals
+  // An item proposal affects owner + reviewers (de-duplicated): impl + rev = 2.
+  assert.deepEqual(proposalsOut[0].tally, { yes: 1, no: 1, abstain: 0, affected: 2, total: 2 })
+  assert.deepEqual(
+    proposalsOut[0].votes.map((vote) => `${vote.by}:${vote.vote}`),
+    ['rev:yes', 'impl:no'],
+  )
+  // A team-wide proposal affects the whole roster; an unknown item degrades to that too.
+  assert.deepEqual(proposalsOut[1].tally, { yes: 1, no: 0, abstain: 1, affected: 3, total: 2 })
+  assert.deepEqual(proposalsOut[2].tally, { yes: 0, no: 0, abstain: 0, affected: 3, total: 0 })
+  assert.equal(proposalsOut[2].status, 'accepted')
+})
+
+test('proposals and votes are capped with diagnostics warnings', () => {
+  const proposals = Array.from({ length: 35 }, (_, index) => makeProposal({ id: `p${index + 1}` }))
+  proposals[34].votes = Array.from({ length: 20 }, (_, index) => makeVote({ by: `voter-${index}` }))
+  const snapshot = buildSnapshot(makeInput(makeState({ proposals })))
+  const proposalsOut = snapshot.run.collaboration.proposals
+  assert.equal(proposalsOut.length, 32)
+  assert.equal(proposalsOut[0].id, 'p4')
+  assert.equal(proposalsOut.at(-1).id, 'p35')
+  assert.equal(proposalsOut.at(-1).votes.length, 16)
+  // The tally is authoritative: it counts every (de-duplicated) vote, not just
+  // the votes the display cap kept.
+  assert.equal(proposalsOut.at(-1).tally.total, 20)
+  assert.ok(snapshot.diagnostics.warnings.some((warning) => /collaboration proposals truncated/.test(warning)))
+  assert.ok(snapshot.diagnostics.warnings.some((warning) => /proposal votes truncated/.test(warning)))
+})
+
+test('collaboration edges count direct messages and expand broadcasts', () => {
+  const channel = [
+    makeMessage({ id: 'm1', at: '2026-11-02T00:00:01.000Z', from: 'impl', to: 'rev', kind: 'question' }),
+    makeMessage({ id: 'm2', at: '2026-11-02T00:00:02.000Z', from: 'impl', to: 'rev', kind: 'answer' }),
+    makeMessage({ id: 'm3', at: '2026-11-02T00:00:03.000Z', from: 'impl', to: 'team', kind: 'status' }),
+    makeMessage({ id: 'm4', at: '2026-11-02T00:00:04.000Z', from: 'lead', to: 'impl', kind: 'ack' }),
+    makeMessage({ id: 'm5', at: '2026-11-02T00:00:05.000Z', from: 'impl', to: 'impl', kind: 'note' }),
+    makeMessage({ id: 'm6', at: '2026-11-02T00:00:06.000Z', from: 'rev', to: 'team', kind: 'handoff' }),
+    // Engine notices are posted as 'system'; they are not peers and own no node
+    // in the topology, so they must not produce an edge.
+    makeMessage({ id: 'm7', at: '2026-11-02T00:00:07.000Z', from: 'system', to: 'team', kind: 'status' }),
+    // A concrete target that is not on the roster is not a drawable node either.
+    makeMessage({ id: 'm8', at: '2026-11-02T00:00:08.000Z', from: 'impl', to: 'ghost', kind: 'question' }),
+  ]
+  const edges = buildSnapshot(makeInput(makeState({ channel }))).run.collaboration.edges
+  // impl → rev: 2 direct messages + 1 broadcast; broadcast edges fan out to
+  // every other roster member; the self message is dropped; ranking is by count.
+  assert.deepEqual(edges, [
+    { from: 'impl', to: 'rev', count: 3, kinds: ['answer', 'question', 'status'] },
+    { from: 'impl', to: 'lead', count: 1, kinds: ['status'] },
+    { from: 'lead', to: 'impl', count: 1, kinds: ['ack'] },
+    { from: 'rev', to: 'impl', count: 1, kinds: ['handoff'] },
+    { from: 'rev', to: 'lead', count: 1, kinds: ['handoff'] },
+  ])
+})
+
+test('collaboration edges are capped and ranked by count', () => {
+  const names = Array.from({ length: 9 }, (_, index) => `m${index}`)
+  const members = names.map((name, index) => ({ name, role: index === 0 ? 'lead' : 'teammate', status: 'running', context: 'fresh' }))
+  const channel = []
+  let sequence = 0
+  for (const from of names) {
+    for (const to of names) {
+      if (from === to) continue
+      sequence += 1
+      channel.push(makeMessage({ id: `m${sequence}`, at: new Date(Date.UTC(2026, 10, 2, 0, 0, sequence)).toISOString(), from, to }))
+    }
+  }
+  // 9 members produce 9 * 8 = 72 distinct directed edges.
+  const snapshot = buildSnapshot(makeInput(makeState({ channel }), { team: makeTeam({ me: { name: 'm0', role: 'lead' }, members }) }))
+  const edges = snapshot.run.collaboration.edges
+  assert.equal(edges.length, 64)
+  assert.deepEqual(edges[0], { from: 'm0', to: 'm1', count: 1, kinds: ['note'] })
+  assert.deepEqual(edges.at(-1), { from: 'm7', to: 'm8', count: 1, kinds: ['note'] })
+  assert.ok(snapshot.diagnostics.warnings.some((warning) => /collaboration edges truncated/.test(warning)))
+})
+
+test('open queue, pending review requests, and handoffs keep only live entries', () => {
+  const items = [
+    makeItem({ id: 'W1', owner: null, assignment: 'open', status: 'pending' }),
+    makeItem({ id: 'W2', owner: 'impl', assignment: 'open', status: 'pending' }),
+    makeItem({ id: 'W3', owner: null, assignment: 'open', status: 'in_review' }),
+    makeItem({
+      id: 'W4',
+      owner: null,
+      assignment: 'lead',
+      status: 'pending',
+      pendingReviewer: 'rev',
+      reviewRequests: [makeReviewRequest({ by: 'impl', reviewer: 'rev', at: NOW })],
+    }),
+    makeItem({ id: 'W5', status: 'pending', reviewRequests: [makeReviewRequest({ by: 'lead', reviewer: null, at: NOW })] }),
+    makeItem({ id: 'W6', status: 'in_review', reviews: [makeReview({ status: 'pending', reviewer: 'rev' })] }),
+    makeItem({ id: 'W7', reviewRequests: [makeReviewRequest({ status: 'accepted' })] }),
+  ]
+  const run = buildSnapshot(makeInput(makeState({ items }))).run
+  assert.deepEqual(run.collaboration.openQueue, ['W1'])
+  assert.deepEqual(run.collaboration.pendingReviews, [
+    { itemId: 'W4', requestedBy: 'impl', reviewer: 'rev', at: NOW },
+    { itemId: 'W5', requestedBy: 'lead', reviewer: null, at: NOW },
+    { itemId: 'W6', requestedBy: null, reviewer: 'rev', at: null },
+  ])
+  // Only 'offered' transfers surface at the run level, ascending by time.
+  const handoffItems = [
+    makeItem({
+      id: 'W1',
+      handoffs: [
+        makeItemHandoff({ to: 'rev', at: '2026-11-02T00:00:01.000Z' }),
+        makeItemHandoff({ to: 'lead', status: 'accepted', at: '2026-11-02T00:00:02.000Z' }),
+      ],
+    }),
+    makeItem({ id: 'W2', handoffs: [makeItemHandoff({ by: 'rev', to: 'impl', at: '2026-11-02T00:00:03.000Z' })] }),
+  ]
+  const handoffRun = buildSnapshot(makeInput(makeState({ items: handoffItems }))).run
+  assert.deepEqual(handoffRun.collaboration.handoffs, [
+    { itemId: 'W1', by: 'impl', to: 'rev', reason: 'hand over', status: 'offered', at: '2026-11-02T00:00:01.000Z' },
+    { itemId: 'W2', by: 'rev', to: 'impl', reason: 'hand over', status: 'offered', at: '2026-11-02T00:00:03.000Z' },
+  ])
+  // The item itself keeps every transfer status for the detail drawer.
+  assert.equal(handoffRun.items[0].handoffs.length, 2)
+  assert.equal(handoffRun.items[0].handoffs[1].status, 'accepted')
+})
+
+test('items expose their channel thread and open proposal count', () => {
+  const channel = [
+    makeMessage({ id: 'm1', refs: { itemId: 'W1' } }),
+    makeMessage({ id: 'm2', refs: { itemId: 'W1' } }),
+    makeMessage({ id: 'm3', refs: { itemId: 'W2' } }),
+    makeMessage({ id: 'm4', refs: {} }),
+  ]
+  const proposals = [
+    makeProposal({ id: 'p1', itemId: 'W1', status: 'open' }),
+    makeProposal({ id: 'p2', itemId: 'W1', status: 'open' }),
+    makeProposal({ id: 'p3', itemId: 'W1', status: 'accepted' }),
+    makeProposal({ id: 'p4', itemId: 'W2', status: 'open' }),
+    // A non-blocking team-wide proposal is tracked, but it does not block items.
+    makeProposal({ id: 'p5', kind: 'review_policy', itemId: null, status: 'open' }),
+    // A blocking team-wide proposal blocks every item (engine openBlockingProposals).
+    makeProposal({ id: 'p6', kind: 'replan', itemId: null, status: 'open' }),
+    // An escalated (tied) blocking proposal still blocks its item until the
+    // Lead arbitrates; a resolved non-blocking one never does.
+    makeProposal({ id: 'p7', kind: 'scope', itemId: 'W1', status: 'escalated' }),
+    makeProposal({ id: 'p8', kind: 'handoff', itemId: 'W1', status: 'open' }),
+  ]
+  const items = [makeItem({ id: 'W1' }), makeItem({ id: 'W2' })]
+  const run = buildSnapshot(makeInput(makeState({ items, channel, proposals }))).run
+  assert.deepEqual(
+    run.items[0].thread.map((message) => message.id),
+    ['m1', 'm2'],
+  )
+  assert.deepEqual(
+    run.items[1].thread.map((message) => message.id),
+    ['m3'],
+  )
+  // W1: p1 + p2 (open) + p6 (blocking team-wide) + p7 (escalated);
+  // p3 is accepted, p5 is review_policy, p8 is a non-blocking handoff.
+  assert.equal(run.items[0].openProposals, 4)
+  // W2: p4 + p6; p7 targets W1 only.
+  assert.equal(run.items[1].openProposals, 2)
+})
+
+test('item threads are capped at 20 with a diagnostics warning', () => {
+  const channel = Array.from({ length: 25 }, (_, index) =>
+    makeMessage({ id: `m${index + 1}`, at: new Date(Date.UTC(2026, 10, 2, 0, 0, index)).toISOString(), refs: { itemId: 'W1' } }),
+  )
+  const snapshot = buildSnapshot(makeInput(makeState({ items: [makeItem({ id: 'W1' })], channel })))
+  const thread = snapshot.run.items[0].thread
+  assert.equal(thread.length, 20)
+  assert.equal(thread[0].id, 'm6')
+  assert.equal(thread.at(-1).id, 'm25')
+  assert.ok(snapshot.diagnostics.warnings.some((warning) => /item threads truncated/.test(warning)))
+})
+
+test('item collaboration records are normalized for the drawer', () => {
+  const item = makeItem({
+    id: 'W1',
+    assignment: 'open',
+    claim: makeClaim({ by: 'impl', leaseMinutes: null, note: 'mine', at: NOW }),
+    reviewRequests: [makeReviewRequest({ reviewer: null, status: 'accepted', respondedAt: NOW, response: 'on it' })],
+    handoffs: [makeItemHandoff({ status: 'accepted', respondedAt: NOW })],
+  })
+  const snapshotItem = buildSnapshot(makeInput(makeState({ items: [item] }))).run.items[0]
+  assert.equal(snapshotItem.assignment, 'open')
+  assert.deepEqual(snapshotItem.claim, { by: 'impl', at: NOW, leaseMinutes: null, note: 'mine' })
+  assert.deepEqual(snapshotItem.reviewRequests, [
+    { by: 'impl', at: NOW, reviewer: null, status: 'accepted', respondedAt: NOW, response: 'on it' },
+  ])
+  assert.deepEqual(snapshotItem.handoffs, [
+    { by: 'impl', at: NOW, to: 'rev', reason: 'hand over', status: 'accepted', respondedAt: NOW },
+  ])
+})
+
+test('malformed collaboration data degrades instead of throwing', () => {
+  const snapshot = buildSnapshot({
+    state: {
+      runId: 'run-bad',
+      items: [
+        { id: 'W1', assignment: 42, claim: 'nope', reviewRequests: 'nope', handoffs: [null, 3], status: 'pending', owner: null, reviewers: null },
+        { id: 'W2', handoffs: { not: 'array' }, pendingReviewer: {}, reviews: 'nope' },
+      ],
+      channel: ['nope', null, { id: 3, at: 9, from: {}, to: [], kind: {}, text: 5, refs: 'x' }, { from: 'impl', to: 'team', kind: 'note', at: NOW }],
+      proposals: [
+        { id: 1, votes: 'nope' },
+        { id: 'p2', itemId: 7, votes: [{ by: 'rev', vote: 'maybe', at: 5 }, 'x', null] },
+      ],
+      artifacts: null,
+    },
+    team: { me: null, members: [{ name: 'lead' }, { name: '' }, null], tasks: [] },
+    now: NOW,
+    diagnostics: { boardSource: 'file', warnings: [] },
+  })
+  assert.equal(snapshot.ok, true)
+  const collaboration = snapshot.run.collaboration
+  assert.equal(collaboration.channel.length, 2)
+  const numeric = collaboration.channel.find((message) => message.text === '5')
+  assert.ok(numeric !== undefined)
+  assert.equal(numeric.kind, 'note')
+  assert.equal(numeric.itemId, null)
+  assert.equal(collaboration.proposals.length, 2)
+  assert.deepEqual(
+    collaboration.proposals[1].votes.map((vote) => [vote.by, vote.vote]),
+    [['rev', 'maybe']],
+  )
+  // The engine tallies an unknown vote value as abstain and counts every vote.
+  assert.deepEqual(collaboration.proposals[1].tally, { yes: 0, no: 0, abstain: 1, affected: 1, total: 1 })
+  assert.deepEqual(collaboration.openQueue, [])
+  // The roster only holds 'lead', so a message from a non-member sender cannot
+  // become a topology edge once the sender is filtered out.
+  assert.deepEqual(collaboration.edges, [])
+  assert.equal(snapshot.run.items[0].assignment, 'lead')
+  assert.equal(snapshot.run.items[0].claim, null)
+  assert.deepEqual(snapshot.run.items[0].reviewRequests, [])
+  assert.deepEqual(snapshot.run.items[0].handoffs, [])
+  assert.equal(snapshot.run.items[1].assignment, 'lead')
+  assert.equal(snapshot.run.items[1].claim, null)
 })

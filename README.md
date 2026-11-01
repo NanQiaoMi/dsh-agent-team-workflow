@@ -5,15 +5,23 @@
 它给 DSH 原生 Agent Teams 补上缺失的**治理层**：注入式标准工作流（plan → 并行独立执行 → 相互审阅 → 质量门禁 → 收敛）、评审轮次状态机、写范围纪律、证据强制与归档报告。
 
 ```
-原生 Agent Teams（传输层）          本插件（治理层）
-├─ spawn_teammate 具名成员    +    ├─ team_flow_plan    计划/波次/写范围/评审者
-├─ send_message 点对点消息     +    ├─ team_flow_status  黑板 + 每步 next_actions
+原生 Agent Teams（传输层）          本插件（治理层 + 对等协作层）
+├─ spawn_teammate 具名成员    +    ├─ team_flow_plan    计划/波次/写范围/评审者/开放队列
+├─ send_message 点对点消息     +    ├─ team_flow_status  黑板 + 每步 next_actions + 协作摘要
 ├─ team_task_* 共享任务板      +    ├─ team_flow_report  结构化交付 + 证据
 ├─ wait_agent / interrupt      +    ├─ team_flow_review_submit / _respond
 └─ 共享 cwd / 文件系统         +    ├─ team_flow_gate    六类门禁 + finalize
                                     ├─ team_flow_escalate 升级与仲裁
-                                    └─ team_flow_repair   卡点修复（reopen/reassign/reset_review）
+                                    ├─ team_flow_repair   卡点修复（reopen/reassign/reset_review）
+                                    ├─ team_flow_talk    成员直连频道（提问/回答/状态/反对）
+                                    ├─ team_flow_work    开放队列认领/释放、评审邀请/接受、任务交接
+                                    ├─ team_flow_decide  提案与投票（DoD/范围/重规划），平票升级 Lead 仲裁
+                                    └─ team_flow_read    拉取频道、待认领、邀请、待投提案、未答问题
 ```
+
+**这不是"Lead 逐项派活"的委派式工作流**：成员可以自己认领开放队列、直接向同伴提问、邀请同伴评审、
+对 DoD/范围提案并投票、把做不完的任务交接给同伴；Lead 只负责定 mission、仲裁死锁与最终门禁。
+所有协作动作都落在黑板（`state.json`）上，可在实时看板中回放。
 
 ## 目录
 
@@ -30,6 +38,7 @@
 | [`docs/09-dashboard-design.md`](docs/09-dashboard-design.md) | **实时监控看板**设计契约：snapshot 数据契约、HTTP 路由、Client View、面板与容错 |
 | [`docs/10-dashboard-verification.md`](docs/10-dashboard-verification.md) | 看板验证记录：30 例离线测试、真实黑板 dry-run、待人工确认的端到端步骤 |
 | [`docs/11-dashboard-live-rootcause.md`](docs/11-dashboard-live-rootcause.md) | **「View 不出现」根因**：client 启动图静默跳过（`exports` 漏导 `./package.json`）+ live 只读验证方法 |
+| [`docs/12-peer-collaboration.md`](docs/12-peer-collaboration.md) | **对等协作层设计**：channel / 开放队列 / 评审邀请 / 提案投票 / 交接、state v2、快照 v2、UI 契约 |
 | [`packages/agent-team-workflow/`](packages/agent-team-workflow/) | 可安装插件包（零外部依赖，纯 ESM） |
 
 ## 快速开始
@@ -66,6 +75,17 @@ Lead 会 `team_flow_plan` → 用返回的 spawn 简报 spawn 队友 → worker 
 - 每支 Team 独立目录（`teamId` = Lead 会话 id），同一 workspace 的多支 Team 互不可见
 - 队友侧：`team_flow_status` 随时返回自己的作业单
 
+## 对等协作（workflow v2）
+
+| 场景 | 成员怎么做 |
+| --- | --- |
+| 开放队列 | Lead `team_flow_plan` 时给 item 标 `assignment:"open"`（并可用 `workers:[...]` 生成认领池简报）；成员 `team_flow_work {action:"claim"}` 自己领，做完照常 `team_flow_report`；做不动就 `release` 或交接 |
+| 同伴提问 | `team_flow_talk {target:"<member>", kind:"question", item_id}` 直接问；被问的人 `kind:"answer", reply_to` 回。Lead 不中转 |
+| 互邀评审 | 作者报告后 `team_flow_work {action:"request_review", reviewer?}`；省略 reviewer = 开放邀请，任何同伴可 `take_review` |
+| 协商 DoD/范围 | `team_flow_decide {action:"propose", kind:"dod|scope|replan", ...}`，受影响成员各投一票；接受的 dod 提案自动并入 DoD；平票升级 Lead 仲裁（`resolve`） |
+| 任务交接 | `team_flow_work {action:"handoff_offer", to:"<member>"}`，对方 accept 后所有权与共享任务一起转移 |
+| 看板 | 会话头部 View →「团队看板」：频道、提案投票、待认领、peer↔peer 拓扑边、详情抽屉协作记录 |
+
 ## 实时监控看板
 
 插件自带一个 Web 端**实时看板**（不需要另装）：会话头部 View 切换 → **"团队看板"**。
@@ -101,7 +121,7 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 "$NODE" --test test/engine.test.mjs test/tools.integration.test.mjs test/plugin.test.mjs
 ```
 
-75 个用例（含看板 30 例）覆盖：计划校验（自审/环/写范围竞争/成员名/规模）、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类（含空证据、空命令、依赖未批准、评审无证据）、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。详见 [`docs/05-verification.md`](docs/05-verification.md)。
+113 个用例覆盖：计划校验（自审/环/写范围竞争/成员名/规模）、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类（含空证据、空命令、依赖未批准、评审无证据）、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。详见 [`docs/05-verification.md`](docs/05-verification.md)。
 
 **已通过真实 live run 验证**（2026-11-01，重启后）：4 个成员、2 个并行工作项、一次升级仲裁、两轮独立评审、门禁收敛并生成报告——记录与原始证据见 [`docs/08-live-run.md`](docs/08-live-run.md)。
 
@@ -113,7 +133,7 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 - **链接插件不能 import 宿主包**：实现保持零外部依赖（仅 `node:*`），因此没有 `Config`/schemastery 校验，配置由 `lib/config.js` 自行收敛并回显在 `team_flow_status`。
 - **黑板是工作区文件**：成员若绕过工具直接改写，插件无法从技术上防伪（共享 cwd 的固有边界）；评审结论/证据请以最终答复与报告复核为准。
 - **写范围检查基于自报**：插件不解析 git diff，未申报的越界写由评审与 Lead 最终 diff 复核兜底。
-- **每会话固定注入成本**：8 个工具 schema + 协议段约 3–4k tokens；不用工作流的会话可用 `plugin_manager set_bundle` 关闭。
+- **每会话固定注入成本**：12 个工具 schema + 协议段约 5–6k tokens；不用工作流的会话可用 `plugin_manager set_bundle` 关闭。
 
 ## 卸载
 

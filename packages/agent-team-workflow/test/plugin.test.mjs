@@ -22,14 +22,18 @@ import { createStore } from '../lib/store.js'
 import * as W from '../lib/workflow.js'
 
 const EXPECTED_TOOLS = [
+  'team_flow_decide',
   'team_flow_escalate',
   'team_flow_gate',
   'team_flow_plan',
+  'team_flow_read',
   'team_flow_repair',
   'team_flow_report',
   'team_flow_review_respond',
   'team_flow_review_submit',
   'team_flow_status',
+  'team_flow_talk',
+  'team_flow_work',
 ]
 
 /** A minimal Cordis-shaped context with per-Agent scoped services. */
@@ -189,7 +193,7 @@ test('applies workflow tools and prompt inputs only to Team members', () => {
     apply(harness.ctx, {})
     const names = harness.tools.filter((entry) => entry.agent === harness.lead.id).map((entry) => entry.name).sort()
     assert.deepEqual(names, EXPECTED_TOOLS)
-    assert.equal(harness.tools.filter((entry) => entry.agent === harness.teammate.id).length, 8)
+    assert.equal(harness.tools.filter((entry) => entry.agent === harness.teammate.id).length, 12)
     assert.equal(harness.tools.filter((entry) => entry.agent === harness.outsider.id).length, 0, 'non-Team subagents never see the workflow tools')
 
     const leadSections = harness.sections.filter((entry) => entry.agent === harness.lead.id)
@@ -221,7 +225,7 @@ test('a newly created teammate is installed and disposal unwinds every registrat
     harness.membership.set(late.id, { root: harness.lead, id: late.id, name: 'late', role: 'teammate' })
 
     harness.ctx.emit('agent/created', { agent: late })
-    assert.equal(harness.tools.filter((entry) => entry.agent === late.id).length, 8)
+    assert.equal(harness.tools.filter((entry) => entry.agent === late.id).length, 12)
     assert.equal(harness.sections.filter((entry) => entry.agent === late.id).length, 1)
 
     harness.ctx.emit('agent/disposed', { agent: late })
@@ -269,7 +273,7 @@ test('injectPolicy=false installs tools without prompt inputs', () => {
   return withWorkspace(async (cwd) => {
     const harness = createContext(cwd)
     apply(harness.ctx, { injectPolicy: false })
-    assert.equal(harness.tools.filter((entry) => entry.agent === harness.lead.id).length, 8)
+    assert.equal(harness.tools.filter((entry) => entry.agent === harness.lead.id).length, 12)
     assert.equal(harness.sections.length, 0)
     assert.equal(harness.contexts.length, 0)
   })

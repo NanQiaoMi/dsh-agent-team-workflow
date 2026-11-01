@@ -102,6 +102,21 @@ Lead 在所有 item approved 后：
 
 ---
 
+### 阶段 3.5 · 对等协作（v2，可选但推荐）
+
+成员之间不经过 Lead 直接协作，所有动作落黑板：
+
+| 场景 | 调用 |
+| --- | --- |
+| 认领开放项 | `team_flow_work {action:"claim", item_id}`（Lead 在 plan 里用 `assignment:"open"` + `workers:[...]` 发布） |
+| 同伴提问/回答 | `team_flow_talk {target:"<member>", kind:"question", item_id}` → `kind:"answer", reply_to:"<message id>"` |
+| 互邀评审 | 报告后 `team_flow_work {action:"request_review", item_id, reviewer?}`；受邀者 `{action:"take_review"}` |
+| 协商 DoD/范围 | `team_flow_decide {action:"propose", kind:"dod|scope", item_id, text}` → affected 成员 `{action:"vote", vote:"yes|no|abstain"}`；平票 Lead `{action:"resolve", outcome}` |
+| 交接 | `team_flow_work {action:"handoff_offer", item_id, to}` → 对方 `handoff_accept`/`handoff_decline` |
+| 查上下文 | `team_flow_read {item_id?}` |
+
+纪律：**未裁决的阻断提案（dod/scope/replan，含 escalated）会拦住 approve 与 gate**；协作不能替代证据与独立评审。
+
 ## 2. 工具参考
 
 | 工具 | 权限 | 关键参数 | 返回 | 典型错误 |
@@ -114,6 +129,10 @@ Lead 在所有 item approved 后：
 | `team_flow_gate` | 仅 Lead | `finalize?`, `overrides[{item_id,reason}]?` | `pass`, `item_gates[]`, `team_failures[]`, `report_path` | finalize 未过时列出全部失败 |
 | `team_flow_escalate` | 任何成员（裁决仅 Lead） | 创建：`kind`,`subject`,`detail`,`blocking?`,`item_id?`；裁决：`escalation_id`,`resolution` | `escalation_id`, `resolved`, `notified` | 未知 escalation、重复裁决 |
 | `team_flow_repair` | 仅 Lead | `item_id`, `action`(reopen/reassign/reset_review), `reason`, `owner?`, `reviewer?` | item 状态、notified | 缺 reason、非法成员名 |
+| `team_flow_talk` | 成员 | `target`(成员或 "team"), `kind`, `text`, `item_id?`, `finding_id?`, `reply_to?` | `message_id`, `delivered_to` | 空文本、未知成员 |
+| `team_flow_work` | 成员 | `action`(claim/release/request_review/take_review/handoff_offer/handoff_accept/handoff_decline), `item_id`, `reviewer?`, `to?`, `reason?`, `note?`, `lease_minutes?` | item 状态、owner、notifications | 非开放项认领、非 owner 释放、非邀请者接受、自审 |
+| `team_flow_decide` | 成员（resolve 仅 Lead） | `action`(propose/vote/withdraw/resolve), `kind`, `item_id?`, `text?`, `proposal_id?`, `vote?`, `comment?`, `outcome?` | proposal 状态、tally、notifications | 非 affected 投票、已关闭提案、非作者撤回 |
+| `team_flow_read` | 成员 | `item_id?`, `limit?` | channel 尾部、proposals、open_queue、个人邀请/交接/未答问题、next_actions | — |
 | `team_flow_status {item_id}` | 成员 | `item_id?` | 指定 item 时返回完整 report 与 review 记录 | 未知 item |
 
 **与原生工具的边界**：`team_task_*` 仍是共享看板的读写（claim/complete/依赖）；`team_flow_*` 是治理层。worker 认领用原生 `team_task_update`，交付用 `team_flow_report`；**不要**用原生 `complete` 代替报告。

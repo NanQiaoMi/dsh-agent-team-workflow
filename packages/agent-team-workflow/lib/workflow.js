@@ -8,7 +8,7 @@
  */
 
 /** Current workflow schema version written into run state. */
-export const WORKFLOW_VERSION = 1
+export const WORKFLOW_VERSION = 2
 
 /** Item lifecycle states. */
 export const ITEM_STATUS = Object.freeze({
@@ -41,6 +41,56 @@ export const ESCALATION_KINDS = Object.freeze(['blocker', 'conflict', 'scope_cha
 
 /** Resolution states an author may set on one finding. */
 export const FINDING_RESOLUTIONS = Object.freeze(['fixed', 'rebut', 'accepted_risk'])
+
+/** Peer channel message kinds (workflow v2). */
+export const CHANNEL_KINDS = Object.freeze(['note', 'question', 'answer', 'proposal', 'objection', 'handoff', 'ack', 'status'])
+
+/** Proposal kinds a member may open before peers vote (workflow v2). */
+export const PROPOSAL_KINDS = Object.freeze(['dod', 'scope', 'replan', 'review_policy', 'handoff'])
+
+/** Proposal kinds that block approval while they are still open. */
+export const BLOCKING_PROPOSAL_KINDS = Object.freeze(['dod', 'scope', 'replan'])
+
+/** Channel length cap: the blackboard is a live log, not an archive. */
+export const CHANNEL_LIMIT = 200
+
+/** Proposal length cap. */
+export const PROPOSAL_LIMIT = 100
+
+/** Default claim lease in minutes (advisory; the engine never force-releases). */
+export const DEFAULT_LEASE_MINUTES = 30
+
+/**
+ * Fill the v2 collaboration fields on one run state in place.
+ *
+ * v1 boards stay readable: every peer field is additive and defaults to the
+ * delegation behavior, so an old run keeps converging exactly as before.
+ * @param state - run state to complete.
+ * @returns the same state, now structurally v2.
+ */
+export function ensureCollaboration(state) {
+  if (!Array.isArray(state.channel)) state.channel = []
+  if (!Array.isArray(state.proposals)) state.proposals = []
+  if (!Number.isInteger(state.messageSeq)) state.messageSeq = 0
+  if (!Number.isInteger(state.proposalSeq)) state.proposalSeq = 0
+  if (Array.isArray(state.items)) {
+    for (const item of state.items) {
+      if (item.assignment !== 'open' && item.assignment !== 'lead') item.assignment = 'lead'
+      if (item.claim === undefined) item.claim = null
+      if (!Array.isArray(item.reviewRequests)) item.reviewRequests = []
+      if (!Array.isArray(item.handoffs)) item.handoffs = []
+      if (item.pendingReviewer === undefined) item.pendingReviewer = null
+    }
+  }
+  if (Number.isInteger(state.workflowVersion) && state.workflowVersion < WORKFLOW_VERSION) state.workflowVersion = WORKFLOW_VERSION
+  if (Number.isInteger(state.schemaVersion) && state.schemaVersion < 2) state.schemaVersion = 2
+  return state
+}
+
+/** Public alias used by readers that migrate a board on read. */
+export function upgradeState(state) {
+  return ensureCollaboration(state)
+}
 
 const MAX_EVENTS = 200
 const MAX_TEXT = 4000
@@ -110,7 +160,7 @@ export function appendEvent(state, event) {
 export function createRun(input) {
   const now = input.now ?? new Date().toISOString()
   const run = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     workflowVersion: input.workflowVersion,
     runId: input.runId,
     teamId: input.teamId,
@@ -124,10 +174,15 @@ export function createRun(input) {
     items: input.items,
     escalations: [],
     events: [],
+    channel: [],
+    proposals: [],
+    messageSeq: 0,
+    proposalSeq: 0,
     gate: null,
     artifacts: input.artifacts ?? null,
     finalizedAt: null,
   }
+  ensureCollaboration(run)
   appendEvent(run, { at: now, type: 'run/planned', actor: input.actor, detail: `planned ${input.items.length} work item(s)` })
   return run
 }
@@ -147,7 +202,7 @@ export function collectReviewers(items) {
 /** @returns the unique worker owner names involved in a run, in first-seen order. */
 export function collectOwners(items) {
   const seen = new Set()
-  for (const item of items) if (!seen.has(item.owner)) seen.add(item.owner)
+  for (const item of items) if (typeof item.owner === 'string' && item.owner.length > 0 && !seen.has(item.owner)) seen.add(item.owner)
   return [...seen]
 }
 
@@ -223,9 +278,15 @@ export function validatePlan(plan, settings) {
     ids.add(item.id)
     if (!item.subject) errors.push(`item "${item.id}" needs a non-empty subject`)
     if (item.subject && item.subject.length > 200) errors.push(`item "${item.id}" subject must be at most 200 characters`)
-    if (!item.owner) errors.push(`item "${item.id}" needs an owner member name`)
-    if (item.owner === 'lead') errors.push(`item "${item.id}" cannot be owned by the Lead; the Lead coordinates and gates`)
-    else if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(item.owner)) errors.push(`item "${item.id}" owner "${item.owner}" is not a spawnable member name (lower-kebab-case, digits allowed)`)
+    if (item.assignment === 'open' && (item.owner === undefined || item.owner === null || item.owner === '')) {
+      // Open-queue items are claimed by a peer after the plan is published.
+    } else if (!item.owner) {
+      errors.push(`item "${item.id}" needs an owner member name (or assignment:"open" to publish it for self-claim)`)
+    } else if (item.owner === 'lead') {
+      errors.push(`item "${item.id}" cannot be owned by the Lead; the Lead coordinates and gates`)
+    } else if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(item.owner)) {
+      errors.push(`item "${item.id}" owner "${item.owner}" is not a spawnable member name (lower-kebab-case, digits allowed)`)
+    }
     if (!Array.isArray(item.definitionOfDone) || item.definitionOfDone.length === 0) errors.push(`item "${item.id}" needs at least one definition_of_done entry`)
     if (!Array.isArray(item.writeScopes) || item.writeScopes.length === 0) warnings.push(`item "${item.id}" declares no write scope; scope discipline cannot be checked`)
     for (const scope of item.writeScopes) {
@@ -240,7 +301,10 @@ export function validatePlan(plan, settings) {
       if (blocker === item.id) errors.push(`item "${item.id}" cannot block itself`)
     }
     if (item.needsReview === false) continue
-    if (item.reviewers.length === 0) errors.push(`item "${item.id}" requires review but declares no reviewers (set needs_review=false to opt out explicitly)`)
+    if (item.reviewers.length === 0) {
+      if (item.assignment === 'open') warnings.push(`item "${item.id}" publishes review as an open invitation; the owner must request a peer review after reporting`)
+      else errors.push(`item "${item.id}" requires review but declares no reviewers (set needs_review=false to opt out explicitly)`)
+    }
     for (const reviewer of item.reviewers) {
       if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(reviewer)) errors.push(`item "${item.id}" reviewer "${reviewer}" is not a spawnable member name (lower-kebab-case, digits allowed)`)
       if (reviewer === item.owner) errors.push(`item "${item.id}" lists its own owner "${reviewer}" as reviewer; reviews must be independent`)
@@ -382,6 +446,7 @@ export function openReview(item, reviewer, options) {
   }
   item.reviewSeq += 1
   item.reviews.push(review)
+  item.pendingReviewer = reviewer
   item.status = ITEM_STATUS.IN_REVIEW
   return review
 }
@@ -445,8 +510,24 @@ export function applyReport(state, input) {
     // A new report invalidates earlier verdicts by construction (they bind to
     // the previous reportSeq), so every declared reviewer must sign this
     // version. There is deliberately no "already approved" shortcut here.
-    nextReviewer = outstandingReviewers(item)[0] ?? item.reviewers[0]
-    review = openReview(item, nextReviewer, { now, actor: input.caller })
+    const prospective = outstandingReviewers(item)[0] ?? item.reviewers[0]
+    if (prospective === undefined) {
+      // Open-queue item without a declared reviewer: the author must invite a
+      // peer, so the item waits in review with no pending review yet.
+      item.status = ITEM_STATUS.IN_REVIEW
+      item.pendingReviewer = null
+      postChannelMessage(state, {
+        from: input.caller,
+        to: 'team',
+        kind: 'question',
+        text: `${item.id} is reported and needs a peer reviewer: invite one with team_flow_work {action:"request_review", item_id:"${item.id}"}`,
+        itemId: item.id,
+        now,
+      })
+    } else {
+      nextReviewer = prospective
+      review = openReview(item, nextReviewer, { now, actor: input.caller })
+    }
   }
   state.phase = state.items.every((candidate) => candidate.status === ITEM_STATUS.APPROVED) ? RUN_PHASE.CONVERGED : RUN_PHASE.REVIEWING
   state.updatedAt = now
@@ -465,6 +546,15 @@ export function applyReviewSubmit(state, input) {
   if (review === null) throw new WorkflowError(`item "${item.id}" has no pending review`, 'WORKFLOW_NO_PENDING_REVIEW')
   if (review.reviewer !== input.reviewer) {
     throw new WorkflowError(`the pending review of "${item.id}" is assigned to "${review.reviewer}", not "${input.reviewer}"`, 'WORKFLOW_NOT_REVIEWER')
+  }
+  if (isApproving(input.verdict)) {
+    const blocking = openBlockingProposals(state, item.id)
+    if (blocking.length > 0) {
+      throw new WorkflowError(
+        `item "${item.id}" has open blocking proposal(s) ${blocking.map((proposal) => proposal.id).join(', ')}; settle them with team_flow_decide before approving`,
+        'WORKFLOW_OPEN_PROPOSAL',
+      )
+    }
   }
   const findingIds = new Set()
   const findings = input.findings.map((finding, index) => {
@@ -529,6 +619,7 @@ export function applyReviewSubmit(state, input) {
     item.status = ITEM_STATUS.CHANGES_REQUESTED
   }
   state.phase = state.items.every((candidate) => candidate.status === ITEM_STATUS.APPROVED) ? RUN_PHASE.CONVERGED : RUN_PHASE.REVIEWING
+  item.pendingReviewer = pendingReview(item)?.reviewer ?? null
   state.updatedAt = input.now
   return { item, review, nextReview, nextReviewer }
 }
@@ -698,6 +789,13 @@ export function evaluateGates(state, input) {
     if (item.needsReview !== false && outstanding.length > 0) {
       failures.push(`review not approved by: ${outstanding.join(', ')}`)
     }
+    if (item.needsReview !== false && item.reviewers.length === 0) {
+      failures.push('no peer reviewer was ever assigned; the owner must invite one with team_flow_work {action:"request_review"}')
+    }
+    const blockingProposals = openBlockingProposals(state, item.id)
+    if (blockingProposals.length > 0) {
+      failures.push(`open blocking proposal(s): ${blockingProposals.map((proposal) => `${proposal.id}(${proposal.kind})`).join(', ')}`)
+    }
     if (reworkRounds(item) > input.settings.maxReviewRounds) {
       warnings.push(`${reworkRounds(item)} rework round(s) exceeded the configured maximum`)
     }
@@ -768,6 +866,59 @@ export function findItemByTaskId(state, taskId) {
 }
 
 /**
+ * Summarize the peer-collaboration state for status and next actions.
+ * @param state - run state.
+ * @param input - `{ me, role, members }`.
+ * @returns open queue, invitations, ballots and unanswered questions.
+ */
+export function collaborationSummary(state, input) {
+  ensureCollaboration(state)
+  const me = typeof input.me === 'string' ? input.me : (input.me?.name ?? '')
+  const isLead = input.role === 'lead'
+  const members = input.members ?? []
+  const open_queue = state.items.filter((item) => item.assignment === 'open' && item.report === null && (typeof item.owner !== 'string' || item.owner.length === 0)).map((item) => item.id)
+  const review_invites = []
+  const handoffs_to_me = []
+  const questions_to_me = []
+  for (const item of state.items) {
+    const hasPendingReview = pendingReview(item) !== null
+    for (const request of item.reviewRequests) {
+      if (hasPendingReview) break
+      if (request.status !== 'open') continue
+      if (request.by === me) continue
+      if (request.reviewer !== null && request.reviewer !== me) continue
+      if (!isLead && item.owner === me) continue
+      review_invites.push({ itemId: item.id, reviewer: request.reviewer, by: request.by })
+    }
+    for (const handoff of item.handoffs) {
+      if (handoff.status === 'offered' && handoff.to === me) handoffs_to_me.push({ itemId: item.id, by: handoff.by, reason: handoff.reason })
+    }
+  }
+  const proposals_awaiting_vote = []
+  for (const proposal of state.proposals) {
+    if (proposal.status !== 'open') continue
+    if (proposal.votes.some((vote) => vote.by === me)) continue
+    const affected = affectedMembersFor(proposal, state, members)
+    if (affected.includes(me)) proposals_awaiting_vote.push({ id: proposal.id, kind: proposal.kind, itemId: proposal.itemId, by: proposal.by })
+  }
+  for (const message of state.channel) {
+    if (message.kind !== 'question') continue
+    if (message.from === me) continue
+    if (message.to !== 'team' && message.to !== me) continue
+    const answered = state.channel.some((candidate) => candidate.replyTo === message.id && candidate.from === me)
+    if (answered) continue
+    questions_to_me.push({ id: message.id, from: message.from, text: message.text, itemId: message.refs?.itemId ?? null })
+  }
+  return {
+    open_queue,
+    review_invites,
+    handoffs_to_me,
+    proposals_awaiting_vote,
+    questions_to_me: questions_to_me.slice(-5),
+  }
+}
+
+/**
  * Role-aware next actions for one member. This is the workflow engine's
  * steering surface: `team_flow_status` returns it so no member has to infer
  * the protocol from prose.
@@ -788,6 +939,8 @@ export function nextActions(state, input) {
   const approved = state.items.filter((item) => item.status === ITEM_STATUS.APPROVED).length
   const allApproved = approved === state.items.length
 
+  const collaboration = collaborationSummary(state, { me, role: input.role, members: input.members ?? [] })
+
   if (isLead) {
     for (const escalation of openBlocking) actions.push(`Resolve escalation ${escalation.id} ("${escalation.subject}") with team_flow_escalate {escalation_id:"${escalation.id}", resolution:"..."}.`)
     const needsOwner = state.items.filter((item) => item.status === ITEM_STATUS.PENDING || item.status === ITEM_STATUS.RUNNING)
@@ -802,6 +955,17 @@ export function nextActions(state, input) {
     const stuckReviews = state.items.filter((item) => item.status === ITEM_STATUS.IN_REVIEW && pendingReview(item) !== null)
     if (stuckReviews.length > 0) {
       actions.push(`If a pending review stays stuck because its reviewer is inactive or was never spawned, use team_flow_repair {action:"reset_review", item_id:"<id>", reviewer:"<member>"} (or reassign the item) instead of waiting forever.`)
+    }
+    if (collaboration.open_queue.length > 0) {
+      actions.push(`Open queue: ${collaboration.open_queue.join(', ')}. Let peers claim them (they run team_flow_work {action:"claim"}); spawn or wake the workers if nobody is active, instead of assigning by hand.`)
+    }
+    const waitingReviewers = state.items.filter((item) => item.needsReview !== false && item.reviewers.length === 0 && item.report !== null)
+    if (waitingReviewers.length > 0) {
+      actions.push(`These reported items still need a peer reviewer: ${waitingReviewers.map((item) => item.id).join(', ')}. Their owners should invite one; if they are inactive, ask a peer to team_flow_work {action:"take_review"}.`)
+    }
+    const openProposalList = state.proposals.filter((proposal) => proposal.status === 'open')
+    if (openProposalList.length > 0) {
+      actions.push(`Open proposals: ${openProposalList.map((proposal) => `${proposal.id}(${proposal.kind})`).join(', ')}. Let affected peers vote with team_flow_decide {action:"vote"}; arbitrate only ties or deadlocks.`)
     }
     if (allApproved && openBlocking.length === 0) actions.push('All items are approved: run team_flow_gate {finalize:true} to evaluate the gates, write the report, and converge the run.')
     else if (!allApproved) actions.push(`Wait for reviews using wait_agent, then re-read team_flow_status. Approved ${approved}/${state.items.length}.`)
@@ -826,9 +990,26 @@ export function nextActions(state, input) {
     const review = pendingReview(item)
     actions.push(`Review ${item.id} round ${review.round}: inspect the reported files and evidence, then call team_flow_review_submit with a verdict and evidence-backed findings.`)
   }
+  for (const itemId of collaboration.open_queue) {
+    const item = state.items.find((candidate) => candidate.id === itemId)
+    if (item === undefined) continue
+    actions.push(`Open queue item ${item.id} ("${item.subject}"): claim it with team_flow_work {action:"claim", item_id:"${item.id}"} if you can take it, then work inside ${item.writeScopes.length > 0 ? item.writeScopes.join(', ') : 'its declared scope'}.`)
+  }
+  for (const request of collaboration.review_invites) {
+    actions.push(`Peer review invitation for ${request.itemId}${request.reviewer === null ? ' (open to anyone)' : ''}: accept with team_flow_work {action:"take_review", item_id:"${request.itemId}"} to become its reviewer.`)
+  }
+  for (const handoff of collaboration.handoffs_to_me) {
+    actions.push(`${handoff.by} offers you ${handoff.itemId}${handoff.reason ? ` ("${handoff.reason}")` : ''}: accept with team_flow_work {action:"handoff_accept", item_id:"${handoff.itemId}"} or decline with {action:"handoff_decline"}.`)
+  }
+  for (const proposal of collaboration.proposals_awaiting_vote) {
+    actions.push(`Proposal ${proposal.id} (${proposal.kind}${proposal.itemId === null ? '' : ` ${proposal.itemId}`}) needs your vote: team_flow_decide {action:"vote", proposal_id:"${proposal.id}", vote:"yes|no|abstain"}.`)
+  }
+  for (const question of collaboration.questions_to_me) {
+    actions.push(`${question.from} asked you in the channel${question.itemId === null ? '' : ` about ${question.itemId}`}: "${question.text.slice(0, 160)}". Answer with team_flow_talk {target:"${question.from}", kind:"answer", reply_to:"${question.id}", item_id:"${question.itemId ?? ''}"}.`)
+  }
   if (actions.length === 0) {
     const waiting = state.items.some((item) => item.reviews.some((review) => review.status === 'pending'))
-    actions.push(waiting ? 'No action is assigned to you right now. Use team_flow_status after a peer message; the Lead will steer the next round.' : 'No action is assigned to you right now; wait for the Lead.')
+    actions.push(waiting ? 'No action is assigned to you right now. Read the channel and status after a peer message; the Lead will steer the next round.' : 'No action is assigned to you right now; wait for the Lead or claim an open item.')
   }
   return actions
 }
@@ -875,6 +1056,12 @@ export function buildStatus(state, input) {
       open_findings: unresolvedFindings(item).length,
       report_summary: item.report?.summary ?? null,
       override: item.overrideReason ?? null,
+      assignment: item.assignment ?? 'lead',
+      claim: item.claim ?? null,
+      pending_reviewer: pending?.reviewer ?? item.pendingReviewer ?? null,
+      review_requests: item.reviewRequests ?? [],
+      handoffs: item.handoffs ?? [],
+      open_proposals: openBlockingProposals(state, item.id).length,
       ...(input.detailItemId === item.id
         ? {
             // Detailed records get their own keys: overwriting the compact
@@ -918,8 +1105,427 @@ export function buildStatus(state, input) {
       created_by: escalation.createdBy,
     })),
     team: members,
+    collaboration: (() => {
+      const summary = collaborationSummary(state, { me: me.name, role: input.role, members: input.members ?? [] })
+      return {
+        open_queue: summary.open_queue,
+        review_invites: summary.review_invites,
+        handoffs_to_me: summary.handoffs_to_me,
+        proposals_awaiting_vote: summary.proposals_awaiting_vote,
+        questions_to_me: summary.questions_to_me,
+        proposals_open: state.proposals.filter((proposal) => proposal.status === 'open').map((proposal) => ({ id: proposal.id, kind: proposal.kind, item_id: proposal.itemId, by: proposal.by })),
+        channel_tail: state.channel.slice(-10).map((message) => ({ id: message.id, at: message.at, from: message.from, to: message.to, kind: message.kind, text: message.text.slice(0, 300), item_id: message.refs?.itemId ?? null })),
+      }
+    })(),
     next_actions: nextActions(state, { ...input, me: me.name }),
   }
+}
+
+
+// ---------------------------------------------------------------------------
+// Peer collaboration layer (workflow v2)
+//
+// Members talk to each other directly, claim open work, invite peers to
+// review, negotiate scope/DoD through proposals and votes, and hand work off.
+// Every action lands on the blackboard so the board can replay who did what
+// with whom; the Lead only arbitrates deadlocks and gates the run.
+// ---------------------------------------------------------------------------
+
+/** @returns the proposal with one id, throwing a stable error when absent. */
+export function findProposal(state, proposalId) {
+  const proposal = (state.proposals ?? []).find((candidate) => candidate.id === proposalId)
+  if (proposal === undefined) throw new WorkflowError(`unknown proposal "${proposalId}"`, 'WORKFLOW_UNKNOWN_PROPOSAL')
+  return proposal
+}
+
+/** Record one peer channel message; the transport (sendMessage) happens in the tool layer. */
+export function postChannelMessage(state, input) {
+  ensureCollaboration(state)
+  const now = input.now ?? new Date().toISOString()
+  const kind = CHANNEL_KINDS.includes(input.kind) ? input.kind : 'note'
+  const text = String(input.text ?? '').trim()
+  if (text.length === 0) throw new WorkflowError('a channel message needs non-empty text', 'WORKFLOW_EMPTY_MESSAGE')
+  state.messageSeq += 1
+  const message = {
+    id: `m${state.messageSeq}`,
+    at: now,
+    from: input.from,
+    to: input.to === undefined || input.to === null || input.to === '' ? 'team' : input.to,
+    kind,
+    text: text.slice(0, 4000),
+    replyTo: input.replyTo ?? null,
+    refs: {
+      itemId: input.itemId ?? null,
+      findingId: input.findingId ?? null,
+      proposalId: input.proposalId ?? null,
+    },
+  }
+  state.channel.push(message)
+  if (state.channel.length > CHANNEL_LIMIT) state.channel.splice(0, state.channel.length - CHANNEL_LIMIT)
+  state.updatedAt = now
+  return message
+}
+
+/** @returns the reviewers whose sign-off one item still needs. */
+function needsIndependentReview(item) {
+  return item.needsReview !== false
+}
+
+/** Return the members a proposal affects: item owner+reviewers, or the whole Team. */
+export function affectedMembersFor(proposal, state, members) {
+  if (proposal.itemId !== null && proposal.itemId !== undefined) {
+    const item = (state.items ?? []).find((candidate) => candidate.id === proposal.itemId)
+    if (item === undefined) return []
+    const names = new Set()
+    for (const name of [item.owner, ...item.reviewers]) if (typeof name === 'string' && name.length > 0) names.add(name)
+    return [...names]
+  }
+  return [...new Set((members ?? []).map((member) => member.name).filter((name) => typeof name === 'string' && name.length > 0))]
+}
+
+/** Tally one proposal against its affected set. */
+export function tallyProposal(proposal, affected) {
+  const votes = Array.isArray(proposal.votes) ? proposal.votes : []
+  const tally = { yes: 0, no: 0, abstain: 0, affected: affected.length, total: votes.length }
+  for (const vote of votes) {
+    if (vote.vote === 'yes') tally.yes += 1
+    else if (vote.vote === 'no') tally.no += 1
+    else tally.abstain += 1
+  }
+  return tally
+}
+
+/** @returns open blocking proposals that cover one item (or the whole run). */
+export function openBlockingProposals(state, itemId) {
+  ensureCollaboration(state)
+  return state.proposals.filter((proposal) => {
+    if (proposal.status !== 'open' && proposal.status !== 'escalated') return false
+    if (!BLOCKING_PROPOSAL_KINDS.includes(proposal.kind)) return false
+    if (itemId === undefined || itemId === null) return true
+    return proposal.itemId === null || proposal.itemId === itemId
+  })
+}
+
+/** Claim one open-queue item for the caller. */
+export function claimItem(state, input) {
+  ensureCollaboration(state)
+  const now = input.now ?? new Date().toISOString()
+  const item = findItem(state, input.itemId)
+  if (item.assignment !== 'open') {
+    throw new WorkflowError(`item "${item.id}" is assigned by the Lead, not open for claiming; message the Lead if it should be reassigned`, 'WORKFLOW_ITEM_NOT_OPEN')
+  }
+  if (typeof item.owner === 'string' && item.owner.length > 0) {
+    throw new WorkflowError(`item "${item.id}" is already claimed by "${item.owner}"`, 'WORKFLOW_ITEM_CLAIMED')
+  }
+  if (item.report !== null) throw new WorkflowError(`item "${item.id}" is already reported and cannot be claimed`, 'WORKFLOW_ITEM_REPORTED')
+  if (item.status !== ITEM_STATUS.PENDING && item.status !== ITEM_STATUS.RUNNING) {
+    throw new WorkflowError(`item "${item.id}" is "${item.status}" and cannot be claimed now`, 'WORKFLOW_ITEM_NOT_CLAIMABLE')
+  }
+  item.owner = input.caller
+  item.claim = {
+    by: input.caller,
+    at: now,
+    leaseMinutes: Number.isInteger(input.leaseMinutes) ? input.leaseMinutes : DEFAULT_LEASE_MINUTES,
+    note: input.note === undefined ? null : String(input.note).slice(0, 1000),
+  }
+  item.updatedAt = now
+  appendEvent(state, { at: now, type: 'item/claimed', actor: input.caller, detail: `${item.id} claimed` })
+  postChannelMessage(state, { from: input.caller, to: 'team', kind: 'status', text: `claimed ${item.id}: ${item.subject}`, itemId: item.id, now })
+  return item
+}
+
+/** Release one claimed/owned item back to the queue before it is reported. */
+export function releaseItem(state, input) {
+  ensureCollaboration(state)
+  const now = input.now ?? new Date().toISOString()
+  const item = findItem(state, input.itemId)
+  if (item.owner !== input.caller) {
+    throw new WorkflowError(`only the current owner of "${item.id}" may release it (owner: "${item.owner ?? 'nobody'}")`, 'WORKFLOW_NOT_OWNER')
+  }
+  if (item.report !== null) {
+    throw new WorkflowError(`item "${item.id}" is already reported; ask a peer for a handoff instead of releasing it`, 'WORKFLOW_ITEM_REPORTED')
+  }
+  const previous = item.owner
+  item.owner = null
+  item.claim = null
+  item.updatedAt = now
+  appendEvent(state, { at: now, type: 'item/released', actor: input.caller, detail: `${item.id} released${input.reason ? `: ${String(input.reason).slice(0, 160)}` : ''}` })
+  postChannelMessage(state, { from: input.caller, to: 'team', kind: 'status', text: `released ${item.id}${input.reason ? `: ${String(input.reason)}` : ''}`, itemId: item.id, now })
+  return { item, previous }
+}
+
+/** Invite one peer (or the whole Team when `reviewer` is null) to review a reported item. */
+export function requestReviewFromPeer(state, input) {
+  ensureCollaboration(state)
+  const now = input.now ?? new Date().toISOString()
+  const item = findItem(state, input.itemId)
+  if (item.owner !== input.caller) {
+    throw new WorkflowError(`only the owner of "${item.id}" may request its review`, 'WORKFLOW_NOT_OWNER')
+  }
+  if (item.report === null) {
+    throw new WorkflowError(`item "${item.id}" has no report yet; report the work before requesting review`, 'WORKFLOW_NOT_REPORTED')
+  }
+  if (needsIndependentReview(item) === false) {
+    throw new WorkflowError(`item "${item.id}" opted out of review (needs_review=false)`, 'WORKFLOW_REVIEW_DISABLED')
+  }
+  const reviewer = input.reviewer === undefined || input.reviewer === null || input.reviewer === '' ? null : String(input.reviewer)
+  if (reviewer !== null && reviewer === input.caller) {
+    throw new WorkflowError('you cannot review your own work; invite a peer', 'WORKFLOW_SELF_REVIEW')
+  }
+  if (pendingReview(item) !== null) {
+    throw new WorkflowError(`item "${item.id}" already has a pending review by "${pendingReview(item).reviewer}"`, 'WORKFLOW_REVIEW_PENDING')
+  }
+  const request = { by: input.caller, at: now, reviewer, status: 'open', respondedAt: null, response: null }
+  item.reviewRequests.push(request)
+  if (reviewer !== null && !item.reviewers.includes(reviewer)) item.reviewers.push(reviewer)
+  if (reviewer !== null) {
+    // A named invitation assigns the round immediately: only that peer may
+    // submit, exactly like a plan-assigned reviewer. An open invitation waits
+    // for take_review before any review round exists.
+    openReview(item, reviewer, { now, actor: input.caller })
+  }
+  item.pendingReviewer = reviewer
+  item.updatedAt = now
+  appendEvent(state, { at: now, type: 'review/requested', actor: input.caller, detail: `${item.id} review requested${reviewer === null ? ' (open invitation)' : ` from ${reviewer}`}` })
+  postChannelMessage(state, {
+    from: input.caller,
+    to: reviewer === null ? 'team' : reviewer,
+    kind: 'question',
+    text: `peer review requested for ${item.id}${reviewer === null ? ' (anyone may take it)' : ''}`,
+    itemId: item.id,
+    now,
+  })
+  return request
+}
+
+/** Accept one open (or personally addressed) review invitation, creating the pending review. */
+export function takeReview(state, input) {
+  ensureCollaboration(state)
+  const now = input.now ?? new Date().toISOString()
+  const item = findItem(state, input.itemId)
+  if (item.owner === input.caller) {
+    throw new WorkflowError('you cannot review your own work', 'WORKFLOW_SELF_REVIEW')
+  }
+  if (item.report === null) throw new WorkflowError(`item "${item.id}" has no report to review yet`, 'WORKFLOW_NOT_REPORTED')
+  const current = pendingReview(item)
+  if (current !== null) {
+    if (current.reviewer !== input.caller) {
+      throw new WorkflowError(`the pending review of "${item.id}" belongs to "${current.reviewer}"`, 'WORKFLOW_NOT_REVIEWER')
+    }
+    return { item, review: current, request: null }
+  }
+  const request = [...item.reviewRequests].reverse().find((candidate) => {
+    if (candidate.status !== 'open') return false
+    return candidate.reviewer === null || candidate.reviewer === input.caller
+  })
+  if (request === undefined) {
+    throw new WorkflowError(`item "${item.id}" has no open review invitation for you`, 'WORKFLOW_NO_REVIEW_INVITE')
+  }
+  request.status = 'accepted'
+  request.respondedAt = now
+  request.response = 'accepted'
+  if (!item.reviewers.includes(input.caller)) item.reviewers.push(input.caller)
+  const review = openReview(item, input.caller, { now, actor: input.caller })
+  item.updatedAt = now
+  appendEvent(state, { at: now, type: 'review/taken', actor: input.caller, detail: `${item.id} review accepted` })
+  postChannelMessage(state, { from: input.caller, to: item.owner ?? 'team', kind: 'ack', text: `taking review of ${item.id}`, itemId: item.id, now })
+  return { item, review, request }
+}
+
+/** Offer one unreported item to a peer. */
+export function offerHandoff(state, input) {
+  ensureCollaboration(state)
+  const now = input.now ?? new Date().toISOString()
+  const item = findItem(state, input.itemId)
+  if (item.owner !== input.caller) throw new WorkflowError(`only the owner of "${item.id}" may hand it off`, 'WORKFLOW_NOT_OWNER')
+  if (item.report !== null) throw new WorkflowError(`item "${item.id}" is already reported; ask a peer for a rework handoff instead`, 'WORKFLOW_ITEM_REPORTED')
+  if (input.to === input.caller) throw new WorkflowError('you cannot hand an item to yourself', 'WORKFLOW_SELF_HANDOFF')
+  const offered = item.handoffs.find((handoff) => handoff.status === 'offered' && handoff.to === input.to)
+  if (offered !== undefined) throw new WorkflowError(`a handoff of "${item.id}" to "${input.to}" is already pending`, 'WORKFLOW_HANDOFF_PENDING')
+  const handoff = { by: input.caller, at: now, to: input.to, reason: input.reason === undefined ? null : String(input.reason).slice(0, 2000), status: 'offered', respondedAt: null }
+  item.handoffs.push(handoff)
+  item.updatedAt = now
+  appendEvent(state, { at: now, type: 'handoff/offered', actor: input.caller, detail: `${item.id} → ${input.to}` })
+  postChannelMessage(state, { from: input.caller, to: input.to, kind: 'handoff', text: `offering ${item.id} to you${handoff.reason ? `: ${handoff.reason}` : ''}`, itemId: item.id, now })
+  return handoff
+}
+
+/** Accept or decline a handoff offered to the caller. */
+export function respondHandoff(state, input) {
+  ensureCollaboration(state)
+  const now = input.now ?? new Date().toISOString()
+  const item = findItem(state, input.itemId)
+  const handoff = [...item.handoffs].reverse().find((candidate) => candidate.status === 'offered' && candidate.to === input.caller)
+  if (handoff === undefined) throw new WorkflowError(`item "${item.id}" has no handoff offered to you`, 'WORKFLOW_NO_HANDOFF')
+  handoff.respondedAt = now
+  handoff.status = input.accept ? 'accepted' : 'declined'
+  if (input.accept) {
+    const previous = item.owner
+    item.owner = input.caller
+    item.claim = { by: input.caller, at: now, leaseMinutes: DEFAULT_LEASE_MINUTES, note: `handoff from ${previous ?? 'nobody'}` }
+    appendEvent(state, { at: now, type: 'handoff/accepted', actor: input.caller, detail: `${item.id} ← ${previous ?? 'nobody'}` })
+  } else {
+    appendEvent(state, { at: now, type: 'handoff/declined', actor: input.caller, detail: item.id })
+  }
+  item.updatedAt = now
+  postChannelMessage(state, {
+    from: input.caller,
+    to: handoff.by,
+    kind: 'handoff',
+    text: `${input.accept ? 'accepted' : 'declined'} the handoff of ${item.id}${input.reason ? `: ${String(input.reason)}` : ''}`,
+    itemId: item.id,
+    now,
+  })
+  return { item, handoff }
+}
+
+/** Open one proposal for the affected peers to vote on. */
+export function proposeDecision(state, input) {
+  ensureCollaboration(state)
+  const now = input.now ?? new Date().toISOString()
+  if (!PROPOSAL_KINDS.includes(input.kind)) throw new WorkflowError(`proposal kind must be one of ${PROPOSAL_KINDS.join(', ')}`, 'WORKFLOW_BAD_PROPOSAL_KIND')
+  const text = String(input.text ?? '').trim()
+  if (text.length === 0) throw new WorkflowError('a proposal needs non-empty text', 'WORKFLOW_EMPTY_PROPOSAL')
+  const itemId = input.itemId === undefined || input.itemId === null || input.itemId === '' ? null : String(input.itemId)
+  if (itemId !== null) findItem(state, itemId)
+  if (state.proposals.length >= PROPOSAL_LIMIT) throw new WorkflowError(`this run already holds ${state.proposals.length} proposals`, 'WORKFLOW_PROPOSAL_LIMIT')
+  state.proposalSeq += 1
+  const proposal = {
+    id: `p${state.proposalSeq}`,
+    at: now,
+    by: input.by,
+    kind: input.kind,
+    itemId,
+    text: text.slice(0, 4000),
+    status: 'open',
+    votes: [],
+    resolvedAt: null,
+    resolution: null,
+  }
+  state.proposals.push(proposal)
+  appendEvent(state, { at: now, type: 'proposal/opened', actor: input.by, detail: `${proposal.id} ${input.kind}${itemId === null ? '' : ` on ${itemId}`}` })
+  postChannelMessage(state, {
+    from: input.by,
+    to: 'team',
+    kind: 'proposal',
+    text: `${proposal.id} (${input.kind}${itemId === null ? '' : ` ${itemId}`}): ${text}`,
+    itemId,
+    now,
+  })
+  return proposal
+}
+
+/** Record one vote and resolve the proposal when every affected member voted. */
+export function voteDecision(state, input) {
+  ensureCollaboration(state)
+  const now = input.now ?? new Date().toISOString()
+  const proposal = findProposal(state, input.proposalId)
+  if (proposal.status !== 'open') throw new WorkflowError(`proposal "${proposal.id}" is already ${proposal.status}`, 'WORKFLOW_PROPOSAL_CLOSED')
+  const affected = affectedMembersFor(proposal, state, input.members)
+  if (!affected.includes(input.by)) {
+    throw new WorkflowError(`you are not affected by proposal "${proposal.id}"; only ${affected.join(', ') || 'affected members'} vote`, 'WORKFLOW_NOT_AFFECTED')
+  }
+  const vote = input.vote === 'no' || input.vote === 'abstain' ? input.vote : 'yes'
+  const existing = proposal.votes.find((candidate) => candidate.by === input.by)
+  if (existing !== undefined) {
+    existing.vote = vote
+    existing.comment = input.comment === undefined ? existing.comment : String(input.comment).slice(0, 1000)
+    existing.at = now
+  } else {
+    proposal.votes.push({ by: input.by, at: now, vote, comment: input.comment === undefined ? null : String(input.comment).slice(0, 1000) })
+  }
+  const tally = tallyProposal(proposal, affected)
+  appendEvent(state, { at: now, type: 'proposal/voted', actor: input.by, detail: `${proposal.id} ${vote} (${tally.yes}/${tally.no}/${tally.abstain})` })
+  let resolution = null
+  if (tally.total >= affected.length) {
+    let status = 'rejected'
+    let text = ''
+    if (tally.yes > tally.no) {
+      status = 'accepted'
+      text = `accepted by vote (yes ${tally.yes}, no ${tally.no}, abstain ${tally.abstain})`
+    } else if (tally.no > tally.yes) {
+      status = 'rejected'
+      text = `rejected by vote (yes ${tally.yes}, no ${tally.no}, abstain ${tally.abstain})`
+    } else {
+      status = 'escalated'
+      text = `tied vote (yes ${tally.yes}, no ${tally.no}, abstain ${tally.abstain}); escalated to the Lead`
+      raiseEscalation(state, {
+        kind: 'conflict',
+        subject: `Proposal ${proposal.id} ended in a tie`,
+        detail: `${proposal.kind}${proposal.itemId === null ? '' : ` on ${proposal.itemId}`}: ${proposal.text.slice(0, 500)}`,
+        blocking: BLOCKING_PROPOSAL_KINDS.includes(proposal.kind),
+        itemId: proposal.itemId,
+        actor: input.by,
+        now,
+      })
+    }
+    proposal.status = status
+    proposal.resolvedAt = now
+    proposal.resolution = text
+    resolution = status
+    if (status === 'accepted' && proposal.kind === 'dod' && proposal.itemId !== null) {
+      const item = findItem(state, proposal.itemId)
+      if (!item.definitionOfDone.includes(proposal.text)) item.definitionOfDone.push(proposal.text)
+    }
+    appendEvent(state, { at: now, type: 'proposal/resolved', actor: 'system', detail: `${proposal.id} ${status}` })
+    postChannelMessage(state, { from: 'system', to: 'team', kind: 'status', text: `${proposal.id} ${status}: ${text}`, itemId: proposal.itemId, proposalId: proposal.id, now })
+  }
+  state.updatedAt = now
+  return { proposal, tally, affected, resolution }
+}
+
+
+/**
+ * Settle one open or escalated proposal by Lead arbitration.
+ *
+ * A tied vote escalates the proposal; the Lead must decide so the run can keep
+ * moving. The linked escalation is resolved in the same transition.
+ * @param state - run state (mutated).
+ * @param input - `{ proposalId, outcome: 'accepted'|'rejected', comment, actor, now }`.
+ * @returns the settled proposal.
+ */
+export function settleProposalByLead(state, input) {
+  ensureCollaboration(state)
+  const now = input.now ?? new Date().toISOString()
+  const proposal = findProposal(state, input.proposalId)
+  if (proposal.status !== 'open' && proposal.status !== 'escalated') {
+    throw new WorkflowError(`proposal "${proposal.id}" is already ${proposal.status}`, 'WORKFLOW_PROPOSAL_CLOSED')
+  }
+  const outcome = input.outcome === 'rejected' ? 'rejected' : 'accepted'
+  proposal.status = outcome
+  proposal.resolvedAt = now
+  proposal.resolution = `settled by Lead arbitration (${outcome})${input.comment ? `: ${String(input.comment).slice(0, 1000)}` : ''}`
+  if (outcome === 'accepted' && proposal.kind === 'dod' && proposal.itemId !== null) {
+    const item = findItem(state, proposal.itemId)
+    if (!item.definitionOfDone.includes(proposal.text)) item.definitionOfDone.push(proposal.text)
+  }
+  const escalation = state.escalations.find((entry) => !entry.resolved && (String(entry.subject).includes(proposal.id) || String(entry.detail).includes(proposal.id)))
+  if (escalation !== undefined) {
+    escalation.resolved = true
+    escalation.resolution = proposal.resolution
+    escalation.resolvedBy = input.actor
+    escalation.resolvedAt = now
+    appendEvent(state, { at: now, type: 'escalation/resolved', actor: input.actor, detail: `${escalation.id}: ${proposal.resolution.slice(0, 160)}` })
+  }
+  appendEvent(state, { at: now, type: 'proposal/resolved', actor: input.actor, detail: `${proposal.id} ${outcome} by arbitration` })
+  postChannelMessage(state, { from: input.actor, to: 'team', kind: 'status', text: `${proposal.id} ${outcome} by arbitration${input.comment ? `: ${String(input.comment)}` : ''}`, itemId: proposal.itemId, proposalId: proposal.id, now })
+  state.updatedAt = now
+  return proposal
+}
+
+/** Withdraw one open proposal of the caller. */
+export function withdrawProposal(state, input) {
+  ensureCollaboration(state)
+  const now = input.now ?? new Date().toISOString()
+  const proposal = findProposal(state, input.proposalId)
+  if (proposal.by !== input.caller) throw new WorkflowError(`only the author of "${proposal.id}" may withdraw it`, 'WORKFLOW_NOT_PROPOSAL_AUTHOR')
+  if (proposal.status !== 'open') throw new WorkflowError(`proposal "${proposal.id}" is already ${proposal.status}`, 'WORKFLOW_PROPOSAL_CLOSED')
+  proposal.status = 'withdrawn'
+  proposal.resolvedAt = now
+  proposal.resolution = 'withdrawn by the author'
+  appendEvent(state, { at: now, type: 'proposal/withdrawn', actor: input.caller, detail: proposal.id })
+  postChannelMessage(state, { from: input.caller, to: 'team', kind: 'status', text: `withdrew ${proposal.id}`, itemId: proposal.itemId, proposalId: proposal.id, now })
+  return proposal
 }
 
 /** Stable workflow error with a machine-readable code. */

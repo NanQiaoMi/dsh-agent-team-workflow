@@ -144,7 +144,7 @@ test('returns the live snapshot for a member session', () => {
     assert.equal(response.headers.get('cache-control'), 'no-store')
     const payload = await response.json()
     assert.equal(payload.ok, true)
-    assert.equal(payload.version, 1)
+    assert.equal(payload.version, 2)
     assert.equal(payload.sessionId, 'session-lead')
     assert.equal(payload.run.id, 'run-route-1')
     assert.equal(payload.run.items.length, 1)

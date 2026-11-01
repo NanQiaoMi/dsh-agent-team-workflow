@@ -21,7 +21,7 @@
 - Client：`client.js` 注册 `conversation.view`「团队看板」——执行流程图（波次/依赖箭头/评审自循环）、协作拓扑、事件流、门禁、升级、详情抽屉；1.2s 轮询、页面隐藏时暂停。
 - 打开方式：会话头部 View 切换 →「团队看板」。
 
-**8 个模型工具**
+**12 个模型工具**
 
 | 工具 | 权限 | 作用 |
 | --- | --- | --- |
@@ -33,6 +33,10 @@
 | `team_flow_gate` | Lead | 六类门禁检查；通过且 `finalize:true` 时写报告并收敛 |
 | `team_flow_escalate` | 成员/Lead | 升级 blocker/冲突/范围变更/仲裁（只记录，不改 item 状态）；Lead 裁决 |
 | `team_flow_repair` | Lead | 卡点修复：reopen / reassign / reset_review，必须写 reason |
+| `team_flow_talk` | 成员 | 对等频道：向某成员或全队发消息（提问/回答/状态/反对），走原生 sendMessage 直投并写黑板 |
+| `team_flow_work` | 成员 | 认领/释放开放队列项、邀请/接受评审、任务交接（offer/accept/decline） |
+| `team_flow_decide` | 成员（resolve 仅 Lead） | 提案（DoD/范围/重规划/评审策略）与投票；平票升级，Lead 仲裁 |
+| `team_flow_read` | 成员 | 拉取频道、提案、待认领、邀请、交接、未答问题与该 item 线程 |
 
 **门禁**：报告存在、证据合格（非空命令+整数退出码+evidence）、依赖已批准、评审全批准且批准带 `evidence_checked`、findings 清零、写范围纪律（基于自报）、独立性与升级。
 
@@ -71,7 +75,7 @@ lib/config.js       配置解析与默认值
 lib/store.js        黑板持久化：原子写 + 进程内锁 + 路径解析
 lib/workflow.js     纯状态机：计划校验、版本绑定、返修轮、门禁、next_actions（零依赖，可独立测试）
 lib/protocol.js     注入文本：L1 协议、worker/reviewer 简报、通知、最终报告
-lib/tools.js        8 个工具定义与执行
+lib/tools.js        12 个工具定义与执行
 locale/{en,zh}.json 插件管理器展示元数据
 icon.svg            插件图标
 cordis.patch.yml    bundle 补丁（新增一行，不覆盖原生 Team 行）
@@ -80,7 +84,8 @@ client.js           Web 端看板（conversation.view，纯 JS 动态模块，�
                     会静默跳过本包的客户端半（看板 tab 不出现），详见 docs/11
 lib/dashboard.js    看板聚合（零 import 纯函数）：waves/状态归一化/counts/截断
 lib/dashboard-route.js  GET /api/agent-team-workflow.snapshot（Connection 认证 Fetch 路由）
-test/               75 个离线用例（engine 26 / tools 14 / plugin 5 / dashboard 14 / route 6 / client 10）
+test/               113 个离线用例（engine 26 / collaboration 14 / tools 19 / plugin 5 /
+                    dashboard 26 / route 6 / client 17）
 ```
 
 ## 验证
@@ -90,7 +95,7 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 "$NODE" --test test/engine.test.mjs test/tools.integration.test.mjs test/plugin.test.mjs
 ```
 
-75 个用例：计划校验与波次、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验；看板快照（waves/截断/防御降级）、路由状态码与降级、客户端模块契约与空态渲染。
+113 个用例：计划校验与波次、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验；对等协作（认领/释放、评审邀请与接受、交接、提案投票与平票仲裁、阻断提案、频道与摘要、v1 板升级）；看板快照 v2（协作块/截断/防御降级）、路由状态码与降级、客户端模块契约与 v1/v2 快照渲染。
 
 ## 真实运行记录
 

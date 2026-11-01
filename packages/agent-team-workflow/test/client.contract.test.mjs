@@ -10,10 +10,14 @@
  *
  * That gives both halves of the contract:
  *   1. static — module envelope, single-require rule, required registration
- *      literals, forbidden constructs, no hardcoded colours, dictionary parity;
+ *      literals, forbidden constructs, no hardcoded colours, dictionary parity,
+ *      and the v2 peer-collaboration fields the board reads (docs/12 §5);
  *   2. behavioural — the exact `conversation.view` registration shape, the
- *      locale namespace/dictionaries, and a render smoke test of the empty
- *      state (which is where every optional snapshot field is exercised first).
+ *      locale namespace/dictionaries, a render smoke test of the empty state,
+ *      and — for the v2 collaboration panels — a full mount with a ~90-line
+ *      hook runtime (state + effects + a fake fetch, still no real React) so a
+ *      v1 snapshot (no `run.collaboration`) and a v2 snapshot are both rendered
+ *      end to end without a browser.
  *
  * Run: node --test test/client.contract.test.mjs
  */
@@ -22,7 +26,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import vm from 'node:vm'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -54,9 +58,9 @@ function captureModule(text) {
 }
 
 /** A React double: enough surface for the factory to evaluate, none of React's behaviour. */
-function createReactStub() {
+function createReactStub(implementation) {
   const required = []
-  const react = {
+  const react = implementation ?? {
     createElement(type, props, ...children) {
       return { type, props: props ?? {}, children }
     },
@@ -407,4 +411,566 @@ test('DashboardView renders the empty state from a null snapshot without throwin
   const boundary = element.children.filter((child) => child !== null && typeof child === 'object' && typeof child.type === 'function')
   assert.equal(boundary.length, 1, 'the board content must be wrapped in exactly one class error boundary')
   assert.equal(typeof boundary[0].type.prototype.componentDidCatch, 'function', 'the wrapper must be a React error boundary, not a plain wrapper')
+})
+
+// ---------------------------------------------------------------------------
+// Peer collaboration v2 (docs/12 §5/§6): fields read, panels, caps, drawer
+// ---------------------------------------------------------------------------
+
+test('collaboration contract: the board reads every docs/12 §5 field', () => {
+  // Snapshot block fields.
+  assert.ok(source.includes('run.collaboration'), 'the board reads the run.collaboration block')
+  for (const literal of ['raw.channel', 'raw.proposals', 'raw.openQueue', 'raw.pendingReviews', 'raw.handoffs', 'raw.edges', 'proposal.tally', 'proposal.votes']) {
+    assert.ok(source.includes(literal), `client.js must read ${JSON.stringify(literal)}`)
+  }
+  // Item-level fields.
+  for (const literal of ['item.assignment', 'item.claim', 'item.reviewRequests', 'item.handoffs', 'item.thread', 'item.openProposals']) {
+    assert.ok(source.includes(literal), `client.js must read ${JSON.stringify(literal)}`)
+  }
+  assert.match(source, /const CHANNEL_LIMIT = 60/, 'the channel renders at most 60 messages')
+  assert.match(source, /const PROPOSAL_LIMIT = 32/, 'the proposal panel renders at most 32 proposals')
+})
+
+test('collaboration panels use dedicated `atw-` class prefixes, styled in the component sheet', () => {
+  for (const token of ['atw-channel', 'atw-proposal', 'atw-open-queue', 'atw-collab', 'atw-open-card', 'atw-edge--peer']) {
+    assert.ok(source.includes(token), `client.js must use the ${token} class family`)
+    assert.ok(source.includes('.' + token), `the component stylesheet must style .${token}`)
+  }
+})
+
+/** Fresh ESM URL per mount so each board gets its own module scope. */
+let mountImportCounter = 0
+
+/** A stateful hook runtime: enough of React to mount the board under Node. */
+function createMountRuntime() {
+  const states = []
+  const refs = []
+  const effects = []
+  let cursor = 0
+  let dirty = false
+  const react = {
+    createElement(type, props, ...children) {
+      return { type, props: props ?? {}, children }
+    },
+    useState(initial) {
+      const index = cursor++
+      if (!(index in states)) states[index] = { value: typeof initial === 'function' ? initial() : initial }
+      const cell = states[index]
+      return [
+        cell.value,
+        (next) => {
+          cell.value = typeof next === 'function' ? next(cell.value) : next
+          dirty = true
+        },
+      ]
+    },
+    useRef(initial) {
+      const index = cursor++
+      if (!(index in refs)) refs[index] = { current: initial }
+      return refs[index]
+    },
+    useEffect(fn, deps) {
+      const index = cursor++
+      const previous = effects[index]
+      const changed =
+        previous === undefined ||
+        deps === undefined ||
+        previous.deps === undefined ||
+        previous.deps.length !== deps.length ||
+        previous.deps.some((value, position) => !Object.is(value, deps[position]))
+      effects[index] = { fn, deps, cleanup: previous?.cleanup, run: changed }
+    },
+    Component: class Component {
+      constructor(props) {
+        this.props = props ?? {}
+      }
+    },
+  }
+  return {
+    react,
+    async render(component, props) {
+      for (let pass = 0; pass < 40; pass += 1) {
+        cursor = 0
+        dirty = false
+        const element = component(props)
+        for (const cell of effects) {
+          if (!cell || cell.run !== true) continue
+          cell.run = false
+          if (typeof cell.cleanup === 'function') cell.cleanup()
+          const cleanup = cell.fn()
+          cell.cleanup = typeof cleanup === 'function' ? cleanup : undefined
+        }
+        for (let tick = 0; tick < 6; tick += 1) await new Promise((resolve) => setTimeout(resolve, 0))
+        if (!dirty) return element
+      }
+      throw new Error('the board never settled')
+    },
+  }
+}
+
+/**
+ * Mount the board against a snapshot with a fake browser environment.
+ * @returns `{ tree, copyKeys, keydown, render, dispose }` while the globals stay
+ *   stubbed; call `dispose()` (in a `finally`) to restore them.
+ */
+async function mountBoard(snapshot) {
+  const runtime = createMountRuntime()
+  const keydown = []
+  const copyKeys = []
+  const savedWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const savedDocument = Object.getOwnPropertyDescriptor(globalThis, 'document')
+  const savedFetch = globalThis.fetch
+  const savedSetInterval = globalThis.setInterval
+  const savedClearInterval = globalThis.clearInterval
+  let loaded
+
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      addEventListener(type, handler) {
+        if (type === 'keydown') keydown.push(handler)
+      },
+      removeEventListener(type, handler) {
+        if (type !== 'keydown') return
+        const index = keydown.indexOf(handler)
+        if (index !== -1) keydown.splice(index, 1)
+      },
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (id) => clearTimeout(id),
+      __ModuleLoader__: {
+        load(definition) {
+          loaded = definition
+        },
+      },
+    },
+  })
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    writable: true,
+    value: { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} },
+  })
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => snapshot })
+  // The board keeps a 1200ms poll; tests drive refreshes explicitly instead.
+  globalThis.setInterval = () => 0
+  globalThis.clearInterval = () => {}
+
+  const restored = {
+    dispose() {
+      globalThis.fetch = savedFetch
+      globalThis.setInterval = savedSetInterval
+      globalThis.clearInterval = savedClearInterval
+      for (const [name, descriptor] of [
+        ['window', savedWindow],
+        ['document', savedDocument],
+      ]) {
+        if (descriptor === undefined) delete globalThis[name]
+        else Object.defineProperty(globalThis, name, descriptor)
+      }
+    },
+  }
+
+  // Evaluate the module in THIS realm (not the `node:vm` sandbox used by the
+  // static tests) so its factory closures resolve `fetch`, `document`,
+  // `setInterval` and friends against the stubs installed above.
+  let component
+  try {
+    mountImportCounter += 1
+    await import(pathToFileURL(CLIENT_PATH).href + '?mount=' + mountImportCounter)
+    assert.ok(loaded !== undefined, 'the mounted module must call the module loader')
+    const stub = createReactStub(runtime.react)
+    const module = loaded.factory(stub.require)
+    const appliedMount = runApply(module)
+    // `slots.inject` is lazy: the registration only happens when the slot
+    // service materializes the entry, which is what the framework does on mount.
+    for (const injection of appliedMount.injections) injection.factory()
+    component = appliedMount.registrations[0].component
+  } catch (error) {
+    // A failed mount must not leak the browser stubs into later tests.
+    restored.dispose()
+    throw error
+  }
+  const t = (key, params) => {
+    copyKeys.push(params === undefined ? key : key + JSON.stringify(params))
+    return 'k:' + key
+  }
+  const render = () => runtime.render(component, { sessionId: 'session-1', t })
+  return { ...restored, render, copyKeys, keydown }
+}
+
+/** Depth-first collect every element matching a predicate. */
+function collectElements(node, predicate, found = []) {
+  if (node === null || node === undefined) return found
+  if (Array.isArray(node)) {
+    for (const child of node) collectElements(child, predicate, found)
+    return found
+  }
+  if (typeof node !== 'object') return found
+  if (predicate(node)) found.push(node)
+  if (Array.isArray(node.children)) collectElements(node.children, predicate, found)
+  return found
+}
+
+/** @returns the concatenated text of one stub element tree. */
+function textOf(node) {
+  if (node === null || node === undefined) return ''
+  if (typeof node === 'string') return node
+  if (typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(textOf).join(' ')
+  if (typeof node === 'object') return (node.children ?? []).map(textOf).join(' ')
+  return ''
+}
+
+/** @returns every class token used anywhere in the tree. */
+function classTokens(node) {
+  const tokens = []
+  collectElements(node, (element) => {
+    if (typeof element.props?.className !== 'string') return false
+    for (const token of element.props.className.split(/\s+/)) if (token !== '') tokens.push(token)
+    return false
+  })
+  return tokens
+}
+
+/** @returns the elements carrying one exact class token. */
+function findByClass(node, token) {
+  return collectElements(node, (element) => typeof element.props?.className === 'string' && element.props.className.split(/\s+/).includes(token))
+}
+
+/** @returns the first button whose text contains `text`. */
+function findButtonByText(node, text) {
+  return collectElements(node, (element) => element.type === 'button' && textOf(element).includes(text))[0]
+}
+
+const V1_ITEM = {
+  subject: 'v1 item',
+  owner: 'impl-a',
+  status: 'in_review',
+  writeScopes: [],
+  blockedBy: [],
+  definitionOfDone: [],
+  reviewers: ['rev-b'],
+  task: null,
+  report: null,
+  reviews: { reworkRounds: 0, submittedRounds: 1, maxRounds: 2, pendingReviewer: 'rev-b', verdicts: [], records: [] },
+  openFindings: 0,
+  override: null,
+}
+
+const V1_SNAPSHOT = {
+  ok: true,
+  version: 1,
+  generatedAt: '2026-11-02T00:00:00.000Z',
+  sessionId: 'session-1',
+  run: {
+    id: 'run-v1',
+    phase: 'reviewing',
+    objective: 'v1 board',
+    counts: { total: 2, approved: 0, pending: 1, inReview: 1, changesRequested: 0, escalated: 0 },
+    waves: [['W1'], ['W2']],
+    items: [
+      { id: 'W1', wave: 1, ...V1_ITEM },
+      {
+        id: 'W2',
+        wave: 2,
+        subject: 'v1 second',
+        owner: 'impl-b',
+        status: 'pending',
+        writeScopes: [],
+        blockedBy: ['W1'],
+        definitionOfDone: [],
+        reviewers: [],
+        task: null,
+        report: null,
+        reviews: { reworkRounds: 0, submittedRounds: 0, maxRounds: 2, pendingReviewer: null, verdicts: [], records: [] },
+        openFindings: 0,
+        override: null,
+      },
+    ],
+    gate: null,
+    escalations: [],
+    events: [{ at: '2026-11-02T00:00:00.000Z', type: 'run/planned', actor: 'lead', detail: 'planned' }],
+    artifacts: { root: '.agentteam', statePath: '.agentteam/state.json', reportPath: null },
+  },
+  team: {
+    me: { name: 'lead', role: 'lead' },
+    members: [
+      { name: 'impl-a', role: 'teammate', status: 'running', context: 'fresh' },
+      { name: 'rev-b', role: 'teammate', status: 'inactive', context: 'fresh' },
+      { name: 'impl-b', role: 'teammate', status: 'running', context: 'fork' },
+    ],
+    tasks: [],
+  },
+  diagnostics: { boardSource: 'file', warnings: [] },
+}
+
+const V2_CHANNEL = [
+  { id: 'm1', at: '2026-11-02T00:00:02.000Z', from: 'impl-a', to: 'rev-b', kind: 'question', text: 'F1 这个 finding 怎么修？', itemId: 'W1', findingId: 'F1' },
+  { id: 'm2', at: '2026-11-02T00:00:03.000Z', from: 'rev-b', to: 'impl-a', kind: 'answer', text: '把 null 判掉', itemId: 'W1', replyTo: 'm1' },
+  { id: 'm3', at: '2026-11-02T00:00:04.000Z', from: 'impl-a', to: 'team', kind: 'proposal', text: '提议改 DoD', itemId: 'W1', proposalId: 'p1' },
+  { id: 'm4', at: '2026-11-02T00:00:05.000Z', from: 'impl-b', to: 'team', kind: 'objection', text: '反对', itemId: 'W1' },
+  { id: 'm5', at: '2026-11-02T00:00:06.000Z', from: 'impl-a', to: 'impl-b', kind: 'handoff', text: 'W2 交给你', itemId: 'W2' },
+  { id: 'm6', at: '2026-11-02T00:00:07.000Z', from: 'impl-b', to: 'impl-a', kind: 'ack', text: '收到', itemId: 'W2' },
+  { id: 'm7', at: '2026-11-02T00:00:08.000Z', from: 'lead', to: 'team', kind: 'status', text: '一切正常', itemId: null },
+]
+
+const V2_SNAPSHOT = {
+  ...V1_SNAPSHOT,
+  version: 2,
+  run: {
+    ...V1_SNAPSHOT.run,
+    id: 'run-v2',
+    items: [
+      {
+        ...V1_SNAPSHOT.run.items[0],
+        assignment: 'lead',
+        claim: null,
+        openProposals: 1,
+        reviewRequests: [{ by: 'impl-a', at: '2026-11-02T00:00:09.000Z', reviewer: 'rev-b', status: 'open', respondedAt: null, response: null }],
+        handoffs: [],
+        thread: [V2_CHANNEL[0], V2_CHANNEL[1]],
+      },
+      {
+        ...V1_SNAPSHOT.run.items[1],
+        assignment: 'open',
+        owner: '',
+        claim: null,
+        openProposals: 0,
+        reviewRequests: [],
+        handoffs: [{ by: 'impl-a', at: '2026-11-02T00:00:06.000Z', to: 'impl-b', reason: '忙不过来', status: 'offered', respondedAt: null }],
+        thread: [V2_CHANNEL[4], V2_CHANNEL[5]],
+      },
+      {
+        id: 'W3',
+        wave: 2,
+        subject: 'claimed item',
+        owner: 'impl-b',
+        status: 'running',
+        writeScopes: [],
+        blockedBy: [],
+        definitionOfDone: [],
+        reviewers: [],
+        task: null,
+        report: null,
+        reviews: { reworkRounds: 0, submittedRounds: 0, maxRounds: 2, pendingReviewer: null, verdicts: [], records: [] },
+        openFindings: 0,
+        override: null,
+        assignment: 'open',
+        claim: { by: 'impl-b', at: '2026-11-02T00:00:10.000Z', leaseMinutes: 30, note: '我来' },
+        openProposals: 0,
+        reviewRequests: [],
+        handoffs: [],
+        thread: [],
+      },
+    ],
+    collaboration: {
+      channel: V2_CHANNEL,
+      proposals: [
+        {
+          id: 'p1',
+          at: '2026-11-02T00:00:04.000Z',
+          by: 'impl-a',
+          kind: 'dod',
+          itemId: 'W1',
+          text: 'DoD 改为两条',
+          status: 'open',
+          votes: [
+            { by: 'rev-b', vote: 'yes', comment: '可以', at: '2026-11-02T00:00:11.000Z' },
+            { by: 'impl-a', vote: 'abstain', comment: '', at: '2026-11-02T00:00:12.000Z' },
+          ],
+          tally: { yes: 1, no: 0, abstain: 1, affected: 2, total: 4 },
+          resolvedAt: null,
+          resolution: null,
+        },
+        {
+          id: 'p2',
+          at: '2026-11-02T00:00:13.000Z',
+          by: 'rev-b',
+          kind: 'review_policy',
+          itemId: null,
+          text: '评审必须附 evidence_checked',
+          status: 'accepted',
+          votes: [{ by: 'impl-a', vote: 'yes', comment: '', at: '2026-11-02T00:00:14.000Z' }],
+          tally: { yes: 2, no: 1, abstain: 0, affected: 3, total: 4 },
+          resolvedAt: '2026-11-02T00:00:15.000Z',
+          resolution: 'adopt it',
+        },
+      ],
+      openQueue: ['W2'],
+      pendingReviews: [{ itemId: 'W1', requestedBy: 'impl-a', reviewer: 'rev-b', at: '2026-11-02T00:00:09.000Z' }],
+      handoffs: [{ itemId: 'W2', by: 'impl-a', to: 'impl-b', reason: '忙不过来', status: 'offered', at: '2026-11-02T00:00:06.000Z' }],
+      edges: [
+        { from: 'impl-a', to: 'rev-b', count: 5, kinds: ['question', 'answer'] },
+        { from: 'rev-b', to: 'impl-b', count: 2, kinds: ['note'] },
+        { from: 'impl-a', to: 'impl-a', count: 1, kinds: [] },
+      ],
+    },
+  },
+}
+
+test('v1 snapshot (no collaboration) renders the legacy board plus empty collaboration panels', async () => {
+  const board = await mountBoard(V1_SNAPSHOT)
+  try {
+    const tree = await board.render()
+    const text = textOf(tree)
+    const tokens = classTokens(tree)
+    assert.ok(!text.includes('k:error.title'), 'a v1 snapshot must not hit the error card')
+    for (const token of ['atw-header', 'atw-main', 'atw-collab', 'atw-lower', 'atw-flow-canvas', 'atw-topo-canvas']) {
+      assert.ok(tokens.includes(token), `v1 board keeps ${token}`)
+    }
+    assert.equal(findByClass(tree, 'atw-card').filter((element) => element.props?.role === 'button').length, 2, 'both v1 items render')
+    assert.ok(text.includes('k:channel.empty'), 'channel panel shows its empty state')
+    assert.ok(text.includes('k:proposal.empty'), 'proposal panel shows its empty state')
+    assert.ok(!tokens.includes('atw-open-queue'), 'no open queue without collaboration')
+    assert.ok(!tokens.includes('atw-edge--peer'), 'no peer edges without collaboration')
+    for (const key of ['channel.title', 'proposal.title']) assert.ok(board.copyKeys.includes(key), `the ${key} panel must render`)
+  } finally {
+    board.dispose()
+  }
+})
+
+test('v2 snapshot renders the channel stream, proposals, open queue, and peer edges', async () => {
+  const board = await mountBoard(V2_SNAPSHOT)
+  try {
+    const tree = await board.render()
+    const text = textOf(tree)
+    const tokens = classTokens(tree)
+
+    assert.ok(!text.includes('k:error.title'), 'a v2 snapshot must not hit the error card')
+    assert.equal(findByClass(tree, 'atw-channel-item').length, V2_CHANNEL.length, 'one row per channel message')
+    const channelText = findByClass(tree, 'atw-channel-item').map(textOf).join(' | ')
+    for (const kind of ['question', 'answer', 'proposal', 'objection', 'handoff', 'ack', 'status']) {
+      assert.ok(channelText.includes('k:channel.kind.' + kind), `kind badge ${kind}`)
+    }
+    assert.ok(text.includes('k:collab.fromTo'), 'from → to renders')
+    assert.ok(board.copyKeys.includes('collab.team'), 'team broadcasts are translated')
+    assert.ok(channelText.includes('W1'), 'item references render as chips')
+    assert.ok(text.includes('k:channel.count'), 'the stream count hint renders')
+
+    const proposalText = findByClass(tree, 'atw-proposal').map(textOf).join(' | ')
+    assert.equal(findByClass(tree, 'atw-proposal').length, 2, 'one card per proposal')
+    for (const needle of ['k:proposal.kind.dod', 'k:proposal.kind.review_policy', 'k:proposal.status.open', 'k:proposal.status.accepted', 'k:proposal.vote.yes', 'k:proposal.vote.no', 'k:proposal.vote.abstain', 'k:proposal.affected', 'k:proposal.resolution', 'k:proposal.blocking']) {
+      assert.ok(proposalText.includes(needle), `proposal card is missing ${needle}`)
+    }
+    assert.ok(proposalText.includes('adopt it'), 'resolution text renders')
+    assert.equal(findByClass(tree, 'atw-proposal--blocking').length, 1, 'an open DoD proposal is flagged blocking')
+
+    const openCards = findByClass(tree, 'atw-open-card')
+    assert.equal(openCards.length, 1, 'the open queue renders one unclaimed card')
+    assert.ok(tokens.includes('atw-open-queue'), 'open-queue lane exists')
+    assert.ok(textOf(openCards[0]).includes('W2'), 'open lane shows the item id')
+
+    const cards = findByClass(tree, 'atw-card').filter((element) => element.props?.role === 'button')
+    const cardText = (id) => textOf(cards.find((element) => textOf(element).includes(id)))
+    assert.ok(cardText('W1').includes('k:flow.proposalsOpen'), 'open proposals badge on the item card')
+    assert.ok(cardText('W3').includes('k:flow.claimed'), 'claim badge on the item card')
+    assert.ok(cardText('W2').includes('k:flow.openAssignment'), 'unclaimed badge on an open-queue item')
+
+    const peerEdges = findByClass(tree, 'atw-edge--peer')
+    assert.equal(peerEdges.length, 2, 'only resolvable peer edges are drawn')
+    assert.ok(peerEdges[0].props.style.strokeWidth > peerEdges[1].props.style.strokeWidth, 'message count weights the stroke')
+    assert.ok(findByClass(tree, 'atw-edge--lead-muted').length > 0, 'Lead spokes are de-emphasized once peers talk')
+    assert.equal(findByClass(tree, 'atw-legend-line--peer').length, 1, 'the topology legend gains a peer entry')
+  } finally {
+    board.dispose()
+  }
+})
+
+test('v2 drawer shows the collaboration record; filters and Escape work', async () => {
+  const board = await mountBoard(V2_SNAPSHOT)
+  try {
+    let tree = await board.render()
+    const card = findByClass(tree, 'atw-card').find((element) => element.props?.role === 'button' && textOf(element).includes('W1'))
+    card.props.onClick()
+    tree = await board.render()
+    const drawer = findByClass(tree, 'atw-drawer')[0]
+    assert.ok(drawer !== undefined, 'clicking a card opens the drawer')
+    const text = textOf(drawer)
+    for (const needle of ['k:drawer.collab', 'k:drawer.thread', 'k:drawer.reviewRequests', 'k:drawer.relatedProposals', 'k:drawer.assignment', 'k:drawer.claim']) {
+      assert.ok(text.includes(needle), `the drawer must show ${needle}`)
+    }
+    assert.ok(text.includes('F1 这个 finding 怎么修？'), 'thread messages render in the drawer')
+    assert.ok(text.includes('rev-b'), 'review requests show the invited reviewer')
+
+    for (const handler of [...board.keydown]) handler({ key: 'Escape' })
+    tree = await board.render()
+    assert.equal(findByClass(tree, 'atw-drawer').length, 0, 'Escape closes the drawer')
+
+    findButtonByText(tree, 'k:channel.filter.question').props.onClick()
+    tree = await board.render()
+    const rows = findByClass(tree, 'atw-channel-item')
+    assert.equal(rows.length, 1, 'the question filter narrows the stream')
+    assert.ok(textOf(rows[0]).includes('k:channel.kind.question'))
+    findButtonByText(tree, 'k:channel.filter.all').props.onClick()
+    tree = await board.render()
+    assert.equal(findByClass(tree, 'atw-channel-item').length, V2_CHANNEL.length, 'the all filter restores the stream')
+  } finally {
+    board.dispose()
+  }
+})
+
+test('v2 collaboration caps: 60 channel rows and 32 proposals', async () => {
+  const channel = Array.from({ length: 70 }, (_, index) => ({
+    id: 'c' + index,
+    at: new Date(Date.parse('2026-11-02T00:00:00.000Z') + index * 1000).toISOString(),
+    from: 'impl-a',
+    to: 'rev-b',
+    kind: index % 2 === 0 ? 'question' : 'answer',
+    text: 'msg-' + index,
+    itemId: null,
+  }))
+  const proposals = Array.from({ length: 40 }, (_, index) => ({
+    id: 'cap-p' + index,
+    at: new Date(Date.parse('2026-11-02T00:00:00.000Z') + index * 1000).toISOString(),
+    by: 'impl-a',
+    kind: 'scope',
+    itemId: null,
+    text: 'proposal-' + index,
+    status: 'open',
+    votes: [],
+    tally: { yes: 0, no: 0, abstain: 0, affected: 0, total: 3 },
+    resolvedAt: null,
+    resolution: null,
+  }))
+  const snapshot = {
+    ...V2_SNAPSHOT,
+    run: { ...V2_SNAPSHOT.run, collaboration: { ...V2_SNAPSHOT.run.collaboration, channel, proposals } },
+  }
+  const board = await mountBoard(snapshot)
+  try {
+    const tree = await board.render()
+    assert.equal(findByClass(tree, 'atw-channel-item').length, 60, 'the channel caps at 60 rows')
+    assert.equal(findByClass(tree, 'atw-proposal').length, 32, 'the proposal panel caps at 32 cards')
+    const text = textOf(tree)
+    assert.ok(text.includes('msg-69'), 'the newest message survives the cap')
+    assert.ok(!text.includes('msg-9 '), 'messages older than the window are dropped')
+  } finally {
+    board.dispose()
+  }
+})
+
+test('broken collaboration payloads render without crashing', async () => {
+  const snapshot = {
+    ...V2_SNAPSHOT,
+    run: {
+      ...V2_SNAPSHOT.run,
+      collaboration: {
+        channel: [null, 'nope', { kind: 'weird', text: 42, from: null }],
+        proposals: [null, { votes: 'x', tally: 'y', status: 'nope', kind: 'nope' }],
+        openQueue: 'W2',
+        pendingReviews: [null],
+        handoffs: [null, 7],
+        edges: [null, { from: 'impl-a' }],
+      },
+      items: [{ id: 'W1', subject: null, status: 'pending', thread: 'x', claim: 'nope', reviewRequests: [null], handoffs: [null], openProposals: 'many' }],
+    },
+  }
+  const board = await mountBoard(snapshot)
+  try {
+    const tree = await board.render()
+    assert.ok(!textOf(tree).includes('k:error.title'), 'malformed collaboration data must not reach the error card')
+    assert.ok(classTokens(tree).includes('atw-collab'), 'the collaboration row still renders')
+  } finally {
+    board.dispose()
+  }
 })
