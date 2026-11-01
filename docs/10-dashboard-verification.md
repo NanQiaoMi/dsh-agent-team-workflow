@@ -46,6 +46,10 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 - `package.json`：`exports["./client"]`、`files` 含 `client.js`、`dsh.client = {platform:"web", immediately:true, inject:[ui-conversation, client-locale]}` 均合法 JSON；
 - `plugin_manager install_bundle` → `application: applied`，bundle 行 active。
 
+> **2026-11-02 追记**：首次重启后 View 未出现，已定位为「客户端半未进入启动图」——根因与修复见
+> [`11-dashboard-live-rootcause.md`](11-dashboard-live-rootcause.md)（`package.json` 漏导 `./package.json`，
+> 扫描器静默跳过并把失败结果缓存在内存）。Host 半路由已在运行中的应用上实测 200。
+
 ## 3. 尚未验证（需要一次重启 + 刷新）
 
 Host 模块代需要重启才加载（HMR 不替换 linked 插件模块），Client 模块需要页面刷新。步骤：
