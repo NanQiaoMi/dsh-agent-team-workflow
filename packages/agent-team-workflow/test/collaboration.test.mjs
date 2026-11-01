@@ -363,3 +363,160 @@ test('the queue brief names the open items and the collaboration duties', () => 
   assert.match(brief.prompt, /team_flow_work \{action:"claim"/)
   assert.match(brief.prompt, /team_flow_talk/)
 })
+
+
+// ---------------------------------------------------------------------------
+// v2.2: member-created items and proposal liveness
+// ---------------------------------------------------------------------------
+
+function autonomyRun() {
+  return run([item()])
+}
+
+test('a member can add a new item, owning it or publishing it to the queue', () => {
+  const state = autonomyRun()
+  const created = W.createItem(state, {
+    by: 'rev',
+    subject: 'Add an empty-input example',
+    writeScopes: ['collab-live/example.mjs'],
+    definitionOfDone: ['example.mjs runs and matches README'],
+    now: NOW,
+  })
+  assert.equal(created.id, 'S1')
+  assert.equal(created.origin, 'member')
+  assert.equal(created.createdBy, 'rev')
+  assert.equal(created.owner, 'rev')
+  assert.equal(created.assignment, 'lead')
+  assert.equal(created.claim.by, 'rev')
+  assert.equal(created.needsReview, true)
+  assert.deepEqual(created.definitionOfDone, ['example.mjs runs and matches README'])
+  assert.equal(state.events.some((event) => event.type === 'item/created'), true)
+  assert.equal(state.channel.at(-1).kind, 'status')
+
+  const open = W.createItem(state, {
+    by: 'rev',
+    subject: 'Write the changelog',
+    writeScopes: ['collab-live/CHANGELOG.md'],
+    definitionOfDone: ['changelog lists the API'],
+    owner: 'open',
+    now: NOW,
+  })
+  assert.equal(open.id, 'S2')
+  assert.equal(open.owner, '')
+  assert.equal(open.assignment, 'open')
+  assert.equal(W.collaborationSummary(state, { me: 'impl2', role: 'teammate', members: MEMBERS }).open_queue.includes('S2'), true)
+
+  const forPeer = W.createItem(state, {
+    by: 'rev',
+    subject: 'Review README examples',
+    writeScopes: ['collab-live/README.md'],
+    definitionOfDone: ['all examples verified'],
+    owner: 'impl2',
+    reviewers: ['rev'],
+    now: NOW,
+  })
+  assert.equal(forPeer.owner, 'impl2')
+  assert.deepEqual(forPeer.reviewers, ['rev'])
+  assert.equal(state.channel.at(-1).to, 'impl2')
+})
+
+test('member-created items reject bad shapes and same-wave scope races', () => {
+  const state = autonomyRun()
+  const base = { by: 'rev', subject: 'x', writeScopes: ['collab-live/a.mjs'], definitionOfDone: ['done'], now: NOW }
+  assert.throws(() => W.createItem(state, { ...base, subject: '   ' }), /non-empty subject/)
+  assert.throws(() => W.createItem(state, { ...base, definitionOfDone: [] }), /definition_of_done/)
+  assert.throws(() => W.createItem(state, { ...base, writeScopes: [] }), /write scope/)
+  assert.throws(() => W.createItem(state, { ...base, writeScopes: ['/abs/path'] }), /workspace-relative/)
+  assert.throws(() => W.createItem(state, { ...base, blockedBy: ['NOPE'] }), /unknown work item/)
+  assert.throws(() => W.createItem(state, { ...base, owner: 'lead' }), /Lead coordinates/)
+  assert.throws(() => W.createItem(state, { ...base, reviewers: ['rev'] }), /own owner/)
+  // The existing item already writes src/core/ in wave 1, so an overlapping new item would race.
+  assert.throws(
+    () => W.createItem(state, { ...base, subject: 'overlap', writeScopes: ['src/core/extra.js'] }),
+    /race with an existing item/,
+  )
+  const lenient = W.createItem(state, { ...base, subject: 'overlap allowed', writeScopes: ['src/core/extra.js'], allowScopeOverlap: true })
+  assert.equal(lenient.id, 'S1')
+})
+
+test('member-created items join the same report/review/gate path', () => {
+  const state = autonomyRun()
+  const created = W.createItem(state, {
+    by: 'impl',
+    subject: 'Add the unicode example',
+    writeScopes: ['collab-live/unicode.mjs'],
+    definitionOfDone: ['example runs'],
+    reviewers: ['rev'],
+    now: NOW,
+  })
+  assert.equal(created.id, 'S1')
+  // The planned item must still pass its own review for the run gate to pass.
+  W.applyReport(state, { itemId: 'W1', caller: 'impl', report: report(), now: NOW, settings: SETTINGS })
+  W.applyReviewSubmit(state, { itemId: 'W1', reviewer: 'rev', verdict: 'approve', summary: 'verified', findings: [], evidenceChecked: ['read src/core/run.js'], now: NOW })
+  W.applyReport(state, {
+    itemId: 'S1',
+    caller: 'impl',
+    report: { summary: 'example added', files: ['collab-live/unicode.mjs'], commands: [{ command: 'node collab-live/unicode.mjs', exitCode: 0 }], evidence: ['printed the expected string'], openQuestions: [], risks: [] },
+    now: NOW,
+    settings: SETTINGS,
+  })
+  W.applyReviewSubmit(state, { itemId: 'S1', reviewer: 'rev', verdict: 'approve', summary: 'verified', findings: [], evidenceChecked: ['read the example'], now: NOW })
+  assert.equal(state.items.find((candidate) => candidate.id === 'S1').status, W.ITEM_STATUS.APPROVED)
+  const gates = W.evaluateGates(state, { settings: SETTINGS, members: MEMBERS, nativeTasks: [], overrides: [], now: NOW })
+  assert.equal(gates.pass, true)
+})
+
+test('proposals get a deadline and a quorum on creation', () => {
+  const state = autonomyRun()
+  const scoped = W.proposeDecision(state, { by: 'impl', kind: 'dod', itemId: 'W1', text: 'also cover empty names', settings: { proposalTimeoutMinutes: 15 }, members: MEMBERS, now: NOW })
+  assert.equal(scoped.deadline, new Date(Date.parse(NOW) + 15 * 60_000).toISOString())
+  assert.equal(scoped.quorum, W.proposalQuorumFor(['impl', 'rev']))
+  assert.equal(scoped.autoResolved, false)
+
+  const teamWide = W.proposeDecision(state, { by: 'impl', kind: 'replan', itemId: null, text: 'split the run', settings: { proposalTimeoutMinutes: 30 }, members: MEMBERS, now: NOW })
+  assert.equal(teamWide.quorum, W.proposalQuorumFor(MEMBERS.map((member) => member.name)))
+  const short = W.proposeDecision(state, { by: 'impl', kind: 'review_policy', itemId: null, text: 'two reviewers', timeoutMinutes: 1, settings: SETTINGS, members: MEMBERS, now: NOW })
+  assert.equal(short.deadline, new Date(Date.parse(NOW) + 60_000).toISOString())
+})
+
+test('expired proposals settle lazily by quorum, and reset the board state', () => {
+  const state = autonomyRun()
+  const due = new Date(Date.parse(NOW) - 60_000).toISOString()
+  W.proposeDecision(state, { by: 'impl', kind: 'dod', itemId: 'W1', text: 'cover empty input', settings: SETTINGS, members: MEMBERS, now: NOW })
+  // Not due yet: untouched.
+  assert.deepEqual(W.settleExpiredProposals(state, { now: NOW, settings: SETTINGS, members: MEMBERS }), [])
+  assert.equal(W.findProposal(state, 'p1').status, 'open')
+  // One yes vote with quorum 1 is enough once the deadline passes.
+  W.voteDecision(state, { proposalId: 'p1', by: 'impl', vote: 'yes', settings: SETTINGS, members: MEMBERS, now: NOW })
+  state.proposals[0].deadline = due
+  const settled = W.settleExpiredProposals(state, { now: new Date(Date.parse(NOW) + 60_000).toISOString(), settings: SETTINGS, members: MEMBERS })
+  assert.equal(settled.length, 1)
+  const proposal = W.findProposal(state, 'p1')
+  assert.equal(proposal.status, 'accepted')
+  assert.equal(proposal.autoResolved, true)
+  assert.match(proposal.resolution, /auto-accepted/)
+  // The accepted dod proposal amended the item.
+  assert.equal(state.items[0].definitionOfDone.includes('cover empty input'), true)
+})
+
+test('a proposal without quorum at its deadline escalates and keeps blocking', () => {
+  const state = autonomyRun()
+  const proposal = W.proposeDecision(state, { by: 'impl', kind: 'replan', itemId: null, text: 'restructure everything', timeoutMinutes: 1, settings: SETTINGS, members: MEMBERS, now: NOW })
+  state.proposals[0].deadline = new Date(Date.parse(NOW) - 1).toISOString()
+  const settled = W.settleExpiredProposals(state, { now: NOW, settings: SETTINGS, members: MEMBERS })
+  assert.equal(settled[0].status, 'escalated')
+  assert.equal(settled[0].autoResolved, true)
+  assert.match(settled[0].resolution, /without quorum/)
+  const escalation = state.escalations.find((entry) => entry.subject.includes(proposal.id))
+  assert.equal(escalation?.blocking, true)
+  // Blocking proposals keep the approval path closed until arbitration.
+  W.applyReport(state, { itemId: 'W1', caller: 'impl', report: report(), now: NOW, settings: SETTINGS })
+  assert.throws(
+    () => W.applyReviewSubmit(state, { itemId: 'W1', reviewer: 'rev', verdict: 'approve', summary: 'ok', findings: [], evidenceChecked: ['read'], now: NOW }),
+    /open blocking proposal/,
+  )
+  // The Lead settles it with the existing arbitration action.
+  W.settleProposalByLead(state, { proposalId: 'p1', outcome: 'rejected', actor: 'lead', now: NOW })
+  const approved = W.applyReviewSubmit(state, { itemId: 'W1', reviewer: 'rev', verdict: 'approve', summary: 'ok', findings: [], evidenceChecked: ['read'], now: NOW })
+  assert.equal(approved.item.status, W.ITEM_STATUS.APPROVED)
+})

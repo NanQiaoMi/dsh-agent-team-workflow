@@ -156,7 +156,7 @@ test('every tool declares a supported output schema', () => {
   return withWorkspace(async (cwd) => {
     const { ctx } = createHarness(cwd)
     const tools = buildTools({ ctx, settings, store: createStore({ ctx, settings }), version: 'test' })
-    assert.equal(tools.length, 12)
+    assert.equal(tools.length, 13)
     for (const tool of tools) assertSupportedJsonSchema(tool.output.schema)
   })
 })
@@ -924,5 +924,120 @@ test('team_flow_read returns the channel tail, proposals and personal invitation
     await byName(tools, 'team_flow_talk').execute({ target: 'impl', kind: 'answer', text: 'Yes, export it.', reply_to: read.questions_to_me[0].id }, { agent: rev, signal: EXEC_SIGNAL })
     const after = await byName(tools, 'team_flow_read').execute({}, { agent: rev, signal: EXEC_SIGNAL })
     assert.equal(after.questions_to_me.length, 0)
+  })
+})
+
+test('a member can add a work item and gets a real backing task', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test' })
+    const impl = harness.addTeammate('impl')
+    const rev = harness.addTeammate('rev')
+    await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'Ship a module',
+        acceptance_criteria: ['module works'],
+        items: [{ id: 'W1', subject: 'Implement it', owner: 'impl', role: 'implementer', write_scopes: ['src/'], definition_of_done: ['works'], reviewers: ['rev'] }],
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    const before = harness.tasks.length
+    const created = await byName(tools, 'team_flow_item').execute(
+      {
+        action: 'create',
+        subject: 'Document the module',
+        write_scopes: ['docs/module.md'],
+        definition_of_done: ['docs describe the real API'],
+        reviewers: ['rev'],
+      },
+      { agent: impl, signal: EXEC_SIGNAL },
+    )
+    assertOutput(byName(tools, 'team_flow_item'), created)
+    assert.equal(created.item_id, 'S1')
+    assert.equal(created.owner, 'impl')
+    assert.equal(created.assignment, 'lead')
+    assert.equal(created.origin, 'member')
+    assert.equal(created.created_by, 'impl')
+    assert.equal(typeof created.task_id, 'string')
+    assert.equal(harness.tasks.length, before + 1, 'a backing task is created for autonomy too')
+    assert.equal(harness.tasks.at(-1).status, 'in_progress', 'a self-owned item claims its backing task')
+
+    const status = await byName(tools, 'team_flow_status').execute({}, { agent: impl, signal: EXEC_SIGNAL })
+    const item = status.items.find((candidate) => candidate.id === 'S1')
+    assert.equal(item?.assignment, 'lead')
+    assert.ok(status.next_actions.some((action) => action.includes('S1')), 'the new item appears in the owner next actions')
+  })
+})
+
+test('an item created for the open queue can be claimed by another peer', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test' })
+    const impl = harness.addTeammate('impl')
+    const impl2 = harness.addTeammate('impl2')
+    await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'Ship a module',
+        acceptance_criteria: ['module works'],
+        items: [{ id: 'W1', subject: 'Implement it', owner: 'impl', role: 'implementer', write_scopes: ['src/'], definition_of_done: ['works'], reviewers: ['impl2'] }],
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    const created = await byName(tools, 'team_flow_item').execute(
+      { action: 'create', subject: 'Write examples', write_scopes: ['examples/'], definition_of_done: ['examples run'], owner: 'open' },
+      { agent: impl, signal: EXEC_SIGNAL },
+    )
+    assert.equal(created.owner, null)
+    assert.equal(created.assignment, 'open')
+    const status = await byName(tools, 'team_flow_status').execute({}, { agent: impl2, signal: EXEC_SIGNAL })
+    assert.deepEqual(status.collaboration.open_queue, ['S1'])
+    const claimed = await byName(tools, 'team_flow_work').execute({ action: 'claim', item_id: 'S1' }, { agent: impl2, signal: EXEC_SIGNAL })
+    assert.equal(claimed.owner, 'impl2')
+  })
+})
+
+test('status settles an expired proposal and persists the decision', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test' })
+    const impl = harness.addTeammate('impl')
+    const rev = harness.addTeammate('rev')
+    await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'Ship a module',
+        acceptance_criteria: ['module works'],
+        items: [{ id: 'W1', subject: 'Implement it', owner: 'impl', role: 'implementer', write_scopes: ['src/'], definition_of_done: ['works'], reviewers: ['rev'] }],
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    const proposed = await byName(tools, 'team_flow_decide').execute(
+      { action: 'propose', kind: 'dod', item_id: 'W1', text: 'Also assert the empty case', timeout_minutes: 1 },
+      { agent: impl, signal: EXEC_SIGNAL },
+    )
+    assert.equal(typeof proposed.deadline, 'string')
+    assert.equal(typeof proposed.quorum, 'number')
+    assert.equal(proposed.quorum, 1, 'affected = owner + reviewer = 2, majority quorum is 1')
+
+    // One affected member votes yes; quorum is 1, so the deadline decides acceptance.
+    await byName(tools, 'team_flow_decide').execute(
+      { action: 'vote', proposal_id: proposed.proposal_id, vote: 'yes', comment: 'agreed' },
+      { agent: impl, signal: EXEC_SIGNAL },
+    )
+    // Rewind the deadline as if the vote window had already closed.
+    const state = await store.readState(harness.lead)
+    state.proposals[0].deadline = new Date(Date.now() - 60_000).toISOString()
+    await store.writeState(harness.lead, state)
+
+    const status = await byName(tools, 'team_flow_status').execute({}, { agent: impl, signal: EXEC_SIGNAL })
+    assert.equal(status.items[0].open_proposals, 0, 'the expired blocking proposal no longer blocks')
+    assert.deepEqual(status.collaboration.proposals_open, [])
+    const readBack = await store.readState(harness.lead)
+    assert.equal(readBack.proposals[0].status, 'accepted')
+    assert.equal(readBack.proposals[0].autoResolved, true)
+    assert.match(readBack.proposals[0].resolution, /auto-accepted/)
+    assert.equal(readBack.items[0].definitionOfDone.includes('Also assert the empty case'), true)
   })
 })

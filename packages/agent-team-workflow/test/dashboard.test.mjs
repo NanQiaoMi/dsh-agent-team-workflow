@@ -8,8 +8,10 @@
  * normalization, review records and open findings, counts, truncation limits,
  * gate/escalation passthrough, event ordering, and defensive degradation.
  * Snapshot version 2 also covers the peer-collaboration aggregation of
- * docs/12 §5: channel, proposals/votes, open queue, review invitations,
- * handoffs, per-item threads, and the distilled peer→peer edges.
+ * docs/12 §5 (channel, proposals/votes, open queue, review invitations,
+ * handoffs, per-item threads, distilled peer→peer edges) and the member
+ * autonomy additions of docs/14 §4 (item origin/createdBy, proposal
+ * deadline/quorum/autoResolved, with their documented defaults).
  *
  * Run: node --test test/
  */
@@ -1063,4 +1065,136 @@ test('malformed collaboration data degrades instead of throwing', () => {
   assert.deepEqual(snapshot.run.items[0].handoffs, [])
   assert.equal(snapshot.run.items[1].assignment, 'lead')
   assert.equal(snapshot.run.items[1].claim, null)
+})
+
+test('items expose origin and createdBy for member-created work', () => {
+  const items = [
+    makeItem({ id: 'W1' }),
+    makeItem({ id: 'S1', origin: 'member', createdBy: 'impl' }),
+    makeItem({ id: 'S2', origin: 'weird', createdBy: 42 }),
+  ]
+  const run = buildSnapshot(makeInput(makeState({ items }))).run
+  // Planned items keep the documented defaults.
+  assert.equal(run.items[0].origin, 'plan')
+  assert.equal(run.items[0].createdBy, null)
+  // A member-created item is marked and attributes its author.
+  assert.equal(run.items[1].origin, 'member')
+  assert.equal(run.items[1].createdBy, 'impl')
+  // Only the literal documented marker is trusted; everything else is a plan item.
+  assert.equal(run.items[2].origin, 'plan')
+  assert.equal(run.items[2].createdBy, null)
+})
+
+test('proposals expose deadline, quorum and the auto-resolution flag', () => {
+  const items = [
+    makeItem({ id: 'W1', owner: 'impl', reviewers: ['rev'] }),
+    makeItem({ id: 'W2', owner: null, reviewers: [], assignment: 'open' }),
+    makeItem({ id: 'W3', owner: 'impl', reviewers: [] }),
+  ]
+  const proposals = [
+    makeProposal({
+      id: 'p1',
+      itemId: 'W1',
+      status: 'accepted',
+      deadline: '2026-11-02T02:00:00.000Z',
+      quorum: 2,
+      autoResolved: true,
+      resolvedAt: NOW,
+      resolution: 'deadline passed: yes won without a full ballot',
+    }),
+    makeProposal({ id: 'p2', itemId: 'W1' }),
+    makeProposal({ id: 'p3', itemId: null }),
+    makeProposal({ id: 'p4', itemId: 'W2' }),
+    makeProposal({ id: 'p5', itemId: 'W3' }),
+    makeProposal({ id: 'p6', itemId: 'W1', quorum: 0 }),
+    makeProposal({ id: 'p7', itemId: 'W1', quorum: 3 }),
+  ]
+  const out = buildSnapshot(makeInput(makeState({ items, proposals }))).run.collaboration.proposals
+  // Engine-written liveness fields pass through untouched.
+  assert.equal(out[0].deadline, '2026-11-02T02:00:00.000Z')
+  assert.equal(out[0].quorum, 2)
+  assert.equal(out[0].autoResolved, true)
+  assert.equal(out[0].resolution, 'deadline passed: yes won without a full ballot')
+  // Older/pre-autonomy proposals: no deadline, not auto-resolved, derived quorum.
+  assert.equal(out[1].deadline, null)
+  assert.equal(out[1].autoResolved, false)
+  assert.equal(out[1].quorum, 1) // affected 2 -> ceil(2 / 2) = 1
+  // Team-wide proposal: the roster is 3 -> ceil(3 / 2) = 2.
+  assert.equal(out[2].quorum, 2)
+  // Affected 0 (unclaimed item, no reviewers) still requires the documented floor of 1.
+  assert.equal(out[3].quorum, 1)
+  // Affected 1 -> ceil(1 / 2) = 1.
+  assert.equal(out[4].quorum, 1)
+  // An engine-written quorum wins, but never below the documented floor.
+  assert.equal(out[5].quorum, 1)
+  assert.equal(out[6].quorum, 3)
+})
+
+test('a pre-autonomy board yields the documented autonomy defaults', () => {
+  const state = makeState({
+    settings: { maxReviewRounds: 2, proposalTimeoutMinutes: 15 },
+    items: [makeItem({ id: 'W1' }), makeItem({ id: 'W2', assignment: 'open', owner: null })],
+    channel: [makeMessage({ id: 'm1', refs: { itemId: 'W1' } })],
+    proposals: [makeProposal({ id: 'p1', itemId: 'W1' }), makeProposal({ id: 'p2', itemId: null })],
+  })
+  const run = buildSnapshot(makeInput(state)).run
+  assert.deepEqual(
+    run.items.map((item) => [item.origin, item.createdBy]),
+    [
+      ['plan', null],
+      ['plan', null],
+    ],
+  )
+  assert.deepEqual(
+    run.collaboration.proposals.map((proposal) => [proposal.deadline, proposal.autoResolved, proposal.quorum]),
+    [
+      [null, false, 1],
+      [null, false, 2],
+    ],
+  )
+  // docs/14 §4 freezes the timeout into run settings; the generic passthrough keeps it.
+  assert.equal(run.settings.proposalTimeoutMinutes, 15)
+
+  // A version-1 board has no proposals at all and still defaults the item fields.
+  const v1Run = buildSnapshot(makeInput(makeState({ items: [makeItem()] }))).run
+  assert.deepEqual(v1Run.collaboration, EMPTY_COLLABORATION)
+  assert.equal(v1Run.items[0].origin, 'plan')
+  assert.equal(v1Run.items[0].createdBy, null)
+})
+
+test('malformed autonomy fields degrade instead of throwing', () => {
+  const snapshot = buildSnapshot({
+    state: {
+      runId: 'run-bad-2',
+      items: [
+        { id: 'W1', origin: { nope: 1 }, createdBy: [], owner: 'impl', reviewers: 'nope', status: 'pending' },
+        { id: 'W2', origin: 7, createdBy: false },
+        { id: 'W3' },
+      ],
+      proposals: [
+        { id: 'p1', itemId: 'W1', deadline: 42, autoResolved: 'yes', quorum: 'many' },
+        { id: 'p2', itemId: null, deadline: 'not-a-date', autoResolved: 1, quorum: 1.5, status: 'open', votes: 'nope' },
+        { id: 'p3', itemId: 'ghost', deadline: null, autoResolved: true, quorum: -3, status: 'accepted' },
+      ],
+    },
+    team: { me: { name: 'lead', role: 'lead' }, members: [{ name: 'lead' }, { name: 'impl' }, { name: 'rev' }], tasks: [] },
+    now: NOW,
+    diagnostics: { boardSource: 'file', warnings: [] },
+  })
+  assert.equal(snapshot.ok, true)
+  const items = snapshot.run.items
+  // Only a literal 'member' marker is trusted, and createdBy must be a name.
+  for (const item of items) {
+    assert.equal(item.origin, 'plan')
+    assert.equal(item.createdBy, null)
+  }
+  const proposals = snapshot.run.collaboration.proposals
+  assert.equal(proposals[0].deadline, null) // a non-string deadline is not an ISO timestamp
+  assert.equal(proposals[0].autoResolved, false) // only the literal boolean true marks auto-resolution
+  assert.equal(proposals[0].quorum, 1) // unparsable quorum -> affected 1 fallback, floor 1
+  assert.equal(proposals[1].deadline, 'not-a-date') // strings are passed through; the client parses them
+  assert.equal(proposals[1].autoResolved, false)
+  assert.equal(proposals[1].quorum, 2) // team-wide, affected 3 -> ceil(3 / 2)
+  assert.equal(proposals[2].autoResolved, true)
+  assert.equal(proposals[2].quorum, 1) // negative quorum clamped to the documented floor
 })

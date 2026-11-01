@@ -16,8 +16,8 @@
  *      locale namespace/dictionaries, a render smoke test of the empty state,
  *      and — for the v2 collaboration panels — a full mount with a ~90-line
  *      hook runtime (state + effects + a fake fetch, still no real React) so a
- *      v1 snapshot (no `run.collaboration`) and a v2 snapshot are both rendered
- *      end to end without a browser.
+ *      v1 snapshot (no `run.collaboration`), a v2 snapshot, and the docs/14
+ *      member-autonomy fields are all rendered end to end without a browser.
  *
  * Run: node --test test/client.contract.test.mjs
  */
@@ -590,9 +590,12 @@ async function mountBoard(snapshot) {
     restored.dispose()
     throw error
   }
+  // The double keeps the params in the returned string too, so assertions can
+  // verify interpolated values (e.g. a `createdBy` tooltip) without a real locale.
   const t = (key, params) => {
+    const rendered = params === undefined ? 'k:' + key : 'k:' + key + JSON.stringify(params)
     copyKeys.push(params === undefined ? key : key + JSON.stringify(params))
-    return 'k:' + key
+    return rendered
   }
   const render = () => runtime.render(component, { sessionId: 'session-1', t })
   return { ...restored, render, copyKeys, keydown }
@@ -970,6 +973,98 @@ test('broken collaboration payloads render without crashing', async () => {
     const tree = await board.render()
     assert.ok(!textOf(tree).includes('k:error.title'), 'malformed collaboration data must not reach the error card')
     assert.ok(classTokens(tree).includes('atw-collab'), 'the collaboration row still renders')
+  } finally {
+    board.dispose()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Member autonomy + proposal liveness (docs/14 §4)
+// ---------------------------------------------------------------------------
+
+test('docs/14 contract: the board reads origin/createdBy and deadline/autoResolved/quorum', () => {
+  for (const literal of ['item.origin', 'item.createdBy', 'proposal.deadline', 'proposal.autoResolved', 'proposal.quorum']) {
+    assert.ok(source.includes(literal), `client.js must read ${JSON.stringify(literal)}`)
+  }
+  for (const token of ['atw-badge--member', 'atw-badge--auto']) {
+    assert.ok(source.includes(token), `client.js must use the ${token} class`)
+    assert.ok(source.includes('.' + token), `the component stylesheet must style .${token}`)
+  }
+  // A deadline is rendered as remaining time, so it needs its own formatter.
+  assert.ok(source.includes('function deadlineLabel('), 'deadlines render through a dedicated remaining-time formatter')
+  assert.ok(source.includes("'time.minutesLeft'"), 'the remaining minutes are translated')
+})
+
+/** V2 snapshot plus the docs/14 liveness fields (one future, one expired). */
+const AUTONOMY_SNAPSHOT = (() => {
+  const future = new Date(Date.now() + 14 * 60 * 1000).toISOString()
+  const past = new Date(Date.now() - 60 * 1000).toISOString()
+  const proposals = V2_SNAPSHOT.run.collaboration.proposals.map((proposal, index) =>
+    index === 0
+      ? { ...proposal, deadline: future, quorum: 2, autoResolved: false }
+      : { ...proposal, deadline: past, quorum: 3, autoResolved: true },
+  )
+  const items = V2_SNAPSHOT.run.items.map((item, index) =>
+    index === 2 ? { ...item, origin: 'member', createdBy: 'impl-b' } : { ...item, origin: 'plan', createdBy: null },
+  )
+  return {
+    ...V2_SNAPSHOT,
+    run: { ...V2_SNAPSHOT.run, items, collaboration: { ...V2_SNAPSHOT.run.collaboration, proposals } },
+  }
+})()
+
+test('docs/14: member-created item and live proposals render their badges', async () => {
+  const board = await mountBoard(AUTONOMY_SNAPSHOT)
+  try {
+    const tree = await board.render()
+    const tokens = classTokens(tree)
+    const text = textOf(tree)
+
+    assert.ok(tokens.includes('atw-badge--member'), 'a member-created item uses the dedicated badge class')
+    assert.ok(text.includes('k:flow.memberItem'), 'the member badge is translated')
+    const memberBadge = findByClass(tree, 'atw-badge--member')[0]
+    assert.ok(memberBadge !== undefined, 'member badge element')
+    assert.ok(typeof memberBadge.props.title === 'string' && memberBadge.props.title.includes('impl-b'), 'createdBy is in the badge tooltip')
+    assert.ok(board.copyKeys.includes('flow.createdBy{"name":"impl-b"}'), 'createdBy flows through t()')
+
+    const cards = findByClass(tree, 'atw-card').filter((element) => element.props?.role === 'button')
+    const cardText = (id) => textOf(cards.find((element) => textOf(element).includes(id)))
+    assert.ok(!cardText('W1').includes('k:flow.memberItem'), 'planned items do not claim to be member-created')
+
+    // Proposals render newest first: [0] is the auto-resolved (expired) one,
+    // [1] the still-open one with a future deadline.
+    const proposals = findByClass(tree, 'atw-proposal')
+    assert.equal(proposals.length, 2)
+    const expired = textOf(proposals[0])
+    const running = textOf(proposals[1])
+    assert.ok(expired.includes('k:proposal.deadlineExpired'), 'a past deadline reads as expired')
+    assert.ok(expired.includes('k:proposal.autoResolved'), 'the auto-resolved wording renders')
+    assert.ok(expired.includes('k:proposal.quorum'), 'the quorum note sits next to the tally')
+    assert.ok(running.includes('k:proposal.deadline'), 'a running proposal shows its deadline')
+    assert.ok(running.includes('k:time.minutesLeft'), 'the deadline reads as remaining time')
+    assert.ok(running.includes('k:proposal.quorum'), 'the quorum note renders for open proposals too')
+    assert.equal(findByClass(tree, 'atw-badge--auto').length, 1, 'only the auto-resolved proposal carries that badge')
+    assert.ok(findByClass(tree, 'atw-proposal-deadline').length === 2, 'both deadlines render')
+    assert.ok(typeof findByClass(tree, 'atw-proposal-deadline')[0].props.title === 'string', 'the deadline tooltip carries the absolute time')
+  } finally {
+    board.dispose()
+  }
+})
+
+test('docs/14: boards without origin/deadline/quorum show no new badges and do not crash', async () => {
+  // V2_SNAPSHOT predates docs/14: no origin/createdBy/deadline/autoResolved/quorum.
+  const board = await mountBoard(V2_SNAPSHOT)
+  try {
+    const tree = await board.render()
+    const tokens = classTokens(tree)
+    const text = textOf(tree)
+    assert.ok(!tokens.includes('atw-badge--member'), 'no member badge on a legacy board')
+    assert.ok(!tokens.includes('atw-badge--auto'), 'no auto-resolved badge on a legacy board')
+    for (const key of ['flow.memberItem', 'proposal.deadline', 'proposal.deadlineExpired', 'proposal.autoResolved', 'proposal.quorum']) {
+      assert.ok(!text.includes('k:' + key), `a legacy board must not render ${key}`)
+    }
+    assert.ok(!text.includes('k:error.title'), 'missing new fields must not reach the error card')
+    assert.ok(tokens.includes('atw-collab'), 'the legacy board still renders its collaboration row')
   } finally {
     board.dispose()
   }

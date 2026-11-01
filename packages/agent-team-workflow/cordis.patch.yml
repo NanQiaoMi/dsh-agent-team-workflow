@@ -29,3 +29,5 @@
         autoNotify: true
         # Reject an approving review that declares no inspected evidence.
         requireReviewEvidence: true
+        # Minutes an open proposal waits for votes before lazy settlement (0 disables).
+        proposalTimeoutMinutes: 15

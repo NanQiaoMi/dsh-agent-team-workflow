@@ -47,6 +47,8 @@ Peer collaboration (workflow v2):
 - **Peer review by invitation.** After reporting, invite a peer with \`team_flow_work {action:"request_review", item_id, reviewer?}\`; omit \`reviewer\` to publish an open invitation any peer can take with \`{action:"take_review"}\`. Discuss findings with the author in the channel before submitting a verdict.
 - **Negotiation and votes.** Disagreement about a definition of done, scope, or the plan is a proposal: \`team_flow_decide {action:"propose", kind, item_id?, text}\`. Every affected member (the item owner and reviewers, or the whole Team) votes once with \`{action:"vote", proposal_id, vote:"yes|no|abstain"}\`. Accepted \`dod\` proposals amend the item's definition of done. Ties escalate to the Lead.
 - **Handoffs.** An owner may offer an unfinished item to a peer with \`team_flow_work {action:"handoff_offer", item_id, to}\`; the peer accepts or declines with \`handoff_accept\`/\`handoff_decline\`. Ownership transfers only after acceptance.
+- **Own the work you discover.** When the plan misses something (a missing example, an untested branch, a contract bug), add it yourself with \`team_flow_item\` instead of waiting for the Lead: give it a write scope and a definition of done, and it joins the same review and gate rules. Use \`owner:"open"\` if a peer should pick it up.
+- **Decisions have a clock.** Proposals auto-settle after the configured deadline (majority of affected members is the quorum; ties and missed quorums escalate to the Lead). Vote before the deadline or the decision happens without you.
 - **Read the board.** \`team_flow_read\` returns the channel tail, open queue, your review invitations, handoffs offered to you, unanswered questions addressed to you, and open proposals awaiting your vote.
 
 Non-negotiable rules:
@@ -173,6 +175,7 @@ You also review these items, because one member cannot be spawned twice: ${revie
 - After reporting, invite a peer reviewer: \`team_flow_work {action:"request_review", item_id:"${item.id}", reviewer:"<member>"}\` (omit reviewer for an open invitation). If a peer invites you to review, accept with \`{action:"take_review"}\` only if you can be independent.
 - Discuss findings with your reviewer in the channel before rework; wording of a disagreement and its evidence belong on the board.
 - If you cannot finish, release the item (\`team_flow_work {action:"release"}\`) or offer a handoff to another peer.
+- If the work you find is outside the plan (a missing case, an extra example, a bug you spotted), create it with \`team_flow_item {action:"create", subject, write_scopes, definition_of_done}\` and keep your current item honest about the split. Do not silently expand your scope.
 
 # Required workflow
 1. Call team_flow_status and read your next_actions.
@@ -232,6 +235,8 @@ ${dod}
 - Clarify with the author in the channel: \`team_flow_talk {target:"<author>", kind:"question", item_id, finding_id?}\`, then \`kind:"answer"\` when the author answers you. Keep the thread on the board instead of only in direct messages.
 - If the item's definition of done is wrong, open a \`dod\` proposal with \`team_flow_decide\` and vote on proposals that affect your reviewed items; do not approve work measured against a definition you believe is wrong.
 - If a peer invites you to review another item, accept with \`team_flow_work {action:"take_review", item_id}\`; never review your own work.
+- If your review uncovers work outside every item's scope, create a follow-up item with \`team_flow_item\` (or open a \`scope\` proposal if it changes an existing item) instead of fixing it yourself.
+- Proposal deadlines and quorums are enforced: vote on anything that affects you before it auto-settles.
 - The Lead only arbitrates; do not escalate a disagreement that peers can settle on the board.
 
 # Communication

@@ -13,14 +13,16 @@
 └─ 共享 cwd / 文件系统         +    ├─ team_flow_gate    六类门禁 + finalize
                                     ├─ team_flow_escalate 升级与仲裁
                                     ├─ team_flow_repair   卡点修复（reopen/reassign/reset_review）
+                                    ├─ team_flow_item    成员自建工作项（自建/开放队列/指派同伴）
                                     ├─ team_flow_talk    成员直连频道（提问/回答/状态/反对）
                                     ├─ team_flow_work    开放队列认领/释放、评审邀请/接受、任务交接
                                     ├─ team_flow_decide  提案与投票（DoD/范围/重规划），平票升级 Lead 仲裁
                                     └─ team_flow_read    拉取频道、待认领、邀请、待投提案、未答问题
 ```
 
-**这不是"Lead 逐项派活"的委派式工作流**：成员可以自己认领开放队列、直接向同伴提问、邀请同伴评审、
-对 DoD/范围提案并投票、把做不完的任务交接给同伴；Lead 只负责定 mission、仲裁死锁与最终门禁。
+**这不是"Lead 逐项派活"的委派式工作流**：成员可以自己认领开放队列、**发现计划外工作时自建工作项**、
+直接向同伴提问、邀请同伴评审、对 DoD/范围提案并投票（提案有截止时间与法定人数，超时惰性裁决）、
+把做不完的任务交接给同伴；Lead 只负责定 mission、仲裁死锁与最终门禁。
 所有协作动作都落在黑板（`state.json`）上，可在实时看板中回放。
 
 ## 目录
@@ -39,6 +41,7 @@
 | [`docs/10-dashboard-verification.md`](docs/10-dashboard-verification.md) | 看板验证记录：30 例离线测试、真实黑板 dry-run、待人工确认的端到端步骤 |
 | [`docs/11-dashboard-live-rootcause.md`](docs/11-dashboard-live-rootcause.md) | **「View 不出现」根因**：client 启动图静默跳过（`exports` 漏导 `./package.json`）+ live 只读验证方法 |
 | [`docs/12-peer-collaboration.md`](docs/12-peer-collaboration.md) | **对等协作层设计**：channel / 开放队列 / 评审邀请 / 提案投票 / 交接、state v2、快照 v2、UI 契约 |
+| [`docs/14-member-autonomy.md`](docs/14-member-autonomy.md) | **成员自治 + 提案活性**：`team_flow_item` 自建项、deadline/quorum/惰性自动裁决、快照与看板增量 |
 | [`docs/13-collaboration-live-run.md`](docs/13-collaboration-live-run.md) | **对等协作 live run**：3 成员 / 3 开放项 / 8 分钟，抢单、直连问答、提案投票、互邀评审、gate 全记录 + 看板截图 |
 | [`packages/agent-team-workflow/`](packages/agent-team-workflow/) | 可安装插件包（零外部依赖，纯 ESM） |
 
@@ -129,7 +132,7 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 "$NODE" --test test/engine.test.mjs test/tools.integration.test.mjs test/plugin.test.mjs
 ```
 
-113 个用例覆盖：计划校验（自审/环/写范围竞争/成员名/规模）、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类（含空证据、空命令、依赖未批准、评审无证据）、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。详见 [`docs/05-verification.md`](docs/05-verification.md)。
+129 个用例覆盖：计划校验（自审/环/写范围竞争/成员名/规模）、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类（含空证据、空命令、依赖未批准、评审无证据）、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。详见 [`docs/05-verification.md`](docs/05-verification.md)。
 
 **已通过真实 live run 验证**（2026-11-01，重启后）：4 个成员、2 个并行工作项、一次升级仲裁、两轮独立评审、门禁收敛并生成报告——记录与原始证据见 [`docs/08-live-run.md`](docs/08-live-run.md)。
 
@@ -141,7 +144,7 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 - **链接插件不能 import 宿主包**：实现保持零外部依赖（仅 `node:*`），因此没有 `Config`/schemastery 校验，配置由 `lib/config.js` 自行收敛并回显在 `team_flow_status`。
 - **黑板是工作区文件**：成员若绕过工具直接改写，插件无法从技术上防伪（共享 cwd 的固有边界）；评审结论/证据请以最终答复与报告复核为准。
 - **写范围检查基于自报**：插件不解析 git diff，未申报的越界写由评审与 Lead 最终 diff 复核兜底。
-- **每会话固定注入成本**：12 个工具 schema + 协议段约 5–6k tokens；不用工作流的会话可用 `plugin_manager set_bundle` 关闭。
+- **每会话固定注入成本**：13 个工具 schema + 协议段约 6–7k tokens；不用工作流的会话可用 `plugin_manager set_bundle` 关闭。
 
 ## 卸载
 

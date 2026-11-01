@@ -86,6 +86,9 @@ window.__ModuleLoader__.load({
       'events.actor': '由 {name}',
       'time.secondsAgo': '{n} 秒前',
       'time.minutesAgo': '{n} 分钟前',
+      'time.secondsLeft': '{n} 秒后',
+      'time.minutesLeft': '{n} 分钟后',
+      'time.hoursLeft': '{n} 小时后',
       'gate.title': '门禁',
       'gate.none': '未评估：Lead 还没有运行 team_flow_gate',
       'gate.pass': '通过',
@@ -200,6 +203,10 @@ window.__ModuleLoader__.load({
       'proposal.affected': '受影响 {affected} 人 · 已投 {total} 票',
       'proposal.resolution': '裁决',
       'proposal.noVotes': '还没有人投票',
+      'proposal.deadline': '截止 {when}',
+      'proposal.deadlineExpired': '已截止（{when}）',
+      'proposal.autoResolved': '超时自动裁决',
+      'proposal.quorum': '法定 {n}',
       'proposal.vote.yes': '同意',
       'proposal.vote.no': '反对',
       'proposal.vote.abstain': '弃权',
@@ -222,6 +229,8 @@ window.__ModuleLoader__.load({
       'flow.openAssignment': '待认领',
       'flow.openQueue': '待认领队列',
       'flow.proposalsOpen': '提案中 {n}',
+      'flow.memberItem': '自建',
+      'flow.createdBy': '自建者 {name}',
       'drawer.assignment': '分派方式',
       'drawer.assignment.lead': 'Lead 指派',
       'drawer.assignment.open': '开放队列',
@@ -304,6 +313,9 @@ window.__ModuleLoader__.load({
       'events.actor': 'by {name}',
       'time.secondsAgo': '{n}s ago',
       'time.minutesAgo': '{n}m ago',
+      'time.secondsLeft': 'in {n}s',
+      'time.minutesLeft': 'in {n} min',
+      'time.hoursLeft': 'in {n}h',
       'gate.title': 'Quality gate',
       'gate.none': 'Not evaluated: the Lead has not run team_flow_gate yet',
       'gate.pass': 'pass',
@@ -418,6 +430,10 @@ window.__ModuleLoader__.load({
       'proposal.affected': 'affected {affected} · votes {total}',
       'proposal.resolution': 'resolution',
       'proposal.noVotes': 'No votes yet',
+      'proposal.deadline': 'due {when}',
+      'proposal.deadlineExpired': 'expired ({when})',
+      'proposal.autoResolved': 'auto-resolved',
+      'proposal.quorum': 'quorum {n}',
       'proposal.vote.yes': 'yes',
       'proposal.vote.no': 'no',
       'proposal.vote.abstain': 'abstain',
@@ -440,6 +456,8 @@ window.__ModuleLoader__.load({
       'flow.openAssignment': 'unclaimed',
       'flow.openQueue': 'Open queue',
       'flow.proposalsOpen': '{n} proposal(s)',
+      'flow.memberItem': 'member',
+      'flow.createdBy': 'created by {name}',
       'drawer.assignment': 'assignment',
       'drawer.assignment.lead': 'assigned by Lead',
       'drawer.assignment.open': 'open queue',
@@ -565,6 +583,33 @@ window.__ModuleLoader__.load({
           if (typeof value === 'string' && value.length > 0 && value !== key) return value
         }
         return typeof fallback === 'string' ? fallback : key
+      }
+    }
+
+    /**
+     * @returns a cutoff label for one proposal deadline: the remaining time
+     *   while it is still running, the elapsed time once it has passed.
+     */
+    function deadlineLabel(deadlineMs, nowMs, tr) {
+      if (!Number.isFinite(deadlineMs) || deadlineMs <= 0) return ''
+      const delta = deadlineMs - nowMs
+      if (delta > 0) {
+        const seconds = Math.ceil(delta / 1000)
+        if (seconds < 60) return tr('proposal.deadline', { when: tr('time.secondsLeft', { n: seconds }) })
+        const minutes = Math.ceil(delta / 60000)
+        if (minutes < 60) return tr('proposal.deadline', { when: tr('time.minutesLeft', { n: minutes }) })
+        return tr('proposal.deadline', { when: tr('time.hoursLeft', { n: Math.ceil(delta / 3600000) }) })
+      }
+      return tr('proposal.deadlineExpired', { when: relativeTime(deadlineMs, nowMs, tr) })
+    }
+
+    /** @returns the local datetime of one instant for a tooltip; '' when unknown. */
+    function absoluteTime(atMs) {
+      if (!Number.isFinite(atMs) || atMs <= 0) return ''
+      try {
+        return new Date(atMs).toLocaleString()
+      } catch (ignored) {
+        return ''
       }
     }
 
@@ -745,6 +790,9 @@ window.__ModuleLoader__.load({
         handoffs: toArray(item.handoffs).filter(isRecord).map(normalizeHandoff),
         thread: toArray(item.thread).filter(isRecord).map(normalizeChannelEntry),
         openProposals: num(item.openProposals, 0),
+        // docs/14 §4: peers may create items mid-run; planned items keep the default.
+        origin: str(item.origin, 'plan') === 'member' ? 'member' : 'plan',
+        createdBy: str(item.createdBy),
       }
     }
 
@@ -912,6 +960,10 @@ window.__ModuleLoader__.load({
         tally,
         resolvedAt: parseTime(proposal.resolvedAt),
         resolution: str(proposal.resolution),
+        // docs/14 §2: liveness fields (absent on older boards).
+        deadline: parseTime(proposal.deadline),
+        autoResolved: proposal.autoResolved === true,
+        quorum: num(proposal.quorum, Number.NaN),
       }
     }
 
@@ -1236,6 +1288,8 @@ window.__ModuleLoader__.load({
 .atw-badge--warn{border-color:var(--dsw-alias-state-warn-primary);color:var(--dsw-alias-state-warn-primary)}
 .atw-badge--error{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}
 .atw-badge--idle{border-color:var(--dsw-alias-state-idle-primary);color:var(--dsw-alias-label-secondary)}
+.atw-badge--member{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
+.atw-badge--auto{border-color:var(--dsw-alias-state-warn-primary);color:var(--dsw-alias-state-warn-primary)}
 .atw-progress{display:flex;align-items:center;gap:6px}
 .atw-progress-track{width:84px;height:5px;border-radius:999px;background:var(--dsw-alias-bg-overlay);overflow:hidden}
 .atw-progress-fill{height:100%;border-radius:999px;background:var(--dsw-alias-state-success-primary)}
@@ -1390,6 +1444,7 @@ window.__ModuleLoader__.load({
 .atw-proposal-text{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:12px;line-height:17px;overflow-wrap:anywhere}
 .atw-proposal-tally{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
 .atw-proposal-meta{color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px}
+.atw-proposal-deadline{color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;white-space:nowrap}
 .atw-proposal-voters{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
 .atw-proposal-resolution{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:17px;overflow-wrap:anywhere}
 .atw-edge--peer{color:var(--dsw-alias-state-warn-primary);opacity:.6}
@@ -1532,6 +1587,7 @@ window.__ModuleLoader__.load({
       const claimBy = item.claim === null ? '' : item.claim.by
       const claimable = item.assignment === 'open' && claimBy === '' && item.status === 'pending'
       const proposalsOpen = Number.isFinite(item.openProposals) && item.openProposals > 0
+      const memberCreated = item.origin === 'member'
       return h(
         'div',
         {
@@ -1563,6 +1619,17 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'atw-card-flags' },
           h('span', { key: 'round' }, tr('flow.round', { submitted: reviews.submittedRounds, max: reviews.maxRounds })),
+          memberCreated
+            ? h(
+                'span',
+                {
+                  key: 'origin',
+                  className: 'atw-badge atw-badge--member',
+                  title: item.createdBy === '' ? undefined : tr('flow.createdBy', { name: item.createdBy }),
+                },
+                tr('flow.memberItem'),
+              )
+            : null,
           claimBy !== '' ? badge(tr('flow.claimed', { name: claimBy }), 'brand', 'claim') : null,
           claimable ? badge(tr('flow.openAssignment'), 'warn', 'open') : null,
           proposalsOpen ? badge(tr('flow.proposalsOpen', { n: item.openProposals }), 'warn', 'proposals') : null,
@@ -2081,6 +2148,8 @@ window.__ModuleLoader__.load({
       const tr = view.tr
       const tally = proposal.tally
       const blocking = proposal.status === 'open' && PROPOSAL_BLOCKING_KINDS.indexOf(proposal.kind) !== -1
+      const deadline = deadlineLabel(proposal.deadline, view.now, tr)
+      const quorumShown = Number.isFinite(proposal.quorum) && proposal.quorum > 0
       return h(
         'div',
         { key: 'proposal-' + index + '-' + proposal.id, className: 'atw-proposal' + (blocking ? ' atw-proposal--blocking' : '') },
@@ -2089,6 +2158,7 @@ window.__ModuleLoader__.load({
           { className: 'atw-proposal-head' },
           badge(proposalKindLabel(tr, proposal.kind), 'idle', 'kind'),
           badge(proposalStatusLabel(tr, proposal.status), PROPOSAL_STATUS_TONES[proposal.status] || 'idle', 'status'),
+          proposal.autoResolved ? h('span', { key: 'auto', className: 'atw-badge atw-badge--auto' }, tr('proposal.autoResolved')) : null,
           blocking ? badge(tr('proposal.blocking'), 'warn', 'blocking') : null,
           proposal.itemId !== ''
             ? h(
@@ -2099,6 +2169,9 @@ window.__ModuleLoader__.load({
             : null,
           h('span', { className: 'atw-proposal-by' }, tr('proposal.by', { name: proposal.by })),
           h('span', { className: 'atw-channel-time' }, relativeTime(proposal.at, view.now, tr)),
+          deadline !== ''
+            ? h('span', { key: 'deadline', className: 'atw-proposal-deadline', title: absoluteTime(proposal.deadline) }, deadline)
+            : null,
         ),
         h('div', { className: 'atw-proposal-text' }, proposal.text),
         h(
@@ -2108,6 +2181,7 @@ window.__ModuleLoader__.load({
           badge(tr('proposal.vote.no') + ' ' + tally.no, 'error', 'no'),
           badge(tr('proposal.vote.abstain') + ' ' + tally.abstain, 'idle', 'abstain'),
           h('span', { className: 'atw-proposal-meta' }, tr('proposal.affected', { affected: tally.affected, total: tally.total })),
+          quorumShown ? h('span', { key: 'quorum', className: 'atw-proposal-meta' }, tr('proposal.quorum', { n: proposal.quorum })) : null,
         ),
         proposal.votes.length === 0
           ? h('div', { className: 'atw-proposal-meta' }, tr('proposal.noVotes'))

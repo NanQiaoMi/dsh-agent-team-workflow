@@ -60,6 +60,13 @@ export const PROPOSAL_LIMIT = 100
 /** Default claim lease in minutes (advisory; the engine never force-releases). */
 export const DEFAULT_LEASE_MINUTES = 30
 
+/** Default proposal deadline in minutes; 0 disables auto-settlement. */
+export const DEFAULT_PROPOSAL_TIMEOUT_MINUTES = 15
+
+/** Accepted proposal timeout override range, in minutes. */
+export const PROPOSAL_TIMEOUT_MIN = 1
+export const PROPOSAL_TIMEOUT_MAX = 1440
+
 /**
  * Fill the v2 collaboration fields on one run state in place.
  *
@@ -80,7 +87,14 @@ export function ensureCollaboration(state) {
       if (!Array.isArray(item.reviewRequests)) item.reviewRequests = []
       if (!Array.isArray(item.handoffs)) item.handoffs = []
       if (item.pendingReviewer === undefined) item.pendingReviewer = null
+      if (item.origin !== 'member') item.origin = 'plan'
+      if (item.createdBy === undefined) item.createdBy = null
     }
+  }
+  for (const proposal of Array.isArray(state.proposals) ? state.proposals : []) {
+    if (proposal.deadline === undefined) proposal.deadline = null
+    if (proposal.autoResolved === undefined) proposal.autoResolved = false
+    if (!Number.isInteger(proposal.quorum)) proposal.quorum = null
   }
   if (Number.isInteger(state.workflowVersion) && state.workflowVersion < WORKFLOW_VERSION) state.workflowVersion = WORKFLOW_VERSION
   if (Number.isInteger(state.schemaVersion) && state.schemaVersion < 2) state.schemaVersion = 2
@@ -751,6 +765,7 @@ export function resolveEscalation(state, input) {
  * @returns gate result object.
  */
 export function evaluateGates(state, input) {
+  settleExpiredProposals(state, { now: input.now, settings: input.settings, members: input.members })
   const overrides = new Map((input.overrides ?? []).map((entry) => [entry.itemId, entry.reason]))
   const nativeById = new Map((input.nativeTasks ?? []).map((task) => [task.id, task]))
   const memberByName = new Map((input.members ?? []).map((member) => [member.name, member]))
@@ -927,6 +942,7 @@ export function collaborationSummary(state, input) {
  * @returns ordered action strings.
  */
 export function nextActions(state, input) {
+  settleExpiredProposals(state, { now: input.now, settings: input.settings, members: input.members })
   const actions = []
   const me = typeof input.me === 'string' ? input.me : (input.me?.name ?? '')
   const isLead = input.role === 'lead'
@@ -1021,6 +1037,7 @@ export function nextActions(state, input) {
  * @returns model-facing status record.
  */
 export function buildStatus(state, input) {
+  settleExpiredProposals(state, { now: input.now, settings: input.settings, members: input.members })
   const me = input.me
   const items = state.items.map((item) => {
     const pending = pendingReview(item)
@@ -1389,6 +1406,10 @@ export function proposeDecision(state, input) {
   const itemId = input.itemId === undefined || input.itemId === null || input.itemId === '' ? null : String(input.itemId)
   if (itemId !== null) findItem(state, itemId)
   if (state.proposals.length >= PROPOSAL_LIMIT) throw new WorkflowError(`this run already holds ${state.proposals.length} proposals`, 'WORKFLOW_PROPOSAL_LIMIT')
+  const configuredTimeout = Number.isInteger(input.settings?.proposalTimeoutMinutes) ? input.settings.proposalTimeoutMinutes : DEFAULT_PROPOSAL_TIMEOUT_MINUTES
+  const requestedTimeout = Number.isInteger(input.timeoutMinutes) && input.timeoutMinutes > 0 ? input.timeoutMinutes : null
+  const timeoutMinutes = requestedTimeout === null ? configuredTimeout : Math.min(Math.max(requestedTimeout, PROPOSAL_TIMEOUT_MIN), PROPOSAL_TIMEOUT_MAX)
+  const affected = affectedMembersFor({ itemId }, state, input.members ?? [])
   state.proposalSeq += 1
   const proposal = {
     id: `p${state.proposalSeq}`,
@@ -1401,6 +1422,9 @@ export function proposeDecision(state, input) {
     votes: [],
     resolvedAt: null,
     resolution: null,
+    deadline: timeoutMinutes > 0 ? new Date(Date.parse(now) + timeoutMinutes * 60_000).toISOString() : null,
+    autoResolved: false,
+    quorum: proposalQuorumFor(affected),
   }
   state.proposals.push(proposal)
   appendEvent(state, { at: now, type: 'proposal/opened', actor: input.by, detail: `${proposal.id} ${input.kind}${itemId === null ? '' : ` on ${itemId}`}` })
@@ -1419,6 +1443,7 @@ export function proposeDecision(state, input) {
 export function voteDecision(state, input) {
   ensureCollaboration(state)
   const now = input.now ?? new Date().toISOString()
+  settleExpiredProposals(state, { now, settings: input.settings, members: input.members })
   const proposal = findProposal(state, input.proposalId)
   if (proposal.status !== 'open') throw new WorkflowError(`proposal "${proposal.id}" is already ${proposal.status}`, 'WORKFLOW_PROPOSAL_CLOSED')
   const affected = affectedMembersFor(proposal, state, input.members)
@@ -1526,6 +1551,199 @@ export function withdrawProposal(state, input) {
   appendEvent(state, { at: now, type: 'proposal/withdrawn', actor: input.caller, detail: proposal.id })
   postChannelMessage(state, { from: input.caller, to: 'team', kind: 'status', text: `withdrew ${proposal.id}`, itemId: proposal.itemId, proposalId: proposal.id, now })
   return proposal
+}
+
+
+// ---------------------------------------------------------------------------
+// Member autonomy and proposal liveness (workflow v2.2)
+// ---------------------------------------------------------------------------
+
+/** @returns the smallest vote count that is a majority for one affected set. */
+export function proposalQuorumFor(affected) {
+  return Math.max(1, Math.ceil(affected.length / 2))
+}
+
+/** @returns the next free member-created item id (`S1`, `S2`, ...). */
+function nextMemberItemId(state) {
+  const taken = new Set((state.items ?? []).map((item) => item.id))
+  for (let index = 1; ; index += 1) {
+    const candidate = `S${index}`
+    if (!taken.has(candidate)) return candidate
+  }
+}
+
+/**
+ * Let one member add a new work item to the live run.
+ *
+ * A real Team grows work while it runs: a worker notices a missing example, a
+ * reviewer finds an untested branch, and the fix is local. The new item joins
+ * the same board, the same review rules and the same gate as a planned item —
+ * autonomy is not an exemption from verification.
+ * @param state - run state (mutated).
+ * @param input - `{ by, subject, role, writeScopes, definitionOfDone, owner,
+ *   blockedBy, needsReview, reviewers, evidenceOptional, now, maxItems,
+ *   allowScopeOverlap, leaseMinutes }`.
+ * @returns the created item record.
+ */
+export function createItem(state, input) {
+  ensureCollaboration(state)
+  const now = input.now ?? new Date().toISOString()
+  const subject = String(input.subject ?? '').trim()
+  if (subject.length === 0) throw new WorkflowError('a member-created item needs a non-empty subject', 'WORKFLOW_ITEM_SUBJECT_REQUIRED')
+  if (subject.length > 200) throw new WorkflowError('a member-created item subject must be at most 200 characters', 'WORKFLOW_ITEM_SUBJECT_REQUIRED')
+  const definitionOfDone = (Array.isArray(input.definitionOfDone) ? input.definitionOfDone : []).map((entry) => String(entry).trim()).filter((entry) => entry.length > 0)
+  if (definitionOfDone.length === 0) throw new WorkflowError('a member-created item needs at least one definition_of_done entry', 'WORKFLOW_ITEM_DOD_REQUIRED')
+  const writeScopes = (Array.isArray(input.writeScopes) ? input.writeScopes : []).map((entry) => normalizeScope(entry)).filter((entry) => entry.length > 0)
+  if (writeScopes.length === 0) throw new WorkflowError('a member-created item needs at least one write scope', 'WORKFLOW_ITEM_SCOPE_REQUIRED')
+  for (const scope of writeScopes) {
+    if (scope.startsWith('/')) throw new WorkflowError(`write scope "${scope}" must be workspace-relative`, 'WORKFLOW_ITEM_SCOPE_REQUIRED')
+  }
+  const maxItems = Number.isInteger(input.maxItems) ? input.maxItems : Number.POSITIVE_INFINITY
+  if (state.items.length >= maxItems) throw new WorkflowError(`this run already holds ${state.items.length} work items (max ${maxItems})`, 'WORKFLOW_ITEM_LIMIT')
+  const blockedBy = [...new Set((Array.isArray(input.blockedBy) ? input.blockedBy : []).map((entry) => String(entry).trim()).filter((entry) => entry.length > 0))]
+  for (const blocker of blockedBy) findItem(state, blocker)
+  const reviewers = [...new Set((Array.isArray(input.reviewers) ? input.reviewers : []).map((entry) => String(entry).trim()).filter((entry) => entry.length > 0))]
+  const requestedOwner = input.owner === undefined || input.owner === null || String(input.owner).trim() === '' || String(input.owner).trim() === 'self'
+    ? input.by
+    : String(input.owner).trim()
+  const open = requestedOwner === 'open'
+  const owner = open ? '' : requestedOwner
+  if (owner !== '' && owner === 'lead') throw new WorkflowError('the Lead coordinates and gates; create the item with owner:"self" or owner:"open"', 'WORKFLOW_ITEM_OWNER_REQUIRED')
+  if (owner !== '' && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(owner)) throw new WorkflowError(`owner "${owner}" is not a member name (lower-kebab-case, digits allowed)`, 'WORKFLOW_ITEM_OWNER_REQUIRED')
+  for (const reviewer of reviewers) {
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(reviewer)) throw new WorkflowError(`reviewer "${reviewer}" is not a member name (lower-kebab-case, digits allowed)`, 'WORKFLOW_ITEM_REVIEWER_REQUIRED')
+    if (reviewer === owner) throw new WorkflowError(`item cannot list its own owner "${reviewer}" as reviewer; reviews must be independent`, 'WORKFLOW_ITEM_SELF_REVIEW')
+  }
+  const id = nextMemberItemId(state)
+  const item = {
+    id,
+    subject,
+    owner,
+    assignment: open ? 'open' : 'lead',
+    claim: null,
+    reviewRequests: [],
+    handoffs: [],
+    pendingReviewer: null,
+    role: String(input.role ?? 'implementer').trim() || 'implementer',
+    writeScopes,
+    blockedBy,
+    definitionOfDone,
+    needsReview: input.needsReview !== false,
+    reviewers,
+    evidenceOptional: input.evidenceOptional === true,
+    status: ITEM_STATUS.PENDING,
+    taskId: null,
+    report: null,
+    reportSeq: 0,
+    reviews: [],
+    reviewSeq: 0,
+    overrideReason: null,
+    repairLog: [],
+    origin: 'member',
+    createdBy: input.by,
+    createdAt: now,
+    updatedAt: now,
+    reportedAt: null,
+    approvedAt: null,
+    approvedBy: null,
+  }
+  const tentative = [...state.items, item]
+  const { waves } = computeWaves(tentative)
+  const conflicts = findScopeConflicts(tentative, waves).filter((conflict) => conflict.left === id || conflict.right === id)
+  if (conflicts.length > 0 && input.allowScopeOverlap !== true) {
+    const detail = conflicts.map((conflict) => `wave ${conflict.wave}: ${conflict.left} vs ${conflict.right} (${conflict.scopes.join(', ')})`).join('; ')
+    throw new WorkflowError(`the new item would race with an existing item in the same wave: ${detail}`, 'WORKFLOW_ITEM_SCOPE_CONFLICT')
+  }
+  state.items.push(item)
+  if (open === false && owner === input.by) {
+    item.claim = { by: input.by, at: now, leaseMinutes: Number.isInteger(input.leaseMinutes) ? input.leaseMinutes : DEFAULT_LEASE_MINUTES, note: 'self-created' }
+  }
+  appendEvent(state, { at: now, type: 'item/created', actor: input.by, detail: `${id} ${open ? '(open queue)' : `→ ${owner}`}: ${subject.slice(0, 120)}` })
+  postChannelMessage(state, {
+    from: input.by,
+    to: open ? 'team' : owner === input.by ? 'team' : owner,
+    kind: 'status',
+    text: `created ${id}${open ? ' (open queue)' : ` for ${owner}`}: ${subject.slice(0, 200)}`,
+    itemId: id,
+    now,
+  })
+  return item
+}
+
+/**
+ * Settle every proposal whose deadline passed.
+ *
+ * Pure, lazy and deterministic: callers pass the current time, so there is no
+ * timer to leak and a replay of the board reaches the same state. A proposal
+ * passes when its side is known and at least a majority of affected members
+ * voted; ties and missed quorums escalate instead of silently passing.
+ * @param state - run state (mutated).
+ * @param input - `{ now, settings, members }`.
+ * @returns settled proposals.
+ */
+export function settleExpiredProposals(state, input = {}) {
+  ensureCollaboration(state)
+  const now = input.now ?? new Date().toISOString()
+  const settings = input.settings ?? state.settings ?? {}
+  const configured = Number.isInteger(settings.proposalTimeoutMinutes) ? settings.proposalTimeoutMinutes : DEFAULT_PROPOSAL_TIMEOUT_MINUTES
+  if (configured <= 0) return []
+  const nowMs = Date.parse(now)
+  const settled = []
+  for (const proposal of state.proposals) {
+    if (proposal.status !== 'open') continue
+    if (proposal.deadline === null || proposal.deadline === undefined) continue
+    const deadlineMs = Date.parse(proposal.deadline)
+    if (!Number.isFinite(deadlineMs) || deadlineMs > nowMs) continue
+    const affected = affectedMembersFor(proposal, state, input.members ?? [])
+    const tally = tallyProposal(proposal, affected)
+    const quorum = Number.isInteger(proposal.quorum) ? proposal.quorum : proposalQuorumFor(affected)
+    proposal.autoResolved = true
+    proposal.resolvedAt = now
+    if (tally.total < quorum) {
+      proposal.status = 'escalated'
+      proposal.resolution = `deadline passed without quorum (${tally.total}/${quorum} votes); escalated to the Lead`
+      if (BLOCKING_PROPOSAL_KINDS.includes(proposal.kind)) {
+        raiseEscalation(state, {
+          kind: 'decision',
+          subject: `Proposal ${proposal.id} expired without quorum`,
+          detail: `${proposal.kind}${proposal.itemId === null ? '' : ` on ${proposal.itemId}`}: ${proposal.text.slice(0, 500)}; votes yes=${tally.yes} no=${tally.no} abstain=${tally.abstain}, quorum ${quorum}`,
+          blocking: true,
+          itemId: proposal.itemId,
+          actor: 'system',
+          now,
+        })
+      }
+    } else if (tally.yes > tally.no) {
+      proposal.status = 'accepted'
+      proposal.resolution = `auto-accepted after deadline (yes ${tally.yes}, no ${tally.no}, abstain ${tally.abstain}; quorum ${quorum})`
+      if (proposal.kind === 'dod' && proposal.itemId !== null) {
+        const item = findItem(state, proposal.itemId)
+        if (!item.definitionOfDone.includes(proposal.text)) item.definitionOfDone.push(proposal.text)
+      }
+    } else if (tally.no > tally.yes) {
+      proposal.status = 'rejected'
+      proposal.resolution = `auto-rejected after deadline (yes ${tally.yes}, no ${tally.no}, abstain ${tally.abstain}; quorum ${quorum})`
+    } else {
+      proposal.status = 'escalated'
+      proposal.resolution = `tied vote at deadline (yes ${tally.yes}, no ${tally.no}); escalated to the Lead`
+      if (BLOCKING_PROPOSAL_KINDS.includes(proposal.kind)) {
+        raiseEscalation(state, {
+          kind: 'conflict',
+          subject: `Proposal ${proposal.id} tied at its deadline`,
+          detail: `${proposal.kind}${proposal.itemId === null ? '' : ` on ${proposal.itemId}`}: ${proposal.text.slice(0, 500)}`,
+          blocking: true,
+          itemId: proposal.itemId,
+          actor: 'system',
+          now,
+        })
+      }
+    }
+    appendEvent(state, { at: now, type: 'proposal/auto-resolved', actor: 'system', detail: `${proposal.id} ${proposal.status}` })
+    postChannelMessage(state, { from: 'system', to: 'team', kind: 'status', text: `${proposal.id} ${proposal.status}: ${proposal.resolution}`, itemId: proposal.itemId, proposalId: proposal.id, now })
+    settled.push(proposal)
+  }
+  if (settled.length > 0) state.updatedAt = now
+  return settled
 }
 
 /** Stable workflow error with a machine-readable code. */

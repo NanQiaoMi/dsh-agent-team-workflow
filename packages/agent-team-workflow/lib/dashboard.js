@@ -31,6 +31,12 @@
  * version-1 board (one with no collaboration fields at all) still yields the
  * same base snapshot with `collaboration` present but empty, so old runs stay
  * viewable instead of failing.
+ *
+ * docs/14 (member autonomy / proposal liveness) is additive on the same
+ * snapshot version: `items[].origin` + `createdBy`, and
+ * `proposals[].deadline` + `autoResolved` + `quorum`. Those blackboard fields
+ * are newer than the rest, so their absence is normal and every one of them
+ * has a documented default (`plan` / null / null / false / ceil(affected/2)).
  */
 
 /** Snapshot schema version; bump only for a breaking shape change. */
@@ -419,6 +425,10 @@ function buildItem(raw, id, context) {
     handoffs: recordList(raw.handoffs).slice(-MAX_ITEM_HANDOFFS).map(buildItemHandoff),
     thread: thread.slice(-MAX_THREAD),
     openProposals: context.openProposalCounts.forItem(id),
+    // docs/14 §4: a peer may create work items mid-run; planned items keep the
+    // documented defaults, and only the documented 'member' marker is trusted.
+    origin: textOf(raw.origin).trim().toLowerCase() === 'member' ? 'member' : 'plan',
+    createdBy: isoOf(raw.createdBy),
   }
 }
 
@@ -753,7 +763,8 @@ function countOpenProposals(proposals) {
 }
 
 /**
- * Build the bounded proposal list, including each proposal's vote tally.
+ * Build the bounded proposal list, including each proposal's vote tally and
+ * the docs/14 liveness fields (deadline / quorum / autoResolved).
  * @param proposals - `state.proposals`.
  * @param context - `{ itemsById, memberNames, warnings }`.
  * @returns normalized proposals, oldest first.
@@ -767,6 +778,8 @@ function buildProposals(proposals, context) {
     if (votes.length > MAX_VOTES) truncatedVotes += 1
     const tally = countVotes(votes)
     const itemId = isoOf(proposal.itemId)
+    const affected = affectedCount(itemId, context)
+    const declaredQuorum = integerOf(proposal.quorum)
     return {
       id: textOf(proposal.id),
       at: textOf(proposal.at),
@@ -775,16 +788,22 @@ function buildProposals(proposals, context) {
       itemId,
       text: clip(proposal.text),
       status: textOf(proposal.status) || 'open',
+      // docs/14 §2: the proposer freezes a deadline, and the quorum the engine
+      // settles against is ceil(affected/2) with a floor of 1. The engine
+      // writes both; older boards only carry the shape, so derive the quorum.
+      deadline: isoOf(proposal.deadline),
+      quorum: declaredQuorum === null ? Math.max(1, Math.ceil(affected / 2)) : Math.max(1, declaredQuorum),
       votes: votes.slice(-MAX_VOTES),
       tally: {
         yes: tally.yes,
         no: tally.no,
         abstain: tally.abstain,
-        affected: affectedCount(itemId, context),
+        affected,
         // The engine counts every recorded vote here, including one it could
         // not classify (which it tallies as abstain).
         total: votes.length,
       },
+      autoResolved: proposal.autoResolved === true,
       resolvedAt: isoOf(proposal.resolvedAt),
       resolution: typeof proposal.resolution === 'string' ? clip(proposal.resolution) : null,
     }

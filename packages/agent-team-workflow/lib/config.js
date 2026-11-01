@@ -34,6 +34,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   autoNotify: true,
   /** Reject an approving review that declares no inspection evidence at all. */
   requireReviewEvidence: true,
+  /** Minutes an open proposal waits for votes before lazy settlement; 0 disables it. */
+  proposalTimeoutMinutes: 15,
 })
 
 function clampInt(value, fallback, min, max) {
@@ -79,6 +81,7 @@ export function resolveSettings(raw = {}) {
     allowScopeOverlap: readBool(config.allowScopeOverlap, DEFAULT_SETTINGS.allowScopeOverlap),
     autoNotify: readBool(config.autoNotify, DEFAULT_SETTINGS.autoNotify),
     requireReviewEvidence: readBool(config.requireReviewEvidence, DEFAULT_SETTINGS.requireReviewEvidence),
+    proposalTimeoutMinutes: clampInt(config.proposalTimeoutMinutes, DEFAULT_SETTINGS.proposalTimeoutMinutes, 0, 1440),
   })
 }
 
@@ -96,5 +99,6 @@ export function runSettings(settings) {
     strictScopes: settings.strictScopes,
     allowScopeOverlap: settings.allowScopeOverlap,
     requireReviewEvidence: settings.requireReviewEvidence,
+    proposalTimeoutMinutes: settings.proposalTimeoutMinutes,
   }
 }

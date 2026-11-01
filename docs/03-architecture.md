@@ -234,6 +234,8 @@ v1 的协调全部经过 Lead（委派式）。v2 加了一层**成员之间的�
 | 互邀评审 | `reviewRequests[]` + `pendingReviewer` | `team_flow_work {action:"request_review"/"take_review"}` | 报告后可指名邀请或开放邀请；只有被邀请者能提交 verdict |
 | 议题协商 | `proposals[]`（kind/status/votes/tally） | `team_flow_decide {propose/vote/withdraw/resolve}` | 受影响成员各一票；`dod` 通过自动并入 DoD；平票升级 Lead 仲裁 |
 | 任务交接 | `items[].handoffs[]` | `team_flow_work {action:"handoff_offer/accept/decline"}` | 接受后 owner/claim/共享任务一起转移 |
+| 成员自治 | `items[].origin/createdBy` | `team_flow_item {action:"create"}` | 成员可自建计划外工作项（自建/开放队列/指派同伴），同走报告/评审/门禁；同波次写范围冲突拒绝 |
+| 提案活性 | `proposals[].deadline/quorum/autoResolved` | 配置 `proposalTimeoutMinutes` | 到期惰性裁决：达法定人数按多数通过/否决，平票或未达 quorum 升级 Lead；阻断提案在裁决前继续拦截 approve 与 gate |
 
 协作与门禁的关系（仍然强制，不被"协作"绕过）：
 - 开放队列的 item 被认领后与委派 item 走**完全相同**的报告/评审/门禁路径；

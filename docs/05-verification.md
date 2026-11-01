@@ -15,6 +15,7 @@
 | V6 | 最终组合配置进入 profile 121 | `dsh --profile 121 --dump-config` 输出含本行与配置 | ✅ 已验证 |
 | V7 | **最终代码代**在运行中的 Desktop 里 live 跑一次完整团队流程 | 重启 DSH 后真实 run（4 成员 / 2 项 / 约 5 分钟） | ✅ **已验证**，见 [`08-live-run.md`](08-live-run.md) 与 [`evidence/live-run/`](evidence/live-run/) |
 | V10 | 对等协作层（workflow v2） | 离线测试 39 例（collaboration 14 + tools 19 + 相关 engine/plugin）：认领/释放、评审邀请与接受、交接、提案投票/平票/Lead 仲裁、阻断提案拦截、频道与摘要、v1 板自动升级；快照 v2 与客户端面板 26+17 例 | ✅ 全绿（113/113） |
+| V12 | 成员自治 + 提案活性（v2.2） | 离线测试 22 例（engine 6 / tools 3 / dashboard 4 / client 补充）：成员自建项（id/scope 冲突/依赖/self-claim/open）、提案 deadline+quorum、惰性自动裁决（通过/否决/平票/无 quorum 升级）、阻断提案继续拦截、快照与客户端徽章 | ✅ 全绿（129/129）；live 见 [`15`](15-autonomy-live-run.md) |
 | V11 | 对等协作 live run（3 成员 / 8 分钟 / 3 开放项） | run `run-20261101174053-1i3e`：开放队列三人自抢单、频道 8 问 6 答（不经 Lead）、p1 dod 提案 2/2 通过并自动并入 DoD、互邀评审 3 人交叉、gate 一次通过；看板实测（[`13`](13-collaboration-live-run.md) + `docs/evidence/dashboard/collab-*.png`） | ✅ 完成 |
 | V9 | 实时看板（聚合/路由/客户端） | 离线测试 30 例（dashboard 14 / 路由 6 / client 契约 10）+ 真实黑板 dry-run + **真实浏览器复验**（独立 Host：启动图/View/路由/渲染/滚动修复） | ✅ 全绿；桌面 App 重启后按 [`10`](10-dashboard-verification.md) §3 复验 | |
 | V8 | 对抗性独立审阅 | 独立 reviewer（fresh context）审阅代码与文档 | ✅ 完成：18 条发现（1 blocker / 10 major / 6 minor / 1 nit），处理见 [`07-review-resolution.md`](07-review-resolution.md)，原始记录见 [`06`](06-review-findings.md) |

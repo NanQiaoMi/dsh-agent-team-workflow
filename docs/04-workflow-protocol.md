@@ -111,7 +111,8 @@ Lead 在所有 item approved 后：
 | 认领开放项 | `team_flow_work {action:"claim", item_id}`（Lead 在 plan 里用 `assignment:"open"` + `workers:[...]` 发布） |
 | 同伴提问/回答 | `team_flow_talk {target:"<member>", kind:"question", item_id}` → `kind:"answer", reply_to:"<message id>"` |
 | 互邀评审 | 报告后 `team_flow_work {action:"request_review", item_id, reviewer?}`；受邀者 `{action:"take_review"}` |
-| 协商 DoD/范围 | `team_flow_decide {action:"propose", kind:"dod|scope", item_id, text}` → affected 成员 `{action:"vote", vote:"yes|no|abstain"}`；平票 Lead `{action:"resolve", outcome}` |
+| 协商 DoD/范围 | `team_flow_decide {action:"propose", kind:"dod|scope", item_id, text, timeout_minutes?}` → affected 成员 `{action:"vote", vote:"yes|no|abstain"}`；到期未投满按 quorum 惰性裁决，平票/无 quorum Lead `{action:"resolve", outcome}` |
+| 发现计划外工作 | `team_flow_item {action:"create", subject, write_scopes, definition_of_done, owner:"self|open|<member>"}`，新项与计划项同走评审/门禁 |
 | 交接 | `team_flow_work {action:"handoff_offer", item_id, to}` → 对方 `handoff_accept`/`handoff_decline` |
 | 查上下文 | `team_flow_read {item_id?}` |
 
@@ -133,6 +134,7 @@ Lead 在所有 item approved 后：
 | `team_flow_work` | 成员 | `action`(claim/release/request_review/take_review/handoff_offer/handoff_accept/handoff_decline), `item_id`, `reviewer?`, `to?`, `reason?`, `note?`, `lease_minutes?` | item 状态、owner、notifications | 非开放项认领、非 owner 释放、非邀请者接受、自审 |
 | `team_flow_decide` | 成员（resolve 仅 Lead） | `action`(propose/vote/withdraw/resolve), `kind`, `item_id?`, `text?`, `proposal_id?`, `vote?`, `comment?`, `outcome?` | proposal 状态、tally、notifications | 非 affected 投票、已关闭提案、非作者撤回 |
 | `team_flow_read` | 成员 | `item_id?`, `limit?` | channel 尾部、proposals、open_queue、个人邀请/交接/未答问题、next_actions | — |
+| `team_flow_item` | 成员 | `action`, `subject`, `write_scopes`, `definition_of_done`, `owner?`(self/open/成员), `blocked_by?`, `needs_review?`, `reviewers?` | item id、task id、owner、next_actions | 空 subject/DoD/scope、同波次写范围冲突、依赖不存在 |
 | `team_flow_status {item_id}` | 成员 | `item_id?` | 指定 item 时返回完整 report 与 review 记录 | 未知 item |
 
 **与原生工具的边界**：`team_task_*` 仍是共享看板的读写（claim/complete/依赖）；`team_flow_*` 是治理层。worker 认领用原生 `team_task_update`，交付用 `team_flow_report`；**不要**用原生 `complete` 代替报告。

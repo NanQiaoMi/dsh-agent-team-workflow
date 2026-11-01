@@ -475,7 +475,12 @@ export function buildTools({ ctx, settings, store, version }) {
       }),
       async execute(args, exec) {
         const { agent, membership } = resolveCaller(ctx, exec, 'team_flow_status')
-        const state = await store.readState(agent)
+        let state = await store.readState(agent)
+        if (state !== null) {
+          const members = (() => { try { return ctx.agentTeams.listMembers(agent).map((member) => ({ name: member.name, role: member.role })) } catch { return [] } })()
+          const settled = W.settleExpiredProposals(state, { now: new Date().toISOString(), settings: state.settings, members })
+          if (settled.length > 0) await store.writeState(agent, state)
+        }
         let members = []
         try {
           members = ctx.agentTeams.listMembers(agent).map((member) => ({
@@ -1259,6 +1264,126 @@ export function buildTools({ ctx, settings, store, version }) {
     // -----------------------------------------------------------------
     // Peer collaboration (workflow v2): talk, work, decide, read
     // -----------------------------------------------------------------
+
+    {
+      name: 'team_flow_item',
+      description:
+        'Member autonomy: add a new work item to the live run when you discover work that the plan missed (a missing example, an untested branch, a contract bug). The item gets its own write scope, definition of done, backing shared task and the same review/gate rules as planned items. Owner defaults to you; use owner:"open" to publish it to the queue.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['create'], description: 'Item action (only "create" is supported today).' },
+          subject: { type: 'string', description: 'One-line deliverable title (at most 200 characters).' },
+          role: { type: 'string', description: 'Role label for the item; default implementer.' },
+          write_scopes: { type: 'array', items: { type: 'string' }, description: 'Workspace-relative paths you may modify for this item (at least one).' },
+          definition_of_done: { type: 'array', items: { type: 'string' }, description: 'Checkable completion conditions (at least one).' },
+          owner: { type: 'string', description: '"self" (default), "open" to publish to the open queue, or another member name.' },
+          blocked_by: { type: 'array', items: { type: 'string' }, description: 'Existing item ids that must be approved first.' },
+          needs_review: { type: 'boolean', description: 'Default true; set false only for read-only work.' },
+          reviewers: { type: 'array', items: { type: 'string' }, description: 'Optional reviewer names; empty means the owner invites a peer after reporting.' },
+          evidence_optional: { type: 'boolean', description: 'Set true only for read-only/research items where no command can be run.' },
+          lease_minutes: { type: 'integer', description: 'Advisory claim lease in minutes when the item is yours.' },
+        },
+        required: ['action', 'subject', 'write_scopes', 'definition_of_done'],
+        additionalProperties: false,
+      },
+      output: jsonOutput({
+        type: 'object',
+        properties: {
+          item_id: { type: 'string' },
+          subject: { type: 'string' },
+          owner: {},
+          assignment: { type: 'string' },
+          status: { type: 'string' },
+          task_id: {},
+          origin: { type: 'string' },
+          created_by: { type: 'string' },
+          notifications: { type: 'array', items: { type: 'string' } },
+          warnings: { type: 'array', items: { type: 'string' } },
+          next_actions: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['item_id', 'subject'],
+      }),
+      async execute(args, exec) {
+        const { agent, membership } = resolveCaller(ctx, exec, 'team_flow_item')
+        if (String(args.action ?? 'create') !== 'create') throw new Error('team_flow_item supports action:"create"')
+        const writeScopes = Array.isArray(args.write_scopes) ? args.write_scopes : []
+        const definitionOfDone = Array.isArray(args.definition_of_done) ? args.definition_of_done : []
+        let item = null
+        const warnings = []
+        await store.mutateState(agent, async (current) => {
+          if (current === null) throw new Error('no workflow run exists yet; the Lead must call team_flow_plan first')
+          requireWritableRun(current, 'team_flow_item')
+          const taskIdByItem = new Map(current.items.filter((candidate) => typeof candidate.taskId === 'string').map((candidate) => [candidate.id, candidate.taskId]))
+          const blockedByTasks = (Array.isArray(args.blocked_by) ? args.blocked_by : [])
+            .map((blocker) => taskIdByItem.get(String(blocker)))
+            .filter((taskId) => typeof taskId === 'string')
+          item = W.createItem(current, {
+            by: membership.name,
+            subject: args.subject,
+            role: args.role,
+            writeScopes,
+            definitionOfDone,
+            owner: args.owner,
+            blockedBy: args.blocked_by,
+            needsReview: args.needs_review,
+            reviewers: args.reviewers,
+            evidenceOptional: args.evidence_optional,
+            leaseMinutes: args.lease_minutes,
+            now: new Date().toISOString(),
+            maxItems: settings.maxItems,
+            allowScopeOverlap: current.settings?.allowScopeOverlap,
+          })
+          try {
+            const task = await ctx.agentTeams.createTask(agent, {
+              subject: item.subject.slice(0, 200),
+              description: taskDescription(current, item).slice(0, 16_384),
+              ...(blockedByTasks.length === 0 ? {} : { blockedBy: blockedByTasks }),
+              ...(item.writeScopes.length === 0 ? {} : { writeScopes: item.writeScopes }),
+              signal: exec.signal,
+            })
+            item.taskId = task.id
+            if (item.owner === membership.name) {
+              try {
+                await ctx.agentTeams.updateTask(agent, { taskId: task.id, expectedRevision: task.revision, action: 'claim' })
+              } catch (error) {
+                warnings.push(`backing task ${task.id} not claimed: ${error instanceof Error ? error.message : String(error)}`)
+              }
+            }
+          } catch (error) {
+            warnings.push(`backing Team task not created: ${error instanceof Error ? error.message : String(error)}`)
+          }
+          return current
+        })
+        const notifications = []
+        if (item.owner !== undefined && item.owner !== null && item.owner !== '' && item.owner !== membership.name) {
+          const failure = await sendPeer(ctx, agent, item.owner, `[ITEM] ${membership.name} created ${item.id} "${item.subject}" for you.\nScope: ${item.writeScopes.join(', ')}\nDoD:\n${item.definitionOfDone.map((entry) => `- ${entry}`).join('\n')}\nAction: call team_flow_status, then do the work and report with team_flow_report.`, exec.signal)
+          if (failure === null) notifications.push(item.owner)
+          else warnings.push(failure)
+        } else if (item.owner === '' || item.owner === null || item.owner === undefined) {
+          const targets = ctx.agentTeams.listMembers(agent).map((member) => member.name).filter((name) => name !== membership.name)
+          for (const target of targets) {
+            const failure = await sendPeer(ctx, agent, target, `[ITEM] open queue item ${item.id} "${item.subject}" published by ${membership.name}: claim it with team_flow_work {action:"claim", item_id:"${item.id}"}.`, exec.signal)
+            if (failure === null) notifications.push(target)
+            else warnings.push(failure)
+          }
+        }
+        const state = await store.readState(agent)
+        return {
+          item_id: item.id,
+          subject: item.subject,
+          owner: item.owner === '' || item.owner === null || item.owner === undefined ? null : item.owner,
+          assignment: item.assignment,
+          status: item.status,
+          task_id: item.taskId ?? null,
+          origin: item.origin ?? 'member',
+          created_by: item.createdBy ?? membership.name,
+          notifications,
+          warnings,
+          next_actions: state === null ? [] : W.nextActions(state, { me: { name: membership.name, role: membership.role }, role: membership.role, members: ctx.agentTeams.listMembers(agent).map((member) => ({ name: member.name, role: member.role })), settings: state.settings, now: new Date().toISOString() }),
+        }
+      },
+    },
     {
       name: 'team_flow_talk',
       description:
@@ -1487,6 +1612,7 @@ export function buildTools({ ctx, settings, store, version }) {
           proposal_id: { type: 'string', description: 'vote/withdraw only: proposal id, e.g. p1.' },
           vote: { type: 'string', enum: ['yes', 'no', 'abstain'], description: 'vote only: your vote.' },
           comment: { type: 'string', description: 'vote/resolve: optional rationale recorded with the decision.' },
+          timeout_minutes: { type: 'integer', description: 'propose only: minutes before the proposal auto-settles (1-1440); defaults to the run setting.' },
           outcome: { type: 'string', enum: ['accepted', 'rejected'], description: 'resolve only: the Lead decision on the proposal.' },
         },
         required: ['action'],
@@ -1499,6 +1625,8 @@ export function buildTools({ ctx, settings, store, version }) {
           status: { type: 'string' },
           kind: {},
           item_id: {},
+          deadline: {},
+          quorum: {},
           votes: {},
           tally: {},
           resolution: {},
@@ -1517,11 +1645,11 @@ export function buildTools({ ctx, settings, store, version }) {
           if (current === null) throw new Error('no workflow run exists yet; the Lead must call team_flow_plan first')
           requireWritableRun(current, 'team_flow_decide')
           if (action === 'propose') {
-            const proposal = W.proposeDecision(current, { by: membership.name, kind: args.kind, itemId: args.item_id ?? null, text: args.text, now })
+            const proposal = W.proposeDecision(current, { by: membership.name, kind: args.kind, itemId: args.item_id ?? null, text: args.text, timeoutMinutes: args.timeout_minutes, settings: current.settings, members, now })
             outcome = { kind: 'propose', proposal, affected: W.affectedMembersFor(proposal, current, members) }
           } else if (action === 'vote') {
             if (!args.proposal_id) throw new Error('team_flow_decide vote needs proposal_id')
-            outcome = { kind: 'vote', ...W.voteDecision(current, { proposalId: String(args.proposal_id), by: membership.name, vote: args.vote, comment: args.comment, members, now }) }
+            outcome = { kind: 'vote', ...W.voteDecision(current, { proposalId: String(args.proposal_id), by: membership.name, vote: args.vote, comment: args.comment, members, settings: current.settings, now }) }
           } else if (action === 'withdraw') {
             if (!args.proposal_id) throw new Error('team_flow_decide withdraw needs proposal_id')
             outcome = { kind: 'withdraw', proposal: W.withdrawProposal(current, { proposalId: String(args.proposal_id), caller: membership.name, now }) }
@@ -1576,6 +1704,8 @@ export function buildTools({ ctx, settings, store, version }) {
           status: proposal.status,
           kind: proposal.kind,
           item_id: proposal.itemId,
+          deadline: proposal.deadline ?? null,
+          quorum: proposal.quorum ?? null,
           votes: action === 'vote' ? outcome.tally : proposal.votes.length,
           tally: action === 'vote' ? outcome.tally : null,
           resolution: action === 'vote' ? (proposal.resolution ?? null) : (proposal.resolution ?? null),
@@ -1612,8 +1742,13 @@ export function buildTools({ ctx, settings, store, version }) {
       }),
       async execute(args, exec) {
         const { agent, membership } = resolveCaller(ctx, exec, 'team_flow_read')
-        const state = await requireRun(store, agent, 'team_flow_read')
+        let state = await requireRun(store, agent, 'team_flow_read')
         W.ensureCollaboration(state)
+        {
+          const liveMembers = (() => { try { return ctx.agentTeams.listMembers(agent).map((member) => ({ name: member.name, role: member.role })) } catch { return [] } })()
+          const settled = W.settleExpiredProposals(state, { now: new Date().toISOString(), settings: state.settings, members: liveMembers })
+          if (settled.length > 0) await store.writeState(agent, state)
+        }
         const limit = Math.min(Math.max(Number.isInteger(args.limit) ? args.limit : 30, 1), 100)
         const members = ctx.agentTeams.listMembers(agent).map((member) => ({ name: member.name, role: member.role }))
         const summary = W.collaborationSummary(state, { me: membership.name, role: membership.role, members })
