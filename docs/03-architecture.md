@@ -301,7 +301,7 @@ DSH 的 session 投影与事件类型属于运行时契约，插件**不应**新
 
 ## 13. 扩展点（未实现，留给后续）
 
-1. **Client UI 面板**：把 `state.json` 渲染成评审看板（原生已有 roster/task board UI，可复用 Slot 机制）。
+1. ✅ **实时监控看板（已实现）**：`lib/dashboard.js` 聚合快照 + `GET /api/agent-team-workflow.snapshot`（Connection 认证围栏）+ `client.js` 的 `conversation.view` "团队看板"（执行流程图 / 协作拓扑 / 自循环 / 事件流 / 门禁 / 升级 / 详情抽屉）。设计见 [`09-dashboard-design.md`](09-dashboard-design.md)，验证见 [`10-dashboard-verification.md`](10-dashboard-verification.md)。
 2. **预算计量**：接入 `ctx.tokenMeter`/会话统计，在 gate 里加成本门禁。
 3. **worktree 工人**：用 `ctx.worktrees` 给大改动提供真隔离（DSH 已有 `worktrees` 服务），届时 `write_scopes` 升级为分支级隔离。
 4. **rubric 文件化**：把 §4.5 的四套 rubric 变成可版本化文件，评审按 rubric id 打分。

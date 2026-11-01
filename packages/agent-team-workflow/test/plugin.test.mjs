@@ -35,6 +35,7 @@ const EXPECTED_TOOLS = [
 /** A minimal Cordis-shaped context with per-Agent scoped services. */
 function createContext(cwd) {
   const tools = []
+  const routes = []
   const sections = []
   const contexts = []
   const handlers = new Map()
@@ -137,11 +138,40 @@ function createContext(cwd) {
       effects.push(factory())
       return () => {}
     },
+    /**
+    * Cordis-style optional-service injection: run the callback once the named
+    * services are available on the reading context.
+    */
+    inject(dependencies, callback) {
+      // Cordis runs the callback only once every named service is present.
+      if (!dependencies.every((dependency) => ctx[dependency] !== undefined)) return () => {}
+      const scope = {
+        effect: (factory) => ctx.effect(factory),
+        on: (event, handler) => ctx.on(event, handler),
+        logger: ctx.logger,
+      }
+      for (const dependency of dependencies) scope[dependency] = ctx[dependency]
+      callback(scope)
+      return () => {}
+    },
     emit(event, payload) {
       for (const handler of handlers.get(event) ?? []) handler(payload)
     },
+    // Connection face: the plugin registers its snapshot route through the
+    // authenticated Fetch registry when a browser surface exists.
+    connection: {
+      fetch: {
+        register(route) {
+          routes.push(route)
+          return () => {
+            const index = routes.indexOf(route)
+            if (index >= 0) routes.splice(index, 1)
+          }
+        },
+      },
+    },
   }
-  return { ctx, lead, teammate, outsider, tools, sections, contexts, handlers, membership, scopedFor, tasks, messages }
+  return { ctx, lead, teammate, outsider, tools, sections, contexts, handlers, membership, scopedFor, tasks, messages, routes }
 }
 
 async function withWorkspace(fn) {
@@ -175,6 +205,10 @@ test('applies workflow tools and prompt inputs only to Team members', () => {
     assert.equal(leadContexts[0].name, 'team:workflow-state')
     assert.equal(leadContexts[0].order, 126)
     assert.equal(leadContexts[0].text(), '', 'no run yet means no injected state')
+
+    assert.equal(harness.routes.length, 1, 'the live board route is registered once')
+    assert.equal(harness.routes[0].path, '/api/agent-team-workflow.snapshot')
+    assert.deepEqual(harness.routes[0].methods, ['GET'])
   })
 })
 

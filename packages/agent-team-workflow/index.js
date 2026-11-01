@@ -20,6 +20,7 @@ import { resolveSettings, WORKFLOW_VERSION } from './lib/config.js'
 import { createStore } from './lib/store.js'
 import { buildPolicy } from './lib/protocol.js'
 import { buildTools } from './lib/tools.js'
+import { registerDashboardRoute } from './lib/dashboard-route.js'
 
 export const name = 'agent-team-workflow'
 
@@ -61,6 +62,16 @@ export function apply(ctx, config = {}) {
     },
     'agent-team-workflow.scopedTools()',
   )
+
+  // The live board is served through Connection's authenticated Fetch fence.
+  // Profiles without a browser surface (headless runs) simply never get the
+  // route, and the Host-side workflow keeps working unchanged.
+  ctx.inject(['connection'], (scope) => {
+    scope.effect(
+      () => registerDashboardRoute({ connection: scope.connection, ctx, store, settings }),
+      'agent-team-workflow: live board route',
+    )
+  })
 
   ctx.logger?.info?.(`agent-team-workflow ${VERSION} applied (policy=${settings.injectPolicy}, artifacts=${settings.artifactsDir})`)
 }

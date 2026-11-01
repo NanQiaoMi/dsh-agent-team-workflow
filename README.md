@@ -27,6 +27,8 @@
 | [`docs/06-review-findings.md`](docs/06-review-findings.md) | 独立 reviewer 的对抗性审阅原始记录（两轮共 24 条发现，未修改） |
 | [`docs/07-review-resolution.md`](docs/07-review-resolution.md) | 逐条处理决定：修复 / 部分修复 / 不接受及理由 |
 | [`docs/08-live-run.md`](docs/08-live-run.md) | **重启后的真实 live run**：4 成员 / 2 并行项 / 5 分钟跑通全流程的证据与观察 |
+| [`docs/09-dashboard-design.md`](docs/09-dashboard-design.md) | **实时监控看板**设计契约：snapshot 数据契约、HTTP 路由、Client View、面板与容错 |
+| [`docs/10-dashboard-verification.md`](docs/10-dashboard-verification.md) | 看板验证记录：29 例离线测试、真实黑板 dry-run、待人工确认的端到端步骤 |
 | [`packages/agent-team-workflow/`](packages/agent-team-workflow/) | 可安装插件包（零外部依赖，纯 ESM） |
 
 ## 快速开始
@@ -63,6 +65,17 @@ Lead 会 `team_flow_plan` → 用返回的 spawn 简报 spawn 队友 → worker 
 - 每支 Team 独立目录（`teamId` = Lead 会话 id），同一 workspace 的多支 Team 互不可见
 - 队友侧：`team_flow_status` 随时返回自己的作业单
 
+## 实时监控看板
+
+插件自带一个 Web 端**实时看板**（不需要另装）：会话头部 View 切换 → **"团队看板"**。
+
+- **Header**：run id、阶段徽章、`approved/total`、最近更新时间、刷新/暂停；
+- **执行流程图**：按依赖波次分列的工作项卡片（状态色条、`R{n}/{max}` 评审自循环、待评审高亮、escalation 红标），带 `blockedBy` 箭头；
+- **协作拓扑**：Lead 与成员节点（running 脉冲、inactive 半透明、failed 红色、`fresh/fork` 徽章），边为「Lead→成员」「成员→自己的项」「reviewer→被审项」；
+- **事件流 / 门禁 / 升级**三面板 + **详情抽屉**（DoD、报告文件与命令退出码、评审记录与 findings 处置、repair log）。
+
+数据来自 `GET /api/agent-team-workflow.snapshot?session=<id>`（Connection 认证围栏内，只读、`no-store`），客户端 1.2 秒轮询、页面隐藏时暂停。看板不写任何状态。
+
 ## 插件配置（`cordis.patch.yml` 的 `config`）
 
 | 字段 | 默认 | 说明 |
@@ -87,7 +100,7 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 "$NODE" --test test/engine.test.mjs test/tools.integration.test.mjs test/plugin.test.mjs
 ```
 
-45 个用例覆盖：计划校验（自审/环/写范围竞争/成员名/规模）、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类（含空证据、空命令、依赖未批准、评审无证据）、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。详见 [`docs/05-verification.md`](docs/05-verification.md)。
+74 个用例（含看板 29 例）覆盖：计划校验（自审/环/写范围竞争/成员名/规模）、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类（含空证据、空命令、依赖未批准、评审无证据）、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。详见 [`docs/05-verification.md`](docs/05-verification.md)。
 
 **已通过真实 live run 验证**（2026-11-01，重启后）：4 个成员、2 个并行工作项、一次升级仲裁、两轮独立评审、门禁收敛并生成报告——记录与原始证据见 [`docs/08-live-run.md`](docs/08-live-run.md)。
 

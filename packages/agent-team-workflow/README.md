@@ -15,6 +15,12 @@
 - 不变量：写范围纪律、证据优先、独立评审、消息不构成交付、升级而不是停滞、不手改黑板；
 - `next_actions` 是权威作业单。
 
+**实时监控看板（Web 端）**
+
+- Host：`lib/dashboard.js` 把黑板 + roster + 原生任务板聚合成快照；`lib/dashboard-route.js` 在 Connection 认证围栏内提供 `GET /api/agent-team-workflow.snapshot?session=<id>`（只读、`no-store`）。
+- Client：`client.js` 注册 `conversation.view`「团队看板」——执行流程图（波次/依赖箭头/评审自循环）、协作拓扑、事件流、门禁、升级、详情抽屉；1.2s 轮询、页面隐藏时暂停。
+- 打开方式：会话头部 View 切换 →「团队看板」。
+
 **8 个模型工具**
 
 | 工具 | 权限 | 作用 |
@@ -69,7 +75,10 @@ lib/tools.js        8 个工具定义与执行
 locale/{en,zh}.json 插件管理器展示元数据
 icon.svg            插件图标
 cordis.patch.yml    bundle 补丁（新增一行，不覆盖原生 Team 行）
-test/               45 个离线用例（engine 26 / tools 14 / plugin 5）
+client.js           Web 端看板（conversation.view，纯 JS 动态模块，只 require('react')）
+lib/dashboard.js    看板聚合（零 import 纯函数）：waves/状态归一化/counts/截断
+lib/dashboard-route.js  GET /api/agent-team-workflow.snapshot（Connection 认证 Fetch 路由）
+test/               74 个离线用例（engine 26 / tools 14 / plugin 5 / dashboard 14 / route 6 / client 9）
 ```
 
 ## 验证
@@ -79,7 +88,7 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 "$NODE" --test test/engine.test.mjs test/tools.integration.test.mjs test/plugin.test.mjs
 ```
 
-45 个用例：计划校验与波次、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。
+74 个用例：计划校验与波次、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验；看板快照（waves/截断/防御降级）、路由状态码与降级、客户端模块契约与空态渲染。
 
 ## 真实运行记录
 
