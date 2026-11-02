@@ -67,4 +67,6 @@ installToolSandbox(ctx, {
   （分类、规范化、三种策略、fail-open/closed、动态策略、审计边界、install/dispose、Teams 适配器）；
 - 插件测试：原 214 全绿（适配层保持 `toolGuardReason` 等导出不变）；
 - 合计 **223/223**（插件 214 + 库 9；`node --test test/*.test.mjs`）；
-- live：接线后 Host 启动加载 1.8.0（见 docs/28 或 docs/26 的既有 live 行为）。
+- 接线验证：通过 profile 的 `node_modules/@local/dsh-agent-team-workflow` 符号链接实际 `import` 插件入口成功
+  （`plugin loaded: agent-team-workflow | apply: function`），证明相对导入 kit 在 link 安装下可解析；
+  沙箱行为本身已在 v1.7 live 两轮验证（docs/26），本次为纯重构、行为不变。
