@@ -114,6 +114,7 @@ function createHarness(cwd) {
     },
     async spawnTeammate(caller, request) {
       if (caller.id !== lead.id) throw new Error('only the Team Lead can create teammates')
+      if (typeof request.provider !== 'string' || request.provider.length === 0) throw new Error('provider is required')
       if (members.some((member) => member.name === request.name)) throw new Error(`member ${request.name} already exists`)
       const agent = { id: `session-${request.name}`, session: { id: `session-${request.name}` } }
       agents.set(request.name, agent)

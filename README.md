@@ -46,6 +46,7 @@
 | [`docs/14-member-autonomy.md`](docs/14-member-autonomy.md) | **成员自治 + 提案活性**：`team_flow_item` 自建项、deadline/quorum/惰性自动裁决、快照与看板增量 |
 | [`docs/16-team-autonomy-pr.md`](docs/16-team-autonomy-pr.md) | **团队自建 + PR 标准流程 + 看板降噪**：`autoStaff`/`team_flow_staff`、`team_flow_git`、拓扑与 Git 徽章 |
 | [`docs/17-autonomy-pr-live-run.md`](docs/17-autonomy-pr-live-run.md) | **自治团队 live run**：自动唤醒组队、成员自建 S1、真实 handoff、p1 超时自动裁决、协作噪音观察与修复 |
+| [`docs/18-claude-gap-analysis.md`](docs/18-claude-gap-analysis.md) | **对照正式 Claude Code Agent Teams 的差距清单**：22 维能力矩阵、5 个缺失项/4 个部分项、Wave 1–3 模仿方案与验收 |
 | [`docs/13-collaboration-live-run.md`](docs/13-collaboration-live-run.md) | **对等协作 live run**：3 成员 / 3 开放项 / 8 分钟，抢单、直连问答、提案投票、互邀评审、gate 全记录 + 看板截图 |
 | [`packages/agent-team-workflow/`](packages/agent-team-workflow/) | 可安装插件包（零外部依赖，纯 ESM） |
 

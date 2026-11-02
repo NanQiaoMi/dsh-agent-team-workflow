@@ -42,3 +42,6 @@
         gitVerifyCommands: []
         # Require item git verification before the gate accepts it.
         gitRequireVerify: false
+        # DSH providers used for auto-spawned teammates (native defaults).
+        freshProvider: spawn
+        forkProvider: fork

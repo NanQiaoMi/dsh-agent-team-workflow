@@ -50,6 +50,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
   gitVerifyCommands: [],
   /** Require item git verification to pass before the gate accepts it. */
   gitRequireVerify: false,
+  /** DSH provider name used when spawning a fresh teammate. */
+  freshProvider: 'spawn',
+  /** DSH provider name used when spawning a teammate that inherits the Lead. */
+  forkProvider: 'fork',
 })
 
 function clampInt(value, fallback, min, max) {
@@ -108,6 +112,8 @@ export function resolveSettings(raw = {}) {
     gitBranchPrefix: readString(config.gitBranchPrefix, DEFAULT_SETTINGS.gitBranchPrefix, 200),
     gitVerifyCommands: readCommands(config.gitVerifyCommands),
     gitRequireVerify: readBool(config.gitRequireVerify, DEFAULT_SETTINGS.gitRequireVerify),
+    freshProvider: readString(config.freshProvider, DEFAULT_SETTINGS.freshProvider, 200),
+    forkProvider: readString(config.forkProvider, DEFAULT_SETTINGS.forkProvider, 200),
   })
 }
 
@@ -133,5 +139,7 @@ export function runSettings(settings) {
     gitBranchPrefix: settings.gitBranchPrefix,
     gitVerifyCommands: [...settings.gitVerifyCommands],
     gitRequireVerify: settings.gitRequireVerify,
+    freshProvider: settings.freshProvider,
+    forkProvider: settings.forkProvider,
   }
 }

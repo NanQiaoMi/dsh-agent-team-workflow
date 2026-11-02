@@ -98,7 +98,7 @@ const TEAM_MEMBER_LIMIT = 8
  * @param options - `{ ctx, agent, entries, signal }`.
  * @returns `{ spawned, woken, skipped, failed, needs_spawn }`.
  */
-async function staffEntries({ ctx, agent, entries, signal }) {
+async function staffEntries({ ctx, agent, entries, settings, signal }) {
   const outcome = { spawned: [], woken: [], skipped: [], failed: [], needs_spawn: [] }
   let roster = []
   try {
@@ -130,11 +130,21 @@ ${entry.prompt ?? ''}`, signal)
       continue
     }
     try {
+      // The native roster requires an explicit provider on every spawn; the
+      // defaults mirror the native team tool so a missing setting cannot break
+      // auto-staffing.
+      const context = entry.context === 'fork' ? 'fork' : 'fresh'
+      const provider = typeof entry.provider === 'string' && entry.provider.length > 0
+        ? entry.provider
+        : context === 'fork'
+          ? (settings?.forkProvider ?? 'fork')
+          : (settings?.freshProvider ?? 'spawn')
       await ctx.agentTeams.spawnTeammate(agent, {
         name,
         description: String(entry.description ?? `${entry.kind ?? 'worker'} for the Agent Team workflow`).slice(0, 200),
         prompt: [{ type: 'text', text: String(entry.prompt ?? '') }],
-        context: entry.context === 'fork' ? 'fork' : 'fresh',
+        context,
+        provider,
         signal,
       })
       known.set(name, 'provisioning')
@@ -508,7 +518,7 @@ export function buildTools({ ctx, settings, store, version }) {
           ...reviewerSpawn.map((entry) => ({ ...entry, kind: 'reviewer' })),
         ]
         const staffed = autoSpawn
-          ? await staffEntries({ ctx, agent, entries: staffInputs, signal: exec.signal })
+          ? await staffEntries({ ctx, agent, entries: staffInputs, settings, signal: exec.signal })
           : { spawned: [], woken: [], skipped: [], failed: [], needs_spawn: staffInputs.map((entry) => ({ name: entry.name, kind: entry.kind, reason: 'auto_staff disabled' })) }
         const dualRole = allReviewers.filter((reviewer) => workerNames.has(reviewer))
         const leadReviews = allReviewers.includes('lead')
@@ -1428,7 +1438,7 @@ export function buildTools({ ctx, settings, store, version }) {
           if (openItems.length === 0) break
           entries.push({ ...renderQueueBrief(state, name, openItems, state.settings.workerContext), kind: 'worker-pool' })
         }
-        const staffed = await staffEntries({ ctx, agent, entries, signal: exec.signal })
+        const staffed = await staffEntries({ ctx, agent, entries, settings, signal: exec.signal })
         const warnings = staffed.failed.map((entry) => `${entry.name}: ${entry.error}`)
         if (staffed.needs_spawn.length > 0) warnings.push(`capacity limit: ${staffed.needs_spawn.map((entry) => entry.name).join(', ')}`)
         if (args.reason) warnings.push(`reason: ${String(args.reason).slice(0, 200)}`)
