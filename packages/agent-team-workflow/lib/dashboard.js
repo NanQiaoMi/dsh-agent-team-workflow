@@ -487,6 +487,9 @@ function buildItemGit(raw) {
     commits,
     verify,
     prReview,
+    worktree: textOf(raw.worktree) || null,
+    worktreeBranch: textOf(raw.worktreeBranch) || null,
+    worktreeMergedAt: isoOf(raw.worktreeMergedAt),
   }
 }
 

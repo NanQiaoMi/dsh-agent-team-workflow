@@ -1894,3 +1894,121 @@ test('docs/21 member transcript: unavailable, empty and legacy payloads degrade 
     legacyBoard.dispose()
   }
 })
+
+// ---------------------------------------------------------------------------
+// v1.6: per-message transcript expand + token usage panel
+// ---------------------------------------------------------------------------
+
+test('docs/21 member transcript: each item expands and collapses independently', async () => {
+  const longText = '这是一段很长的对话正文，用来触发三行折叠。'.repeat(10)
+  const toolText = '[tool] bash ' + 'x'.repeat(300)
+  const board = await mountBoard(withSnapshot({}), {
+    member: () => ({
+      status: 200,
+      body: memberPayload({
+        transcript: {
+          available: true,
+          messages: [
+            { seq: 1, role: 'user', text: longText },
+            { seq: 2, role: 'assistant', text: 'ok' },
+            { seq: 3, role: 'tool', text: toolText },
+          ],
+          truncated: false,
+          totalEvents: 3,
+          error: null,
+        },
+      }),
+    }),
+  })
+  try {
+    let tree = await board.render()
+    findMemberNode(tree, 'impl-a').props.onClick()
+    tree = await board.render()
+    const itemsNow = () => findByClass(tree, 'atw-member-transcript-item')
+    const textNow = (index) => findByClass(itemsNow()[index], 'atw-member-transcript-text')[0]
+    assert.equal(itemsNow().length, 3, 'one row per message')
+    assert.equal(itemsNow()[0].props.role, 'button', 'each transcript row is operable')
+    assert.equal(itemsNow()[0].props.tabIndex, 0)
+    assert.ok(!String(textNow(0).props.className).includes('--expanded'), 'rows start clamped')
+    assert.equal(findByClass(tree, 'atw-member-transcript-toggle').length, 2, 'only the long bodies offer a toggle')
+    assert.match(source, /\.atw-member-transcript-text\{[^}]*-webkit-line-clamp:3/, 'the three-line clamp still applies')
+
+    itemsNow()[0].props.onClick()
+    tree = await board.render()
+    assert.ok(String(textNow(0).props.className).includes('atw-member-transcript-text--expanded'), 'clicking a row expands it')
+    assert.ok(textOf(itemsNow()[0]).includes('k:member.transcriptCollapse'), 'the affordance flips to collapse')
+
+    // A second row can expand at the same time (keyboard path).
+    itemsNow()[2].props.onKeyDown({ key: 'Enter', preventDefault() {} })
+    tree = await board.render()
+    assert.ok(String(textNow(2).props.className).includes('--expanded'), 'Enter expands the focused row')
+    const expandedTexts = findByClass(tree, 'atw-member-transcript-text').filter((element) => String(element.props.className).includes('--expanded'))
+    assert.equal(expandedTexts.length, 2, 'multiple rows stay expanded together')
+
+    itemsNow()[0].props.onClick()
+    tree = await board.render()
+    assert.ok(!String(textNow(0).props.className).includes('--expanded'), 'clicking again collapses only that row')
+    assert.ok(String(textNow(2).props.className).includes('--expanded'), 'the other expanded row is untouched')
+  } finally {
+    board.dispose()
+  }
+})
+
+test('docs/19 token usage: renders member rows, totals and the capture time', async () => {
+  const capturedAt = '2026-11-02T15:04:05.000Z'
+  const usage = {
+    capturedAt,
+    members: {
+      'impl-a': { uncachedInputTokens: 1234, outputTokens: 567, cacheReadTokens: 89012, cacheWriteTokens: 0 },
+      'rev-b': { uncachedInputTokens: 0, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 45 },
+    },
+    totals: { uncachedInputTokens: 1234, outputTokens: 570, cacheReadTokens: 89012, cacheWriteTokens: 45 },
+  }
+  const board = await mountBoard(withSnapshot({ run: { usage } }))
+  try {
+    const tree = await board.render()
+    assert.equal(findByClass(tree, 'atw-usage').length, 1, 'the usage panel renders')
+    const text = textOf(findByClass(tree, 'atw-usage')[0])
+    for (const needle of ['k:board.usage', 'k:board.usageCapturedAt', 'k:board.usageTotals', 'k:board.usageInput', 'k:board.usageOutput', 'k:board.usageCacheRead', 'k:board.usageCacheWrite']) {
+      assert.ok(text.includes(needle), 'usage panel is missing ' + needle)
+    }
+    const stamp = new Date(capturedAt)
+    const pad = (value) => (value < 10 ? '0' + value : String(value))
+    const expectedTime = pad(stamp.getHours()) + ':' + pad(stamp.getMinutes()) + ':' + pad(stamp.getSeconds())
+    assert.ok(text.includes(expectedTime), 'the local capture time is shown: ' + expectedTime)
+
+    const lines = findByClass(tree, 'atw-usage-line')
+    assert.equal(lines.length, 4, 'header + two members + totals')
+    const cellsOf = (line) => findByClass(line, 'atw-usage-cell').map((cell) => textOf(cell))
+    assert.deepEqual(cellsOf(lines[1]), ['1,234', '567', '89,012', '0'], 'impl-a tokens are grouped and zeroes still render')
+    assert.deepEqual(cellsOf(lines[2]), ['0', '3', '0', '45'], 'zero inputs are not hidden')
+    assert.deepEqual(cellsOf(lines[3]), ['1,234', '570', '89,012', '45'], 'the totals row sums are shown as captured')
+    assert.ok(textOf(lines[0]).includes('k:board.usageInput'), 'the header labels the columns')
+  } finally {
+    board.dispose()
+  }
+})
+
+test('docs/19 token usage: a null (uncaptured) usage degrades without inventing numbers', async () => {
+  const board = await mountBoard(withSnapshot({ run: { usage: null } }))
+  try {
+    const tree = await board.render()
+    assert.equal(findByClass(tree, 'atw-usage').length, 1, 'the usage panel still renders')
+    const text = textOf(findByClass(tree, 'atw-usage')[0])
+    assert.ok(text.includes('k:board.usageEmpty'), 'the degraded copy is shown')
+    assert.ok(!text.includes('k:error.title'), 'a null usage does not crash the board')
+    assert.equal(findByClass(tree, 'atw-usage-line').length, 0, 'no table rows are fabricated')
+  } finally {
+    board.dispose()
+  }
+
+  // Snapshots that predate the usage field behave the same way.
+  const legacy = await mountBoard(V2_SNAPSHOT)
+  try {
+    const tree = await legacy.render()
+    const text = textOf(findByClass(tree, 'atw-usage')[0])
+    assert.ok(text.includes('k:board.usageEmpty'), 'a missing usage block degrades too')
+  } finally {
+    legacy.dispose()
+  }
+})

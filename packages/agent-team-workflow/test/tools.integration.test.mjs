@@ -11,7 +11,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -1530,5 +1530,175 @@ test('the gate captures token usage and enforces budgets', () => {
     const state = await store.readState(harness.lead)
     assert.equal(state.usage.members.impl.outputTokens, 250)
     assert.equal(state.usage.totals.outputTokens, 270)
+  })
+})
+
+test('a read-only role and an allow list enforce the workflow capability sandbox', () => {
+  return withWorkspace(async (cwd) => {
+    const settings = resolveSettings({
+      roles: {
+        observer: { readOnly: true },
+        messenger: { allow: ['team_flow_status', 'team_flow_talk'] },
+      },
+    })
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test' })
+    const obs = harness.addTeammate('obs')
+    const msg = harness.addTeammate('msg')
+    await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'audit',
+        acceptance_criteria: ['audited'],
+        items: [
+          { id: 'W1', subject: 'Observe it', owner: 'obs', role: 'observer', write_scopes: ['src/'], definition_of_done: ['observed'], reviewers: ['msg'] },
+          { id: 'W2', subject: 'Message it', owner: 'msg', role: 'messenger', write_scopes: ['docs/'], definition_of_done: ['messaged'], reviewers: ['obs'] },
+        ],
+        workers: [{ name: 'obs', role: 'observer' }, { name: 'msg', role: 'messenger' }],
+        auto_spawn: false,
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    await assert.rejects(
+      () => byName(tools, 'team_flow_report').execute(
+        { item_id: 'W1', summary: 'done', files: ['src/x.js'], commands: [{ command: 'true', exit_code: 0 }], evidence: ['x'], open_questions: [], risks: [] },
+        { agent: obs, signal: EXEC_SIGNAL },
+      ),
+      /role "observer" is read-only and may not use team_flow_report/,
+    )
+    const status = await byName(tools, 'team_flow_status').execute({}, { agent: obs, signal: EXEC_SIGNAL })
+    assert.equal(typeof status.phase, 'string', 'a read-only role can still inspect the board')
+    await assert.rejects(
+      () => byName(tools, 'team_flow_item').execute(
+        { action: 'create', subject: 'extra', write_scopes: ['src/extra.js'], definition_of_done: ['works'] },
+        { agent: msg, signal: EXEC_SIGNAL },
+      ),
+      /role "messenger" may only use team_flow_status, team_flow_talk/,
+    )
+    const allowed = await byName(tools, 'team_flow_status').execute({}, { agent: msg, signal: EXEC_SIGNAL })
+    assert.equal(typeof allowed.phase, 'string')
+  })
+})
+
+test('parallel worktrees let two items commit, verify and merge without sharing a checkout', async () => {
+  return withWorkspace(async (cwd) => {
+    const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+    git('init', '-q', '-b', 'main')
+    git('config', 'user.email', 'team@example.com')
+    git('config', 'user.name', 'Agent Team')
+    await writeFile(join(cwd, 'README.md'), '# demo\n', 'utf8')
+    await writeFile(join(cwd, '.gitignore'), '.agentteam/\n', 'utf8')
+    git('add', 'README.md', '.gitignore')
+    git('commit', '-q', '-m', 'chore: baseline')
+    const settings = resolveSettings({ gitEnabled: true, gitBaseBranch: 'main', worktreeIsolation: 'parallel', strictScopes: true, gitVerifyCommands: ['printf verified'] })
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test' })
+    const impl1 = harness.addTeammate('impl-1')
+    const impl2 = harness.addTeammate('impl-2')
+    const rev = harness.addTeammate('rev')
+    await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'two isolated changes',
+        acceptance_criteria: ['both land'],
+        items: [
+          { id: 'W1', subject: 'Add a', owner: 'impl-1', write_scopes: ['src/'], definition_of_done: ['a works'], reviewers: ['rev'] },
+          { id: 'W2', subject: 'Add b', owner: 'impl-2', write_scopes: ['src/'], definition_of_done: ['b works'], reviewers: ['rev'] },
+        ],
+        auto_spawn: false,
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    await byName(tools, 'team_flow_git').execute({ action: 'prepare' }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    const wt1 = await byName(tools, 'team_flow_git').execute({ action: 'worktree_add', item_id: 'W1' }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    const wt2 = await byName(tools, 'team_flow_git').execute({ action: 'worktree_add', item_id: 'W2' }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assert.match(wt1.worktree.absolute, /\.agentteam\/worktrees\/.*\/W1$/)
+    assert.notEqual(wt1.worktree.absolute, wt2.worktree.absolute)
+    await mkdir(join(wt1.worktree.absolute, 'src'), { recursive: true })
+    await mkdir(join(wt2.worktree.absolute, 'src'), { recursive: true })
+    await writeFile(join(wt1.worktree.absolute, 'src', 'a.txt'), 'a\n', 'utf8')
+    await writeFile(join(wt2.worktree.absolute, 'src', 'b.txt'), 'b\n', 'utf8')
+    const c1 = await byName(tools, 'team_flow_git').execute({ action: 'commit', item_id: 'W1', files: ['src/a.txt'] }, { agent: impl1, signal: EXEC_SIGNAL })
+    const c2 = await byName(tools, 'team_flow_git').execute({ action: 'commit', item_id: 'W2', files: ['src/b.txt'] }, { agent: impl2, signal: EXEC_SIGNAL })
+    assert.equal(typeof c1.item_git.sha, 'string')
+    assert.equal(typeof c2.item_git.sha, 'string')
+    const v1 = await byName(tools, 'team_flow_git').execute({ action: 'verify', item_id: 'W1' }, { agent: impl1, signal: EXEC_SIGNAL })
+    assert.equal(v1.item_git.verify.ok, true)
+    for (const [owner, id, file] of [[impl1, 'W1', 'src/a.txt'], [impl2, 'W2', 'src/b.txt']]) {
+      await byName(tools, 'team_flow_report').execute(
+        { item_id: id, summary: 'done', files: [file], commands: [{ command: 'true', exit_code: 0 }], evidence: ['wrote it'], open_questions: [], risks: [] },
+        { agent: owner, signal: EXEC_SIGNAL },
+      )
+      await byName(tools, 'team_flow_review_submit').execute(
+        { item_id: id, verdict: 'approve', summary: 'ok', findings: [], evidence_checked: ['read the worktree file'] },
+        { agent: rev, signal: EXEC_SIGNAL },
+      )
+    }
+    const gate = await byName(tools, 'team_flow_gate').execute({ finalize: true }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assert.equal(gate.pass, true)
+    const m1 = await byName(tools, 'team_flow_git').execute({ action: 'merge', item_id: 'W1' }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    const m2 = await byName(tools, 'team_flow_git').execute({ action: 'merge', item_id: 'W2' }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assert.equal(typeof m1.item_git.worktreeMergedAt, 'string')
+    assert.equal(typeof m2.item_git.worktreeMergedAt, 'string')
+    const finalMerge = await byName(tools, 'team_flow_git').execute({ action: 'merge' }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assert.equal(finalMerge.run_git.mergeMode !== undefined, true)
+    assert.equal(git('show', 'main:src/a.txt'), 'a')
+    assert.equal(git('show', 'main:src/b.txt'), 'b')
+    await byName(tools, 'team_flow_git').execute({ action: 'worktree_remove', item_id: 'W1' }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    await byName(tools, 'team_flow_git').execute({ action: 'worktree_remove', item_id: 'W2' }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    const listed = await byName(tools, 'team_flow_git').execute({ action: 'worktree_list' }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assert.equal(listed.item_worktrees.filter((entry) => entry.worktree !== null).length, 0)
+  })
+})
+
+test('serial worktree mode refuses a second active worktree and the gate catches missing isolated files', async () => {
+  return withWorkspace(async (cwd) => {
+    const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+    git('init', '-q', '-b', 'main')
+    git('config', 'user.email', 'team@example.com')
+    git('config', 'user.name', 'Agent Team')
+    await writeFile(join(cwd, 'README.md'), '# demo\n', 'utf8')
+    await writeFile(join(cwd, '.gitignore'), '.agentteam/\n', 'utf8')
+    git('add', 'README.md', '.gitignore')
+    git('commit', '-q', '-m', 'chore: baseline')
+    const settings = resolveSettings({ gitEnabled: true, gitBaseBranch: 'main', worktreeIsolation: 'serial', strictScopes: true })
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test' })
+    const impl1 = harness.addTeammate('impl-1')
+    const impl2 = harness.addTeammate('impl-2')
+    const rev = harness.addTeammate('rev')
+    await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'serial isolation',
+        acceptance_criteria: ['one at a time'],
+        items: [
+          { id: 'W1', subject: 'Add a', owner: 'impl-1', write_scopes: ['src/'], definition_of_done: ['a works'], reviewers: ['rev'] },
+          { id: 'W2', subject: 'Add b', owner: 'impl-2', write_scopes: ['docs/'], definition_of_done: ['b works'], reviewers: ['rev'] },
+        ],
+        auto_spawn: false,
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    await byName(tools, 'team_flow_git').execute({ action: 'prepare' }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    const wt1 = await byName(tools, 'team_flow_git').execute({ action: 'worktree_add', item_id: 'W1' }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    await assert.rejects(
+      () => byName(tools, 'team_flow_git').execute({ action: 'worktree_add', item_id: 'W2' }, { agent: harness.lead, signal: EXEC_SIGNAL }),
+      /serial worktree isolation allows one active worktree at a time/,
+    )
+    await mkdir(join(wt1.worktree.absolute, 'src'), { recursive: true })
+    await writeFile(join(wt1.worktree.absolute, 'src', 'a.txt'), 'a\n', 'utf8')
+    await byName(tools, 'team_flow_report').execute(
+      { item_id: 'W1', summary: 'done', files: ['src/a.txt'], commands: [{ command: 'true', exit_code: 0 }], evidence: ['wrote it'], open_questions: [], risks: [] },
+      { agent: impl1, signal: EXEC_SIGNAL },
+    )
+    await byName(tools, 'team_flow_review_submit').execute(
+      { item_id: 'W1', verdict: 'approve', summary: 'ok', findings: [], evidence_checked: ['read the worktree file'] },
+      { agent: rev, signal: EXEC_SIGNAL },
+    )
+    await rm(join(wt1.worktree.absolute, 'src', 'a.txt'))
+    const gate = await byName(tools, 'team_flow_gate').execute({ finalize: false }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assert.equal(gate.pass, false)
+    assert.ok(gate.item_gates.find((entry) => entry.id === 'W1').failures.some((failure) => failure.includes('missing from the item worktree')))
   })
 })

@@ -134,6 +134,15 @@ ${queue}
  * @param contextMode - `fresh` (default) or `fork`, from plugin settings.
  * @returns `{ description, prompt, context }` to pass to `spawn_teammate`.
  */
+/** @returns a worktree-isolation paragraph for the brief, or ''. */
+function worktreeLine(item) {
+  const worktree = item?.git?.worktreePath
+  if (typeof worktree !== 'string' || worktree.length === 0) return ''
+  const branch = item?.git?.worktreeBranch ?? '(unknown branch)'
+  return `Worktree isolation: do ALL of your work inside this git worktree — ${worktree}
+Its branch is "${branch}" (already checked out there). Paths in your write scope and in the report are relative to that worktree directory, not the Lead's checkout. Never edit the Lead's checkout; commit with team_flow_git {action:"commit", item_id:"${item.id}"} and let the Lead merge the branch.`
+}
+
 export function renderWorkerBrief(state, item, reviewing = [], contextMode = 'fresh') {
   const lead = 'lead'
   const blockers = item.blockedBy.length === 0 ? '(none)' : item.blockedBy.join(', ')
@@ -158,6 +167,7 @@ ${bullets(item.definitionOfDone)}
 Write scope — you may create or modify ONLY these workspace-relative paths:
 ${bullets(item.writeScopes, 'no explicit scope (stay minimal and say what you touched)')}
 Do not modify anything outside this scope. Other members are editing their own scopes concurrently; overlapping edits corrupt the run.
+${worktreeLine(item)}
 
 Dependencies: ${blockers}. Do not start until every dependency is approved (team_flow_status shows readiness).
 Backing shared task: ${item.taskId ?? '(none)'} — read it with team_task_get (or team_flow_status item_id="${item.id}" for the current revision), then claim it with team_task_update {task_id, expected_revision, action:"claim"}.

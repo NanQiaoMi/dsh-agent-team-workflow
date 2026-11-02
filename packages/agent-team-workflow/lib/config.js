@@ -77,8 +77,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   tokenBudgetPerMember: 0,
   /** Token budget for the whole run; 0 disables the check. */
   tokenBudgetPerRun: 0,
-  /** Allow serialized git worktrees per item (experimental isolation). */
-  worktreeIsolation: false,
+  /** Per-item git worktree isolation: 'off' | 'serial' | 'parallel'. */
+  worktreeIsolation: 'off',
 })
 
 function clampInt(value, fallback, min, max) {
@@ -122,21 +122,45 @@ function readRoles(value) {
     const prompt = readString(rawRole.prompt, '', 4000)
     if (prompt.length > 0) role.prompt = prompt
     if (Array.isArray(rawRole.deny)) {
-      const deny = rawRole.deny
-        .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
-        .filter((entry) => /^[a-z_]+(:[a-z_]+)?$/.test(entry))
-        .slice(0, 24)
+      const deny = normalizeToolPolicyList(rawRole.deny)
       if (deny.length > 0) role.deny = deny
     }
+    if (Array.isArray(rawRole.allow)) {
+      const allow = normalizeToolPolicyList(rawRole.allow)
+      if (allow.length > 0) role.allow = allow
+    }
+    if (rawRole.readOnly === true) role.readOnly = true
     if (Object.keys(role).length > 0) roles[name] = role
     if (Object.keys(roles).length >= 32) break
   }
   return roles
 }
 
+/**
+ * Normalize one role's tool-policy list to `tool` or `tool:action` entries.
+ * @param value - raw array from the role config.
+ * @returns deduplicated, bounded entries.
+ */
+function normalizeToolPolicyList(value) {
+  if (!Array.isArray(value)) return []
+  const entries = value
+    .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+    .filter((entry) => /^[a-z_]+(:[a-z_]+)?$/.test(entry))
+  return [...new Set(entries)].slice(0, 64)
+}
+
 function readCommands(value) {
   if (!Array.isArray(value)) return []
   return value.map((entry) => (typeof entry === 'string' ? entry.trim() : '')).filter((entry) => entry.length > 0).slice(0, 16)
+}
+
+/** @returns one of 'off' | 'serial' | 'parallel' (booleans kept for compat). */
+export function readWorktreeMode(value) {
+  if (value === true) return 'parallel'
+  if (value === false || value === undefined) return 'off'
+  const text = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  if (text === 'parallel' || text === 'serial' || text === 'off') return text
+  return 'off'
 }
 
 function readBool(value, fallback) {
@@ -190,7 +214,7 @@ export function resolveSettings(raw = {}) {
     planApprover: readString(config.planApprover, DEFAULT_SETTINGS.planApprover, 16) === 'peer' ? 'peer' : 'lead',
     tokenBudgetPerMember: clampInt(config.tokenBudgetPerMember, DEFAULT_SETTINGS.tokenBudgetPerMember, 0, 1_000_000_000),
     tokenBudgetPerRun: clampInt(config.tokenBudgetPerRun, DEFAULT_SETTINGS.tokenBudgetPerRun, 0, 1_000_000_000),
-    worktreeIsolation: readBool(config.worktreeIsolation, DEFAULT_SETTINGS.worktreeIsolation),
+    worktreeIsolation: readWorktreeMode(config.worktreeIsolation),
   })
 }
 
