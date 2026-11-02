@@ -1,0 +1,9 @@
+# Live member route evidence (independent Web Host, plugin 1.4.0)
+GET /api/agent-team-workflow.member?session=session-76536de2-219f-40bb-ae54-a62d48fd17e6&name=impl-alpha
+-> 200 {"ok":true,"member":{"name":"impl-alpha","role":"teammate","status":"inactive","context":"fresh",
+   "currentItems":[{"id":"A","subject":"实现 collab-live-5/join.mjs","status":"approved","role":"implementer"}],
+   "recentActivity":[{"type":"item/claimed"},{"type":"plan/pending"},{"type":"item/reported"},...]}}
+
+POST /api/agent-team-workflow.member?session=session-76536de2-...
+body {"name":"impl-alpha","message":"来自用户面板的直聊测试：请确认收到。"}
+-> 200 {"ok":true,"delivered":true,"member":"impl-alpha"}

@@ -1234,9 +1234,17 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           const readUsage = tokenUsage?.()
           for (const member of members) {
             if (typeof readUsage !== 'function') break
-            const totals = readUsage(member.agent)
-            if (totals === null || totals === undefined) continue
-            usage.members[member.name] = totals
+            const raw = readUsage(member.agent)
+            if (raw === null || raw === undefined) continue
+            // The token-meter projection exposes `{ totals, last }`; keep only
+            // the flat bucket totals so budgets and the board agree.
+            const totals = raw.totals !== undefined && raw.totals !== null && typeof raw.totals === 'object' ? raw.totals : raw
+            usage.members[member.name] = {
+              uncachedInputTokens: Number.isFinite(totals.uncachedInputTokens) ? totals.uncachedInputTokens : 0,
+              outputTokens: Number.isFinite(totals.outputTokens) ? totals.outputTokens : 0,
+              cacheReadTokens: Number.isFinite(totals.cacheReadTokens) ? totals.cacheReadTokens : 0,
+              cacheWriteTokens: Number.isFinite(totals.cacheWriteTokens) ? totals.cacheWriteTokens : 0,
+            }
             for (const key of Object.keys(usage.totals)) usage.totals[key] += Number.isFinite(totals[key]) ? totals[key] : 0
           }
           current.usage = usage

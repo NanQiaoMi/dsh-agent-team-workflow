@@ -1503,7 +1503,7 @@ test('the gate captures token usage and enforces budgets', () => {
     const harness = createHarness(cwd)
     const budgetSettings = resolveSettings({ tokenBudgetPerMember: 100 })
     const store = createStore({ ctx: harness.ctx, settings: budgetSettings })
-    const usage = (agent) => (agent?.id === 'session-impl' ? { uncachedInputTokens: 300, outputTokens: 250, cacheReadTokens: 0, cacheWriteTokens: 0 } : { uncachedInputTokens: 10, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0 })
+    const usage = (agent) => ({ totals: agent?.id === 'session-impl' ? { uncachedInputTokens: 300, outputTokens: 250, cacheReadTokens: 0, cacheWriteTokens: 0 } : { uncachedInputTokens: 10, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0 }, last: null })
     const tools = buildTools({ ctx: harness.ctx, settings: budgetSettings, store, version: 'test', tokenUsage: () => usage })
     const impl = harness.addTeammate('impl')
     const rev = harness.addTeammate('rev')

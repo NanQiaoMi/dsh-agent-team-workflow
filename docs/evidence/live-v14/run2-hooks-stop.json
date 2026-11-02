@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 2,
+  "workflowVersion": 2,
+  "runId": "run-20261102135749-0k98",
+  "teamId": "session-76536de2-219f-40bb-ae54-a62d48fd17e6",
+  "objective": "v1.4 hooks+stop demo",
+  "acceptanceCriteria": [
+    "demo"
+  ],
+  "constraints": [],
+  "phase": "planned",
+  "createdAt": "2026-11-02T13:57:49.562Z",
+  "updatedAt": "2026-11-02T13:58:01.622Z",
+  "settings": {
+    "maxReviewRounds": 2,
+    "maxParallelItems": 4,
+    "workerContext": "fresh",
+    "strictScopes": false,
+    "allowScopeOverlap": false,
+    "requireReviewEvidence": true,
+    "proposalTimeoutMinutes": 15,
+    "autoStaff": true,
+    "gitEnabled": false,
+    "gitBaseBranch": "main",
+    "gitRemote": "origin",
+    "gitBranchPrefix": "agentteam/",
+    "gitVerifyCommands": [],
+    "gitRequireVerify": false,
+    "freshProvider": "spawn",
+    "forkProvider": "fork",
+    "roles": {
+      "implementer": {
+        "prompt": "You implement carefully and run the real tests."
+      },
+      "reviewer": {
+        "prompt": "You review adversarially and cite reproducible evidence."
+      }
+    },
+    "hooks": {
+      "taskCreated": [
+        {
+          "command": "~/dsh-workspace/.dsh-probe/hooks/block-risky.sh"
+        }
+      ],
+      "taskCompleted": [],
+      "teammateIdle": []
+    },
+    "planFirst": true,
+    "autoApprovePlan": false,
+    "planApprover": "lead",
+    "tokenBudgetPerMember": 0,
+    "tokenBudgetPerRun": 0,
+    "worktreeIsolation": false
+  },
+  "items": [
+    {
+      "id": "B",
+      "subject": "stop demo item",
+      "owner": "impl-alpha",
+      "assignment": "lead",
+      "claim": null,
+      "reviewRequests": [],
+      "handoffs": [],
+      "pendingReviewer": null,
+      "role": "implementer",
+      "writeScopes": [
+        "collab-live-5/b.mjs"
+      ],
+      "blockedBy": [],
+      "definitionOfDone": [
+        "x"
+      ],
+      "needsReview": true,
+      "reviewers": [
+        "lead"
+      ],
+      "evidenceOptional": false,
+      "status": "pending",
+      "taskId": "task-2",
+      "report": null,
+      "reportSeq": 0,
+      "reviews": [],
+      "reviewSeq": 0,
+      "overrideReason": null,
+      "repairLog": [],
+      "createdAt": "2026-11-02T13:57:49.562Z",
+      "updatedAt": "2026-11-02T13:57:49.562Z",
+      "reportedAt": null,
+      "approvedAt": null,
+      "approvedBy": null,
+      "planFirst": false,
+      "origin": "plan",
+      "createdBy": null,
+      "git": null,
+      "plan": null
+    }
+  ],
+  "escalations": [],
+  "events": [
+    {
+      "at": "2026-11-02T13:57:49.562Z",
+      "type": "run/planned",
+      "actor": "lead",
+      "detail": "planned 1 work item(s)"
+    },
+    {
+      "at": "2026-11-02T13:57:49.562Z",
+      "type": "run/tasks-created",
+      "actor": "lead",
+      "detail": "1 backing task(s)"
+    },
+    {
+      "at": "2026-11-02T13:58:01.622Z",
+      "type": "stop/pending",
+      "actor": "lead",
+      "detail": "impl-alpha (graceful)"
+    },
+    {
+      "at": "2026-11-02T13:58:05.023Z",
+      "type": "stop/interrupted",
+      "actor": "lead",
+      "detail": "impl-alpha"
+    }
+  ],
+  "channel": [
+    {
+      "id": "m1",
+      "at": "2026-11-02T13:58:01.622Z",
+      "from": "lead",
+      "to": "impl-alpha",
+      "kind": "status",
+      "text": "[SHUTDOWN] requested impl-alpha: demo",
+      "replyTo": null,
+      "refs": {
+        "itemId": null,
+        "findingId": null,
+        "proposalId": null
+      }
+    }
+  ],
+  "proposals": [],
+  "staffPool": [],
+  "roleAssignments": {},
+  "stops": [
+    {
+      "id": "stop1",
+      "at": "2026-11-02T13:58:01.622Z",
+      "by": "lead",
+      "target": "impl-alpha",
+      "mode": "interrupt",
+      "reason": "demo",
+      "status": "interrupted",
+      "decidedAt": "2026-11-02T13:58:05.023Z",
+      "decisionReason": null
+    }
+  ],
+  "stopSeq": 1,
+  "git": null,
+  "messageSeq": 1,
+  "proposalSeq": 0,
+  "gate": null,
+  "artifacts": {
+    "statePath": "~/dsh-workspace/.agentteam/teams/session-76536de2-219f-40bb-ae54-a62d48fd17e6/state.json",
+    "reportPath": null,
+    "root": "~/dsh-workspace/.agentteam"
+  },
+  "finalizedAt": null
+}

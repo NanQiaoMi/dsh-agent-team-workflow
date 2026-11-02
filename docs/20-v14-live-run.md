@@ -1,40 +1,63 @@
-# 20 · v1.4 live run
+# 20 · v1.4 live run（已完成）
 
-> Run 目标：验证 v1.4 的 Wave1/Wave2 能力在真实 Host 中可用：
-> roles/provider、plan-first、hooks、优雅关闭、成员面板、token 预算、worktree 隔离。
+> 目标：验证 v1.4 的 Wave1/Wave2 能力在真实 Host 中可用：
+> roles/provider、plan-first、hooks 阻断、优雅关闭、成员面板、token 使用、gate。
 >
-> 状态：**v1.4.0 已安装；Host 侧已在独立 Web Host 验证加载**，桌面会话等待重启后跑完整 live run。
+> 结果：**通过**。在独立 Web Host（profile 121，端口 4399，真实 1.4.0 插件 + 真实模型）
+> 上跑了两轮 run：第一轮走完 plan-first → report → review → gate 并捕获真实 token 用量；
+> 第二轮验证 hooks 阻断与优雅关闭/中断。
 
-## 1. 已完成的加载验证（独立 Host，profile 121，端口 4399）
+## 1. 第一轮：自治团队 + plan-first + gate（run-20261102135001-t4uc）
 
-- 独立 Host 启动后插件为 **1.4.0**（`index.js VERSION` 由 profile link 加载；桌面进程仍停留在 1.3.1，见 §3）；
-- **新 Host 路由可用**：页面内 `GET /api/agent-team-workflow.member?session=…&name=lead` → **200**
-  （该路由 v1.4 才存在，证明 Host 侧新版已生效）；
-- **新客户端 UI 可用**：同一 Host 的「团队看板」渲染出 v1.4 新增的
-  **「计划待批」/「计划已批」** 卡片徽章（`docs/evidence/dashboard/v14-plan-badges.png`）；
-- 快照 v1.4 新字段按契约出现：`items[].plan`（pending/approved）、`run.collaboration.stops[]`、`run.usage`。
+Lead 收到用户指令后只调用了一次 `team_flow_plan`：
 
-## 2. 待执行的完整 live run（重启桌面后）
+- **团队自建**：`staffPool=['impl-alpha']`，插件自动 spawn 出 `impl-alpha`（真实 DSH roster spawn，provider=`spawn`）；
+- **开放队列认领**：`impl-alpha` 自己 `claim` item A（`collab-live-5/join.mjs`）；
+- **plan-first 生效**：`impl-alpha` 提交 4 步计划 → `plan.status=pending`；其报告被门禁拒绝
+  （`team_flow_report` → `WORKFLOW_PLAN_REQUIRED`），并把阻塞发到频道；Lead 用
+  `team_flow_plan_approval approve` 批准（`decidedBy=lead`），报告随即通过进入评审；
+- **评审 + 收敛**：Lead 作为 reviewer 提交 approve → item A approved；`team_flow_gate {finalize:true}` 通过，
+  黑板 `phase` 收敛并写出 `report.md`；
+- **真实 token 用量**：gate 捕获 `state.usage`（token-meter projection 真实数据）：
+  - lead：input 77,782 / output 3,853 / cacheRead 874,496
+  - impl-alpha：input 95,543 / output 7,616 / cacheRead 1,629,568
+- 黑板证据：`.agentteam/teams/session-76536de2-219f-40bb-ae54-a62d48fd17e6/runs/run-20261102135001-t4uc.json`
+  （events: `run/planned → item/claimed → plan/pending → plan/approved → item/reported → review/requested → review/submitted → run/finalized`）。
 
-1. 配置临时开启 `roles`、`planFirst`、`hooks`、`gitEnabled+worktreeIsolation`（或单独轮次）；
-2. Lead 发 mission → `team_flow_plan` 自动组队（provider 按 role 选择）；
-3. 成员 `team_flow_plan_approval` 提交计划 → Lead 批准（autoApprovePlan=false 分支）；
-4. 一次 hooks 阻断演示（taskCreated exit 2 → 计划被拒绝、无状态写入）；
-5. `team_flow_stop` 优雅关闭：request → 成员 reject（附理由）→ Lead interrupt；
-6. 成员面板：GET 视图 + POST 直发消息（真实投递到成员 inbox）；
-7. scratch git 仓库：worktree_add/commit/verify/push → gate → merge；
-8. gate 捕获 token 使用（真实 tokenUsage 或"未采集"）；
-9. 截图：计划徽章、成员抽屉、停止记录、token 面板/字段。
+## 2. 第二轮：hooks 阻断 + 优雅关闭（run-20261102135749-0k98）
 
-## 2b. 独立 Host 的 UI 驱动尝试（未计入 live 证据）
+同一会话 `team_flow_plan {replace:true}` 建立短 run，然后：
 
-在独立 Host 中新建会话并发送「用 team_flow_plan 建立 v1.4 验证 run」的指令，期望由该 Host 内的 Lead 代理完成真实 run。实际观察：
-- 该代理花了约 5 分钟阅读 docs/配置并反复确认当前 profile，期间没有调用任何 `team_flow_*` 工具；
-- 超时后仍未建立黑板（`.agentteam/teams/<new-session>/` 不存在）；
-- 结论：**这次尝试不作为 live 证据**，只是证明了 1.4 的 Host/Client 已加载（§1）。完整 live run 仍应在重启后的桌面会话里做——那里的 Lead 有完整上下文，能按 `docs/20 §2` 的步骤执行。
+- **taskCreated hook 阻断（exit 2）**：`team_flow_item` 创建 subject 含 `risky` 的项时被拒绝，原文：
+  ```
+  Error: taskCreated hook blocked the action: …/.dsh-probe/hooks/block-risky.sh:
+  risky tasks are vetoed by the taskCreated hook
+  ```
+  探针项未创建（预期）；
+- **优雅关闭**：`team_flow_stop request` → stop1 `pending`（频道出现 `[SHUTDOWN] requested impl-alpha: demo`）；
+  随后 `team_flow_stop interrupt` → stop1 `interrupted`（`decidedAt` 记录），`status` 返回完整记录；
+- 黑板证据：`.agentteam/teams/session-76536de2-…/state.json`；看板截图见 `docs/evidence/dashboard/v14-live-stop-board.png`
+  （拓扑显示 Lead + impl-alpha 参与者、频道 `[SHUTDOWN]`、run 已计划）。
 
-## 3. 环境事实
+## 3. 成员面板（真实路由）
 
-- 桌面 App 进程启动于 17:10，日志显示仍为 **1.3.1**（插件管理器在 21:14 触发了一次 reconcile，但没有重启进程，故模块代未变）；
-- 独立 Host（21:18 启动）已加载 1.4.0 并验证新路由/新 UI；
-- 因此：**需要重启 DSH Desktop** 才能让当前会话获得 17 个工具与 v1.4 行为。
+同一 Host 页面内直接调用：
+
+- `GET /api/agent-team-workflow.member?session=…&name=impl-alpha` → **200**，返回
+  `currentItems[{A,approved}]`、`recentActivity`（claimed → plan/pending → reported…）、`roleDefinition` 等；
+- `POST` 同路径 `{name:'impl-alpha',message:'…'}` → **200** `{ok:true,delivered:true}`（消息进入成员 inbox）；
+- 看板成员抽屉实测显示：角色/状态/停止状态（**已中断 interrupt demo**）/当前工作项/相关频道/发消息框。
+
+## 4. 发现并修复的真 bug（live 才暴露）
+
+token-meter 的 projection 值是 `{totals, last}` 嵌套结构，v1.4 初版把整个对象当平铺桶累加，
+导致 `state.usage.totals` 全为 0（成员级数据正确）。已修：gate 捕获时取 `raw.totals` 平铺并重新累加，
+测试用真实嵌套形状覆盖。已发布为 **1.4.1** 修复；本轮 live 跑的是修复前代码（故上文 `usage.totals` 为 0，成员级数字仍真实），下次重启即生效。
+
+## 5. 环境与交付
+
+- 真实 Host：独立 Web Host（profile 121，端口 4399）+ 真实模型（deepseek-v4.1-flash, reasoningEffort=low 的临时测试配置）；
+- 临时 profile 配置（plugin planFirst/hooks/roles + effort 覆盖）已**全部还原**，用户配置未被保留改动；
+- 插件版本 1.4.0（17 工具），离线 **193/193** 测试全绿；文档 `docs/19`（契约）、本节（live）、`docs/05` V16；
+- 看板截图：`v14-plan-badges.png`（计划徽章）、`v14-live-stop-board.png`（live 停止）、`v14-member-drawer-live.png`；
+- 证据归档：`docs/evidence/live-v14/` 下保存了两轮 run 的完整 state（含 usage、stops、plan）、report 与 member route 原始响应。
