@@ -8,6 +8,8 @@ window.__ModuleLoader__.load({
     const NS = 'agent-team-workflow'
     /** Authenticated Connection Fetch route served by the Host half (docs/09 §2). */
     const SNAPSHOT_PATH = '/api/agent-team-workflow.snapshot'
+    /** Member panel route (docs/19 §5): GET member view, POST a message. */
+    const MEMBER_PATH = '/api/agent-team-workflow.member'
     /** Board refresh cadence; a hidden document skips every tick. */
     const POLL_MS = 1200
     /** Recent events shown by the event stream panel. */
@@ -278,6 +280,49 @@ window.__ModuleLoader__.load({
       'git.merged': '已合并',
       'git.mergedAt': '合并时间',
       'git.prReview': 'PR 评审',
+      'member.title': '成员',
+      'member.close': '关闭',
+      'member.loading': '加载中…',
+      'member.unknown': '未知成员',
+      'member.fetchError': '成员详情加载失败',
+      'member.status': '状态',
+      'member.role': '角色',
+      'member.context': '上下文',
+      'member.items': '当前工作项',
+      'member.noItems': '暂无当前工作项',
+      'member.activity': '最近活动',
+      'member.noActivity': '暂无活动',
+      'member.channel': '相关频道',
+      'member.noChannel': '暂无相关消息',
+      'member.roleDefinition': '角色定义',
+      'member.noRoleDefinition': '无角色定义',
+      'member.provider': '提供方',
+      'member.prompt': '提示词',
+      'member.plan': '计划',
+      'member.noPlan': '无计划',
+      'member.stopState': '停止状态',
+      'member.noStop': '无停止请求',
+      'member.message': '消息',
+      'member.messagePlaceholder': '输入要发送给该成员的消息…',
+      'member.send': '发消息',
+      'member.sending': '发送中…',
+      'member.sent': '已发送',
+      'member.error': '发送失败：{message}',
+      'member.emptyMessage': '消息不能为空',
+      'member.stop.pending': '待回应',
+      'member.stop.accepted': '已接受',
+      'member.stop.rejected': '已拒绝',
+      'member.stop.interrupted': '已中断',
+      'plan.title': '计划',
+      'plan.status': '状态',
+      'plan.pending': '计划待批',
+      'plan.approved': '计划已批',
+      'plan.rejected': '计划被拒',
+      'plan.steps': '步骤',
+      'plan.files': '文件',
+      'plan.risks': '风险',
+      'plan.decidedBy': '决定人',
+      'plan.reason': '理由',
     }
 
     const en = {
@@ -528,6 +573,49 @@ window.__ModuleLoader__.load({
       'git.merged': 'merged',
       'git.mergedAt': 'merged at',
       'git.prReview': 'PR review',
+      'member.title': 'Member',
+      'member.close': 'close',
+      'member.loading': 'Loading…',
+      'member.unknown': 'Unknown member',
+      'member.fetchError': 'Could not load the member view',
+      'member.status': 'status',
+      'member.role': 'role',
+      'member.context': 'context',
+      'member.items': 'Current items',
+      'member.noItems': 'No current items',
+      'member.activity': 'Recent activity',
+      'member.noActivity': 'No recent activity',
+      'member.channel': 'Related messages',
+      'member.noChannel': 'No related messages',
+      'member.roleDefinition': 'Role definition',
+      'member.noRoleDefinition': 'No role definition',
+      'member.provider': 'provider',
+      'member.prompt': 'prompt',
+      'member.plan': 'Plan',
+      'member.noPlan': 'No plan',
+      'member.stopState': 'Stop request',
+      'member.noStop': 'No stop request',
+      'member.message': 'Message',
+      'member.messagePlaceholder': 'Type a message for this member…',
+      'member.send': 'Send',
+      'member.sending': 'Sending…',
+      'member.sent': 'Sent',
+      'member.error': 'Send failed: {message}',
+      'member.emptyMessage': 'The message cannot be empty',
+      'member.stop.pending': 'awaiting response',
+      'member.stop.accepted': 'accepted',
+      'member.stop.rejected': 'rejected',
+      'member.stop.interrupted': 'interrupted',
+      'plan.title': 'Plan',
+      'plan.status': 'status',
+      'plan.pending': 'plan pending',
+      'plan.approved': 'plan approved',
+      'plan.rejected': 'plan rejected',
+      'plan.steps': 'steps',
+      'plan.files': 'files',
+      'plan.risks': 'risks',
+      'plan.decidedBy': 'decided by',
+      'plan.reason': 'reason',
     }
 
     // ---------------------------------------------------------------------
@@ -545,6 +633,8 @@ window.__ModuleLoader__.load({
     const VOTE_TONES = { yes: 'success', no: 'error', abstain: 'idle' }
     const REVIEW_REQUEST_TONES = { open: 'warn', accepted: 'success', declined: 'idle' }
     const HANDOFF_TONES = { offered: 'warn', accepted: 'success', declined: 'idle' }
+    const PLAN_STATUS_TONES = { pending: 'warn', approved: 'success', rejected: 'error' }
+    const STOP_STATUS_TONES = { pending: 'warn', accepted: 'success', rejected: 'error', interrupted: 'idle' }
     const CHANNEL_FILTERS = ['all', 'question', 'answer', 'proposal', 'handoff', 'status']
     const PROPOSAL_BLOCKING_KINDS = ['dod', 'scope', 'replan']
     const FLOW = {
@@ -791,6 +881,21 @@ window.__ModuleLoader__.load({
     }
 
     /** @returns `yes` / `no` / `abstain` (unknown votes read as abstain). */
+    /** @returns the plan status label (docs/19 §4). */
+    function planStatusLabel(tr, status) {
+      if (status === 'approved') return tr('plan.approved')
+      if (status === 'rejected') return tr('plan.rejected')
+      return tr('plan.pending')
+    }
+
+    /** @returns the stop status label (docs/19 §2). */
+    function stopStatusLabel(tr, status) {
+      if (status === 'accepted') return tr('member.stop.accepted')
+      if (status === 'rejected') return tr('member.stop.rejected')
+      if (status === 'interrupted') return tr('member.stop.interrupted')
+      return tr('member.stop.pending')
+    }
+
     function normalizeVoteValue(value) {
       const vote = str(value, 'abstain')
       return vote === 'yes' || vote === 'no' || vote === 'abstain' ? vote : 'abstain'
@@ -866,6 +971,7 @@ window.__ModuleLoader__.load({
         origin: str(item.origin, 'plan') === 'member' ? 'member' : 'plan',
         createdBy: str(item.createdBy),
         git: normalizeGit(item.git, runGit),
+        plan: normalizePlan(item.plan),
       }
     }
 
@@ -922,6 +1028,91 @@ window.__ModuleLoader__.load({
     function normalizeRunItems(run) {
       const runGit = normalizeRunGit(run)
       return toArray(run && run.items).map((item) => normalizeItem(item, runGit))
+    }
+
+    /** @returns the normalized `items[].plan` block (docs/19 §4), or null. */
+    function normalizePlan(raw) {
+      if (!isRecord(raw)) return null
+      const status = str(raw.status)
+      return {
+        steps: toArray(raw.steps)
+          .map((step) => str(step))
+          .filter((step) => step !== ''),
+        files: toArray(raw.files)
+          .map((file) => str(file))
+          .filter((file) => file !== ''),
+        risks: toArray(raw.risks)
+          .map((risk) => str(risk))
+          .filter((risk) => risk !== ''),
+        status: status === 'pending' || status === 'approved' || status === 'rejected' ? status : null,
+        decidedBy: str(raw.decidedBy),
+        reason: str(raw.reason),
+        submittedBy: str(raw.submittedBy),
+        submittedAt: parseTime(raw.submittedAt),
+        decidedAt: parseTime(raw.decidedAt),
+      }
+    }
+
+    /** @returns the normalized stop request (docs/19 §2). */
+    function normalizeStop(raw) {
+      const stop = isRecord(raw) ? raw : {}
+      const status = str(stop.status)
+      return {
+        id: str(stop.id),
+        at: parseTime(stop.at),
+        by: str(stop.by),
+        target: str(stop.target),
+        mode: str(stop.mode) === 'interrupt' ? 'interrupt' : 'graceful',
+        status: status === 'accepted' || status === 'rejected' || status === 'interrupted' ? status : 'pending',
+        reason: str(stop.reason),
+        decidedAt: parseTime(stop.decidedAt),
+      }
+    }
+
+    /** @returns the normalized payload of the member route (docs/19 §5). */
+    function normalizeMemberView(raw) {
+      const member = isRecord(raw) ? raw : {}
+      const stop = isRecord(member.stop) ? member.stop : null
+      const plan = isRecord(member.plan) ? member.plan : null
+      const roleDefinition = isRecord(member.roleDefinition) ? member.roleDefinition : null
+      return {
+        name: str(member.name),
+        role: str(member.role),
+        status: str(member.status),
+        context: str(member.context),
+        currentItems: toArray(member.currentItems)
+          .filter(isRecord)
+          .map((item) => ({ id: str(item.id), subject: str(item.subject), status: str(item.status), role: str(item.role) })),
+        recentActivity: toArray(member.recentActivity)
+          .filter(isRecord)
+          .map((event) => ({ at: parseTime(event.at), type: str(event.type), detail: str(event.detail) })),
+        channel: toArray(member.channel)
+          .filter(isRecord)
+          .map((entry) => ({
+            id: str(entry.id),
+            at: parseTime(entry.at),
+            from: str(entry.from),
+            to: str(entry.to),
+            kind: str(entry.kind),
+            text: str(entry.text),
+            itemId: str(entry.itemId !== undefined ? entry.itemId : entry.item_id),
+          })),
+        stop:
+          stop === null
+            ? null
+            : {
+                id: str(stop.id),
+                status: str(stop.status, 'pending'),
+                at: parseTime(stop.at),
+                reason: str(stop.reason),
+                mode: str(stop.mode),
+              },
+        plan: plan === null ? null : { itemId: str(plan.itemId), status: str(plan.status) },
+        roleDefinition:
+          roleDefinition === null
+            ? null
+            : { role: str(roleDefinition.role), provider: str(roleDefinition.provider), prompt: str(roleDefinition.prompt) },
+      }
     }
 
     function normalizeReport(raw) {
@@ -1164,7 +1355,7 @@ window.__ModuleLoader__.load({
     function normalizeCollaboration(run) {
       const raw = isRecord(run) && isRecord(run.collaboration) ? run.collaboration : null
       if (raw === null) {
-        return { channel: [], proposals: [], openQueue: [], pendingReviews: [], handoffs: [], edges: [] }
+        return { channel: [], proposals: [], openQueue: [], pendingReviews: [], handoffs: [], edges: [], stops: [] }
       }
       return {
         channel: toArray(raw.channel).filter(isRecord).map(normalizeChannelEntry),
@@ -1173,6 +1364,7 @@ window.__ModuleLoader__.load({
         pendingReviews: toArray(raw.pendingReviews).filter(isRecord).map(normalizePendingReview),
         handoffs: toArray(raw.handoffs).filter(isRecord).map(normalizeHandoff),
         edges: toArray(raw.edges).filter(isRecord).map(normalizePeerEdge),
+        stops: toArray(raw.stops).filter(isRecord).map(normalizeStop),
       }
     }
 
@@ -1375,9 +1567,15 @@ window.__ModuleLoader__.load({
       const participants = split.participants.slice(0, 12)
       const memberSpread = spreadNodes(participants.length, 44, 36, 52)
       const memberRows = participants.length > 6 ? 2 : 1
+      // docs/19 §2: a pending graceful stop marks its target with a warn dot.
+      const pendingStops = new Map()
+      for (const stop of toArray(isRecord(collaboration) ? collaboration.stops : [])) {
+        if (stop.status === 'pending' && stop.target !== '') pendingStops.set(stop.target, stop)
+      }
       const memberNodes = participants.map((member, index) => ({
         key: 'member-' + member.name + '-' + index,
         member,
+        stop: pendingStops.get(member.name) || null,
         x: memberSpread.nodes[index].x,
         y: memberSpread.nodes[index].y,
       }))
@@ -1618,6 +1816,30 @@ window.__ModuleLoader__.load({
 .atw-empty-title{font-size:14px;line-height:22px;font-weight:600}
 .atw-member-list{display:flex;flex-direction:column;gap:3px;font-size:12px;line-height:18px}
 .atw-member-line{display:flex;align-items:center;gap:6px;min-width:0}
+.atw-member-line--button{box-sizing:border-box;width:100%;padding:2px 0;border:0;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.atw-member-line--button:hover{color:var(--dsw-alias-brand-primary)}
+.atw-node-stop{flex:none;width:6px;height:6px;border-radius:999px;background:var(--dsw-alias-state-warn-primary)}
+.atw-member{position:fixed;top:80px;right:16px;z-index:41;display:flex;flex-direction:column;box-sizing:border-box;width:min(380px,calc(100vw - 32px));max-height:calc(100vh - 180px);border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-base);overflow:hidden}
+.atw-member-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;box-sizing:border-box;padding:10px 12px;border-bottom:0.5px solid var(--dsw-alias-border-l1)}
+.atw-member-heading{display:flex;flex-direction:column;gap:2px;min-width:0}
+.atw-member-title{font-size:13px;line-height:19px;font-weight:600;overflow-wrap:anywhere}
+.atw-member-body{display:flex;flex-direction:column;gap:10px;flex:1;min-height:0;overflow:auto;padding:10px 12px 16px}
+.atw-member-item{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0;font-size:12px;line-height:16px}
+.atw-member-event{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0;font-size:11px;line-height:16px}
+.atw-member-text{min-width:0;overflow-wrap:anywhere;font-size:12px;line-height:16px}
+.atw-member-message{display:flex;flex-direction:column;gap:2px;min-width:0;padding-bottom:6px;border-bottom:0.5px solid var(--dsw-alias-border-l1)}
+.atw-member-message:last-child{border-bottom:none;padding-bottom:0}
+.atw-member-channel-text{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;font-size:12px;line-height:16px;overflow-wrap:anywhere}
+.atw-member-role{display:flex;flex-direction:column;gap:4px;min-width:0}
+.atw-member-prompt{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;overflow-wrap:anywhere}
+.atw-member-composer{display:flex;flex-direction:column;gap:6px;padding-top:8px;border-top:0.5px solid var(--dsw-alias-border-l1)}
+.atw-member-input{box-sizing:border-box;width:100%;padding:4px 8px;border:0.5px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:16px}
+.atw-member-input:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.atw-member-status{font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary)}
+.atw-member-status--ok{color:var(--dsw-alias-state-success-primary)}
+.atw-member-status--error{color:var(--dsw-alias-state-error-primary)}
+.atw-member-error{color:var(--dsw-alias-state-error-primary);font-size:11px;line-height:16px;overflow-wrap:anywhere}
+.atw-node--member{cursor:pointer}
 .atw-error-card{display:flex;flex-direction:column;gap:6px;box-sizing:border-box;border:0.5px solid var(--dsw-alias-state-error-primary);border-radius:10px;background:var(--dsw-alias-bg-layer-1);padding:14px 16px}
 .atw-error-title{font-size:14px;line-height:22px;font-weight:600;color:var(--dsw-alias-state-error-primary)}
 .atw-error-detail{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:17px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
@@ -1835,6 +2057,28 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'atw-card-git' }, badges)
     }
 
+    /** @returns the drawer's plan-first block (docs/19 §4), or null without a plan. */
+    function renderPlanSection(view, item) {
+      const tr = view.tr
+      const plan = item.plan
+      if (plan === null) return null
+      const blocks = [
+        kvRow(
+          'plan-status',
+          tr('plan.status'),
+          badge(plan.status === null ? tr('plan.pending') : planStatusLabel(tr, plan.status), plan.status === null ? 'idle' : PLAN_STATUS_TONES[plan.status] || 'idle'),
+        ),
+      ]
+      if (plan.decidedBy !== '') blocks.push(kvRow('plan-decided-by', tr('plan.decidedBy'), plan.decidedBy))
+      if (plan.reason !== '') blocks.push(kvRow('plan-reason', tr('plan.reason'), plan.reason))
+      const lists = [
+        bulletList('plan-steps', tr('plan.steps'), plan.steps),
+        bulletList('plan-files', tr('plan.files'), plan.files),
+        bulletList('plan-risks', tr('plan.risks'), plan.risks),
+      ].filter((block) => block !== null)
+      return h('div', { key: 'plan', className: 'atw-section' }, h('div', { className: 'atw-section-title' }, tr('plan.title')), blocks, lists)
+    }
+
     /** @returns the drawer's Git/PR detail block, or null when the item has no git record. */
     function renderGitSection(view, item) {
       const tr = view.tr
@@ -1953,8 +2197,11 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'atw-card-flags' },
           h('span', { key: 'round' }, tr('flow.round', { submitted: reviews.submittedRounds, max: reviews.maxRounds })),
-          // Noise budget (docs/16 §3): the card keeps status + R + one flag; the
-          // rest of the flags live in the detail drawer.
+          // docs/19 §5.2: plan-first state rides on the card; the rest of the
+          // flags stay in the detail drawer (docs/16 §3 noise budget).
+          item.plan !== null && item.plan.status !== null
+            ? badge(planStatusLabel(tr, item.plan.status), PLAN_STATUS_TONES[item.plan.status] || 'idle', 'plan')
+            : null,
           memberCreated
             ? h(
                 'span',
@@ -2145,11 +2392,21 @@ window.__ModuleLoader__.load({
                   key: node.key,
                   className: 'atw-node atw-node--member atw-node--st-' + str(node.member.status, 'inactive'),
                   style: { left: node.x + '%', top: node.y + '%' },
+                  role: 'button',
+                  tabIndex: 0,
                   title: node.member.name + ' · ' + memberStatusLabel(tr, node.member.status),
+                  onClick: () => view.actions.openMember(node.member.name),
+                  onKeyDown: (event) => {
+                    if (event && (event.key === 'Enter' || event.key === ' ')) {
+                      event.preventDefault()
+                      view.actions.openMember(node.member.name)
+                    }
+                  },
                 },
                 h('span', { className: 'atw-dot' }),
                 h('span', null, node.member.name),
                 badge(contextLabel(tr, node.member.context), node.member.context === 'fork' ? 'warn' : 'idle', 'ctx'),
+                node.stop === null ? null : h('span', { key: 'stop', className: 'atw-node-stop', title: tr('member.stop.pending') }),
               ),
             ),
             topology.idleNode === null
@@ -2376,19 +2633,30 @@ window.__ModuleLoader__.load({
       return h('section', { className: 'atw-panel' }, panelHead(tr('escalations.title'), null), h('div', { className: 'atw-panel-body' }, body))
     }
 
-    function renderMemberLines(tr, team) {
+    function renderMemberLines(view, team, collaboration) {
+      const tr = view.tr
       if (team.members.length === 0) return h('div', { className: 'atw-muted' }, tr('common.none'))
+      const pendingStops = new Set()
+      for (const stop of toArray(isRecord(collaboration) ? collaboration.stops : [])) {
+        if (stop.status === 'pending' && stop.target !== '') pendingStops.add(stop.target)
+      }
       return h(
         'div',
         { className: 'atw-member-list' },
         team.members.map((member, index) =>
           h(
-            'div',
-            { key: 'member-line-' + index, className: 'atw-member-line' },
+            'button',
+            {
+              key: 'member-line-' + index,
+              type: 'button',
+              className: 'atw-member-line atw-member-line--button',
+              onClick: () => view.actions.openMember(member.name),
+            },
             h('span', { className: 'atw-node-sub', title: member.name }, member.name),
             h('span', { className: 'atw-muted' }, member.role),
             badge(memberStatusLabel(tr, member.status), memberTone(member.status)),
             badge(contextLabel(tr, member.context), member.context === 'fork' ? 'warn' : 'idle'),
+            pendingStops.has(member.name) ? h('span', { key: 'stop', className: 'atw-node-stop', title: tr('member.stop.pending') }) : null,
           ),
         ),
       )
@@ -2403,7 +2671,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'atw-muted' }, tr('empty.hint')),
         diagnostics.boardSource === 'missing' ? h('div', { className: 'atw-muted' }, tr('empty.boardMissing')) : null,
         h('div', { className: 'atw-section-title' }, tr('empty.teamTitle')),
-        renderMemberLines(tr, team),
+        renderMemberLines(view, team, null),
       )
     }
 
@@ -2790,6 +3058,8 @@ window.__ModuleLoader__.load({
         meta.push(kvRow('task', tr('drawer.noTask'), tr('common.none')))
       }
       sections.push(h('div', { key: 'meta', className: 'atw-section' }, meta))
+      const planSection = renderPlanSection(view, item)
+      if (planSection !== null) sections.push(planSection)
       const gitSection = renderGitSection(view, item)
       if (gitSection !== null) sections.push(gitSection)
       sections.push(bulletList('dod', tr('drawer.dod'), item.definitionOfDone))
@@ -3001,6 +3271,232 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** @returns the composer status line: sending / sent / error / empty. */
+    function memberStatusLine(view) {
+      const tr = view.tr
+      const state = view.memberSendState
+      if (state === 'sending') return h('span', { key: 'member-status', className: 'atw-member-status' }, tr('member.sending'))
+      if (state === 'sent') return h('span', { key: 'member-status', className: 'atw-member-status atw-member-status--ok' }, tr('member.sent'))
+      if (isRecord(state) && state.error !== undefined) {
+        return h('span', { key: 'member-status', className: 'atw-member-status atw-member-status--error' }, tr('member.error', { message: state.error }))
+      }
+      if (isRecord(state) && state.empty === true) {
+        return h('span', { key: 'member-status', className: 'atw-member-status atw-member-status--error' }, tr('member.emptyMessage'))
+      }
+      return null
+    }
+
+    /**
+     * Member panel (docs/19 §5.2): the roster data is always available from the
+     * snapshot, while the richer view comes from the member route.
+     */
+    function renderMemberDrawer(view, team, collaboration) {
+      const tr = view.tr
+      const name = view.memberName
+      if (name === null) return null
+      const roster = team.members.find((member) => member.name === name) || null
+      const detail = view.memberView
+      const known = roster !== null || detail !== null
+      const runStops = toArray(isRecord(collaboration) ? collaboration.stops : []).filter((stop) => stop.target === name)
+      const runStop = runStops.length === 0 ? null : runStops[runStops.length - 1]
+      const stop =
+        detail !== null && detail.stop !== null
+          ? detail.stop
+          : runStop === null
+            ? null
+            : { id: runStop.id, status: runStop.status, at: runStop.at, reason: runStop.reason, mode: runStop.mode }
+      const sections = []
+
+      if (!known && view.memberLoading) {
+        sections.push(h('div', { key: 'member-loading', className: 'atw-muted' }, tr('member.loading')))
+      }
+      if (view.memberError !== null) {
+        sections.push(
+          h(
+            'div',
+            { key: 'member-error', className: 'atw-member-error' },
+            tr('member.fetchError') + (view.memberError.message ? ': ' + view.memberError.message : ''),
+          ),
+        )
+      }
+      if (!known && !view.memberLoading) {
+        sections.push(h('div', { key: 'member-unknown', className: 'atw-muted' }, tr('member.unknown')))
+      }
+
+      const role = detail !== null && detail.role !== '' ? detail.role : roster === null ? '' : roster.role
+      const status = detail !== null && detail.status !== '' ? detail.status : roster === null ? '' : roster.status
+      const context = detail !== null && detail.context !== '' ? detail.context : roster === null ? '' : roster.context
+      const identityRows = [kvRow('member-name', tr('member.title'), name)]
+      if (role !== '') identityRows.push(kvRow('member-role', tr('member.role'), role))
+      if (status !== '') identityRows.push(kvRow('member-status', tr('member.status'), badge(memberStatusLabel(tr, status), memberTone(status))))
+      if (context !== '') identityRows.push(kvRow('member-context', tr('member.context'), badge(contextLabel(tr, context), context === 'fork' ? 'warn' : 'idle')))
+      sections.push(h('div', { key: 'member-identity', className: 'atw-section' }, identityRows))
+
+      sections.push(
+        h(
+          'div',
+          { key: 'member-stop', className: 'atw-section' },
+          h('div', { className: 'atw-section-title' }, tr('member.stopState')),
+          stop === null
+            ? h('div', { className: 'atw-muted' }, tr('member.noStop'))
+            : h(
+                'div',
+                { className: 'atw-row' },
+                badge(stopStatusLabel(tr, stop.status), STOP_STATUS_TONES[stop.status] || 'idle'),
+                stop.mode !== '' ? h('span', { className: 'atw-muted' }, stop.mode) : null,
+                stop.reason !== '' ? h('span', { className: 'atw-member-text' }, stop.reason) : null,
+              ),
+        ),
+      )
+
+      const plan = detail === null ? null : detail.plan
+      sections.push(
+        h(
+          'div',
+          { key: 'member-plan', className: 'atw-section' },
+          h('div', { className: 'atw-section-title' }, tr('member.plan')),
+          plan === null
+            ? h('div', { className: 'atw-muted' }, tr('member.noPlan'))
+            : h(
+                'div',
+                { className: 'atw-row' },
+                badge(planStatusLabel(tr, plan.status), PLAN_STATUS_TONES[plan.status] || 'idle'),
+                plan.itemId !== '' ? h('span', { className: 'atw-muted' }, plan.itemId) : null,
+              ),
+        ),
+      )
+
+      if (detail !== null) {
+        sections.push(
+          h(
+            'div',
+            { key: 'member-items', className: 'atw-section' },
+            h('div', { className: 'atw-section-title' }, tr('member.items')),
+            detail.currentItems.length === 0
+              ? h('div', { className: 'atw-muted' }, tr('member.noItems'))
+              : detail.currentItems.map((item, index) =>
+                  h(
+                    'div',
+                    { key: 'member-item-' + index, className: 'atw-member-item' },
+                    h('span', { className: 'atw-card-id' }, item.id),
+                    h('span', { className: 'atw-member-text' }, item.subject),
+                    item.status !== '' ? badge(statusLabel(tr, item.status), statusTone(item.status)) : null,
+                    item.role !== '' ? h('span', { className: 'atw-muted' }, item.role) : null,
+                  ),
+                ),
+          ),
+        )
+        sections.push(
+          h(
+            'div',
+            { key: 'member-activity', className: 'atw-section' },
+            h('div', { className: 'atw-section-title' }, tr('member.activity')),
+            detail.recentActivity.length === 0
+              ? h('div', { className: 'atw-muted' }, tr('member.noActivity'))
+              : detail.recentActivity.map((event, index) =>
+                  h(
+                    'div',
+                    { key: 'member-event-' + index, className: 'atw-member-event' },
+                    h('span', { className: 'atw-muted' }, relativeTime(event.at, view.now, tr)),
+                    h('span', { className: 'atw-muted' }, event.type),
+                    h('span', { className: 'atw-member-text' }, event.detail),
+                  ),
+                ),
+          ),
+        )
+        sections.push(
+          h(
+            'div',
+            { key: 'member-channel', className: 'atw-section' },
+            h('div', { className: 'atw-section-title' }, tr('member.channel')),
+            detail.channel.length === 0
+              ? h('div', { className: 'atw-muted' }, tr('member.noChannel'))
+              : detail.channel.map((entry, index) =>
+                  h(
+                    'div',
+                    { key: 'member-message-' + index, className: 'atw-member-message' },
+                    h(
+                      'div',
+                      { className: 'atw-row' },
+                      badge(channelKindLabel(tr, entry.kind), CHANNEL_KIND_TONES[entry.kind] || 'idle'),
+                      h('span', { className: 'atw-muted' }, entry.from + ' → ' + (entry.to === 'team' || entry.to === '' ? tr('collab.team') : entry.to)),
+                      h('span', { className: 'atw-channel-time' }, relativeTime(entry.at, view.now, tr)),
+                    ),
+                    h('div', { className: 'atw-member-channel-text' }, entry.text),
+                  ),
+                ),
+          ),
+        )
+        sections.push(
+          h(
+            'div',
+            { key: 'member-role-def', className: 'atw-section' },
+            h('div', { className: 'atw-section-title' }, tr('member.roleDefinition')),
+            detail.roleDefinition === null
+              ? h('div', { className: 'atw-muted' }, tr('member.noRoleDefinition'))
+              : h(
+                  'div',
+                  { className: 'atw-member-role' },
+                  detail.roleDefinition.role !== '' ? h('div', { className: 'atw-row' }, badge(detail.roleDefinition.role, 'brand')) : null,
+                  detail.roleDefinition.provider !== '' ? kvRow('member-provider', tr('member.provider'), detail.roleDefinition.provider) : null,
+                  detail.roleDefinition.prompt !== ''
+                    ? h(
+                        'div',
+                        { className: 'atw-member-role' },
+                        h('div', { className: 'atw-kv-key' }, tr('member.prompt')),
+                        h('div', { className: 'atw-member-prompt' }, detail.roleDefinition.prompt),
+                      )
+                    : null,
+                ),
+          ),
+        )
+      }
+
+      if (known) {
+        sections.push(
+          h(
+            'div',
+            { key: 'member-composer', className: 'atw-member-composer' },
+            h('div', { className: 'atw-section-title' }, tr('member.message')),
+            h('input', {
+              className: 'atw-member-input',
+              type: 'text',
+              value: view.memberMessage,
+              placeholder: tr('member.messagePlaceholder'),
+              onChange: (event) => view.actions.setMemberMessage(event && event.target ? event.target.value : ''),
+            }),
+            h(
+              'div',
+              { className: 'atw-row' },
+              h(
+                'button',
+                { className: 'atw-btn atw-member-send', type: 'button', onClick: () => view.actions.sendMemberMessage() },
+                view.memberSendState === 'sending' ? tr('member.sending') : tr('member.send'),
+              ),
+              memberStatusLine(view),
+            ),
+          ),
+        )
+      }
+
+      return h(
+        'aside',
+        { className: 'atw-member', role: 'dialog', 'aria-label': tr('member.title'), 'aria-modal': false },
+        h(
+          'div',
+          { className: 'atw-member-head' },
+          h(
+            'div',
+            { className: 'atw-member-heading' },
+            h('div', { className: 'atw-member-title' }, tr('member.title') + ' · ' + name),
+            h('div', { className: 'atw-muted' }, role),
+          ),
+          h('button', { className: 'atw-btn', type: 'button', onClick: () => view.actions.closeMember() }, tr('member.close')),
+        ),
+        h('div', { className: 'atw-member-body' }, sections),
+      )
+    }
+
     function renderBoard(view, snapshot) {
       const tr = view.tr
       const team = normalizeTeam(snapshot)
@@ -3012,6 +3508,7 @@ window.__ModuleLoader__.load({
       if (run === null) {
         content.push(renderEmptyState(view, team, diagnostics))
         content.push(renderTopologyPanel(view, team, run))
+        if (view.memberName !== null) content.push(renderMemberDrawer(view, team, null))
         const notes = renderDiagnostics(view, diagnostics)
         if (notes !== null) content.push(notes)
         return h('div', { className: 'atw-scroll' }, content)
@@ -3033,6 +3530,7 @@ window.__ModuleLoader__.load({
       const items = normalizeRunItems(run)
       const selected = view.selectedItemId === null ? null : items.find((item) => item.id === view.selectedItemId) || null
       if (selected !== null) content.push(renderDrawer(view, selected, collaboration))
+      if (view.memberName !== null) content.push(renderMemberDrawer(view, team, collaboration))
       return h('div', { className: 'atw-scroll' }, content)
     }
 
@@ -3085,6 +3583,13 @@ window.__ModuleLoader__.load({
       const [filter, setFilter] = React.useState('all')
       const [channelFilter, setChannelFilter] = React.useState('all')
       const [expandedMessages, setExpandedMessages] = React.useState([])
+      const [memberName, setMemberName] = React.useState(null)
+      const [memberView, setMemberView] = React.useState(null)
+      const [memberError, setMemberError] = React.useState(null)
+      const [memberLoading, setMemberLoading] = React.useState(false)
+      const [memberMessage, setMemberMessage] = React.useState('')
+      const [memberSendState, setMemberSendState] = React.useState(null)
+      const [memberReload, setMemberReload] = React.useState(0)
       const [copiedPath, setCopiedPath] = React.useState(null)
 
       /** Newest snapshot, so event handlers never read a stale closure. */
@@ -3094,6 +3599,8 @@ window.__ModuleLoader__.load({
       /** Marker-id seat: stable per mount, unique across mounted boards. */
       const markerRef = React.useRef(null)
       const copyTimerRef = React.useRef(null)
+      /** Guards against a second POST while the first message is in flight. */
+      const memberSendRef = React.useRef(null)
       /** Board root, used to reach the conversation scrollport on mount. */
       const rootRef = React.useRef(null)
       if (markerRef.current === null) markerRef.current = nextMarkerId()
@@ -3191,10 +3698,51 @@ window.__ModuleLoader__.load({
         }
       }, [sessionId, paused])
 
+      // The member view is not part of the snapshot, so it is fetched from the
+      // member route and refreshed on every poll tick while the drawer is open.
       React.useEffect(() => {
-        if (selectedItemId === null) return undefined
+        if (memberName === null || sessionId === '') return undefined
+        let disposed = false
+        setMemberLoading(true)
+        const url = MEMBER_PATH + '?session=' + encodeURIComponent(sessionId) + '&name=' + encodeURIComponent(memberName)
+        fetch(url, { credentials: 'same-origin', headers: { accept: 'application/json' } })
+          .then((response) => {
+            if (!response || response.ok !== true) {
+              throw new Error('HTTP ' + String(response && response.status !== undefined ? response.status : '?'))
+            }
+            return response.json()
+          })
+          .then((data) => {
+            if (disposed) return
+            if (!data || typeof data !== 'object' || data.ok !== true || !isRecord(data.member)) {
+              throw new Error(str(data && data.error, 'member view unavailable'))
+            }
+            setMemberView(normalizeMemberView(data.member))
+            setMemberError(null)
+            setMemberLoading(false)
+          })
+          .catch((cause) => {
+            if (disposed) return
+            if (cause && cause.name === 'AbortError') return
+            setMemberError({ message: messageOf(cause) })
+            setMemberLoading(false)
+          })
+        return () => {
+          disposed = true
+        }
+      }, [memberName, sessionId, lastUpdated, memberReload])
+
+      React.useEffect(() => {
+        if (selectedItemId === null && memberName === null) return undefined
         const onKeyDown = (event) => {
-          if (event && event.key === 'Escape') setSelectedItemId(null)
+          if (!event || event.key !== 'Escape') return
+          setSelectedItemId(null)
+          setMemberName(null)
+          setMemberView(null)
+          setMemberError(null)
+          setMemberLoading(false)
+          setMemberMessage('')
+          setMemberSendState(null)
         }
         if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
           window.addEventListener('keydown', onKeyDown)
@@ -3204,7 +3752,7 @@ window.__ModuleLoader__.load({
             window.removeEventListener('keydown', onKeyDown)
           }
         }
-      }, [selectedItemId])
+      }, [selectedItemId, memberName])
 
       React.useEffect(
         () => () => {
@@ -3221,7 +3769,82 @@ window.__ModuleLoader__.load({
           if (loadRef.current !== null) loadRef.current()
         },
         togglePaused: () => setPaused((value) => !value),
-        toggleItem: (id) => setSelectedItemId((value) => (value === id ? null : id)),
+        toggleItem: (id) => {
+          setSelectedItemId((value) => (value === id ? null : id))
+          setMemberName(null)
+          setMemberView(null)
+          setMemberError(null)
+          setMemberLoading(false)
+        },
+        openMember: (name) => {
+          const value = str(name)
+          if (value === '') return
+          setSelectedItemId(null)
+          setMemberName(value)
+          setMemberView(null)
+          setMemberError(null)
+          setMemberLoading(true)
+          setMemberMessage('')
+          setMemberSendState(null)
+        },
+        closeMember: () => {
+          setMemberName(null)
+          setMemberView(null)
+          setMemberError(null)
+          setMemberLoading(false)
+          setMemberMessage('')
+          setMemberSendState(null)
+        },
+        setMemberMessage: (value) => setMemberMessage(str(value)),
+        sendMemberMessage: () => {
+          const name = memberName
+          const message = str(memberMessage).trim()
+          if (name === null) return
+          // Empty input never reaches the route: it answers 400 by contract.
+          if (message === '') {
+            setMemberSendState({ empty: true })
+            return
+          }
+          if (memberSendRef.current !== null) return
+          memberSendRef.current = true
+          setMemberSendState('sending')
+          const url = MEMBER_PATH + '?session=' + encodeURIComponent(sessionId)
+          fetch(url, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json', accept: 'application/json' },
+            body: JSON.stringify({ name, message }),
+          })
+            .then((response) => {
+              if (response && response.ok === true) return response.json()
+              const status = response && response.status !== undefined ? String(response.status) : '?'
+              if (response && typeof response.json === 'function') {
+                return response.json().then(
+                  (data) => {
+                    throw new Error(str(data && data.error, 'HTTP ' + status))
+                  },
+                  () => {
+                    throw new Error('HTTP ' + status)
+                  },
+                )
+              }
+              throw new Error('HTTP ' + status)
+            })
+            .then((data) => {
+              if (!data || typeof data !== 'object' || data.ok !== true) {
+                throw new Error(str(data && data.error, 'the message was not delivered'))
+              }
+              memberSendRef.current = null
+              setMemberSendState('sent')
+              setMemberMessage('')
+              setMemberReload((value) => value + 1)
+            })
+            .catch((cause) => {
+              memberSendRef.current = null
+              if (cause && cause.name === 'AbortError') return
+              setMemberSendState({ error: messageOf(cause) })
+            })
+        },
         closeItem: () => setSelectedItemId(null),
         setFilter: (value) => setFilter(value),
         setChannelFilter: (value) => setChannelFilter(value),
@@ -3257,6 +3880,12 @@ window.__ModuleLoader__.load({
         filter,
         channelFilter,
         expandedMessages,
+        memberName,
+        memberView,
+        memberError,
+        memberLoading,
+        memberMessage,
+        memberSendState,
         selectedItemId,
         copiedPath,
         lastUpdated,

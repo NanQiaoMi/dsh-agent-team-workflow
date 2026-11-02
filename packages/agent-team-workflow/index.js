@@ -21,19 +21,20 @@ import { createStore } from './lib/store.js'
 import { buildPolicy } from './lib/protocol.js'
 import { buildTools } from './lib/tools.js'
 import { registerDashboardRoute } from './lib/dashboard-route.js'
+import { registerMemberRoute } from './lib/member-route.js'
 
 export const name = 'agent-team-workflow'
 
 /** Services this plugin needs; the plugin stays inactive without Agent Teams. */
 export const inject = ['agents', 'agentTeams', 'tools', 'systemPrompt', 'workingDirectory']
 
-const VERSION = '1.3.1'
+const VERSION = '1.4.0'
 
 /** Shared tool list, built once per plugin instance. */
 export function apply(ctx, config = {}) {
   const settings = resolveSettings(config)
   const store = createStore({ ctx, settings })
-  const tools = buildTools({ ctx, settings, store, version: VERSION })
+  const tools = buildTools({ ctx, settings, store, version: VERSION, tokenUsage: () => tokenUsage })
   const policy = buildPolicy(settings)
   const installed = new Map()
 
@@ -66,10 +67,32 @@ export function apply(ctx, config = {}) {
   // The live board is served through Connection's authenticated Fetch fence.
   // Profiles without a browser surface (headless runs) simply never get the
   // route, and the Host-side workflow keeps working unchanged.
+  // Optional seam: read the token-meter projection when the Host provides it.
+  // A missing service leaves usage unknown instead of failing the plugin.
+  let tokenUsage = () => null
+  ctx.inject(['sessionProjections'], (scope) => {
+    const read = (agent) => {
+      try {
+        const totals = scope.sessionProjections.stateOf(agent.session, 'tokenUsage')
+        return totals === null || totals === undefined ? null : { ...totals }
+      } catch {
+        return null
+      }
+    }
+    tokenUsage = read
+    scope.effect(() => () => {
+      tokenUsage = () => null
+    }, 'agent-team-workflow: token usage seam')
+  })
+
   ctx.inject(['connection'], (scope) => {
     scope.effect(
       () => registerDashboardRoute({ connection: scope.connection, ctx, store, settings }),
       'agent-team-workflow: live board route',
+    )
+    scope.effect(
+      () => registerMemberRoute({ connection: scope.connection, ctx, store, settings }),
+      'agent-team-workflow: member view route',
     )
   })
 

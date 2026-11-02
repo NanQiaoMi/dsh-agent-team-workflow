@@ -148,6 +148,7 @@ const EMPTY_COLLABORATION = Object.freeze({
   pendingReviews: [],
   handoffs: [],
   edges: [],
+  stops: [],
 })
 
 /** Build one blackboard run state the way `createRun` does. */
@@ -1246,4 +1247,17 @@ test('a board without git records yields nulls and never throws', () => {
   assert.equal(snapshot.run.items[0].git, null)
   assert.doesNotThrow(() => buildSnapshot(makeInput(makeState({ git: 'nope', items: [makeItem({ git: 42 })] }), { team: makeTeam() })))
   assert.equal(buildSnapshot(makeInput(makeState({ git: 'nope', items: [makeItem({ git: 42 })] }), { team: makeTeam() })).run.git, null)
+})
+
+test('the snapshot exposes the plan-first record and degrades gracefully', () => {
+  const state = makeState({
+    items: [makeItem({
+      plan: { status: 'pending', steps: ['read', 'write'], files: ['src/a.js'], risks: ['flaky test'], submittedAt: NOW, submittedBy: 'impl', decidedAt: null, decidedBy: null, reason: null },
+    })],
+  })
+  const snapshot = buildSnapshot(makeInput(state, { team: makeTeam() }))
+  assert.equal(snapshot.run.items[0].plan.status, 'pending')
+  assert.deepEqual(snapshot.run.items[0].plan.steps, ['read', 'write'])
+  const broken = buildSnapshot(makeInput(makeState({ items: [makeItem({ plan: { status: 'nope' } })] }), { team: makeTeam() }))
+  assert.equal(broken.run.items[0].plan, null)
 })

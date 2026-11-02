@@ -45,3 +45,30 @@
         # DSH providers used for auto-spawned teammates (native defaults).
         freshProvider: spawn
         forkProvider: fork
+        # Reusable roles: provider picks the model (DSH provider config), prompt
+        # appends domain guidance to that member's brief. Example:
+        # roles:
+        #   security-reviewer:
+        #     provider: review-fast
+        #     prompt: You focus on auth, secrets and injection risks.
+        roles: {}
+        # Lifecycle hooks (exit code 2 vetoes the action; event JSON on stdin).
+        # hooks:
+        #   taskCreated:
+        #     - command: .agentteam/hooks/check-scope.sh
+        #   taskCompleted:
+        #     - command: pnpm -s test
+        #   teammateIdle:
+        #     - command: .agentteam/hooks/idle-check.sh
+        hooks: {}
+        # Plan-first workflow: items must submit a short plan before reporting.
+        planFirst: false
+        # Auto-approve an unreviewed plan (official default), or require a human step.
+        autoApprovePlan: true
+        # Who approves plans: the Lead or the item's first peer reviewer.
+        planApprover: lead
+        # Token budgets (0 = off): gate fails when a member or the run exceeds them.
+        tokenBudgetPerMember: 0
+        tokenBudgetPerRun: 0
+        # Experimental: allow serialized per-item git worktrees (share the repo, one item at a time).
+        worktreeIsolation: false

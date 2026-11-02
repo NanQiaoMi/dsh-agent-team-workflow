@@ -42,6 +42,9 @@
 /** Snapshot schema version; bump only for a breaking shape change. */
 export const SNAPSHOT_VERSION = 2
 
+/** Stop-request states accepted by the snapshot contract. */
+const STOP_STATUSES = new Set(['pending', 'accepted', 'rejected', 'interrupted'])
+
 /** Ceilings that keep one snapshot bounded (see docs/09 §2). */
 const MAX_EVENTS = 200
 const MAX_ITEMS = 64
@@ -429,6 +432,7 @@ function buildItem(raw, id, context) {
     // documented defaults, and only the documented 'member' marker is trusted.
     origin: textOf(raw.origin).trim().toLowerCase() === 'member' ? 'member' : 'plan',
     createdBy: isoOf(raw.createdBy),
+    plan: buildPlan(raw.plan),
     git: buildItemGit(raw.git),
   }
 }
@@ -438,6 +442,26 @@ function buildItem(raw, id, context) {
  * @param raw - raw `item.git`.
  * @returns normalized git record or null.
  */
+function buildPlan(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const status = textOf(raw.status).trim()
+  if (!PLAN_STATUSES.has(status)) return null
+  return {
+    status,
+    steps: textList(raw.steps).slice(0, 40),
+    files: textList(raw.files).slice(0, 40),
+    risks: textList(raw.risks).slice(0, 20),
+    submittedAt: isoOf(raw.submittedAt),
+    submittedBy: textOf(raw.submittedBy) || null,
+    decidedAt: isoOf(raw.decidedAt),
+    decidedBy: textOf(raw.decidedBy) || null,
+    reason: textOf(raw.reason) || null,
+  }
+}
+
+/** Plan-review states accepted by the snapshot contract. */
+const PLAN_STATUSES = new Set(['pending', 'approved', 'rejected'])
+
 function buildItemGit(raw) {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
   const commits = Array.isArray(raw.commits)
@@ -494,6 +518,34 @@ function buildRunGit(raw) {
     mergedInto: textOf(raw.mergedInto) || null,
     mergeMode: textOf(raw.mergeMode) || null,
   }
+}
+
+/**
+ * Aggregate the token-usage snapshot captured at gate time (docs/19 §6).
+ * @param raw - raw `state.usage`.
+ * @returns `{capturedAt, members, totals}` or null.
+ */
+function buildUsage(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const bucket = (value) => {
+    if (value === null || typeof value !== 'object') return null
+    return {
+      uncachedInputTokens: integerOf(value.uncachedInputTokens),
+      outputTokens: integerOf(value.outputTokens),
+      cacheReadTokens: integerOf(value.cacheReadTokens),
+      cacheWriteTokens: integerOf(value.cacheWriteTokens),
+    }
+  }
+  const members = {}
+  if (raw.members !== null && typeof raw.members === 'object' && !Array.isArray(raw.members)) {
+    for (const [name, totals] of Object.entries(raw.members).slice(0, 32)) {
+      const normalized = bucket(totals)
+      if (normalized !== null) members[String(name)] = normalized
+    }
+  }
+  const totals = bucket(raw.totals)
+  if (totals === null && Object.keys(members).length === 0) return null
+  return { capturedAt: isoOf(raw.capturedAt), members, totals }
 }
 
 /**
@@ -1056,7 +1108,17 @@ function buildCollaboration(state, context) {
   if (context.stats.threadClipped > 0) {
     warnings.push(`item threads truncated to the most recent ${MAX_THREAD} message(s) in ${context.stats.threadClipped} item(s)`)
   }
-  return { channel, proposals, openQueue, pendingReviews, handoffs, edges }
+  const stops = recordList(state.stops).slice(-16).map((stop) => ({
+    id: textOf(stop.id) || null,
+    at: isoOf(stop.at),
+    by: textOf(stop.by) || null,
+    target: textOf(stop.target) || null,
+    mode: textOf(stop.mode) === 'interrupt' ? 'interrupt' : 'graceful',
+    status: STOP_STATUSES.has(textOf(stop.status)) ? textOf(stop.status) : 'pending',
+    reason: clip(stop.reason, 400),
+    decidedAt: isoOf(stop.decidedAt),
+  }))
+  return { channel, proposals, openQueue, pendingReviews, handoffs, edges, stops }
 }
 
 /**
@@ -1129,6 +1191,7 @@ function buildRun(state, context) {
     events: buildEvents(state.events, warnings),
     collaboration,
     git: buildRunGit(state.git),
+    usage: buildUsage(state.usage),
     artifacts: buildArtifacts(state.artifacts, context.artifacts),
   }
 }

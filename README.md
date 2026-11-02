@@ -47,6 +47,7 @@
 | [`docs/16-team-autonomy-pr.md`](docs/16-team-autonomy-pr.md) | **团队自建 + PR 标准流程 + 看板降噪**：`autoStaff`/`team_flow_staff`、`team_flow_git`、拓扑与 Git 徽章 |
 | [`docs/17-autonomy-pr-live-run.md`](docs/17-autonomy-pr-live-run.md) | **自治团队 live run**：自动唤醒组队、成员自建 S1、真实 handoff、p1 超时自动裁决、协作噪音观察与修复 |
 | [`docs/18-claude-gap-analysis.md`](docs/18-claude-gap-analysis.md) | **对照正式 Claude Code Agent Teams 的差距清单**：22 维能力矩阵、5 个缺失项/4 个部分项、Wave 1–3 模仿方案与验收 |
+| [`docs/19-wave1-features.md`](docs/19-wave1-features.md) | **v1.4 落地契约**：角色/模型映射、plan-first、生命周期 hooks、优雅关闭、成员面板路由、角色工具限制、worktree 隔离、token 预算 |
 | [`docs/13-collaboration-live-run.md`](docs/13-collaboration-live-run.md) | **对等协作 live run**：3 成员 / 3 开放项 / 8 分钟，抢单、直连问答、提案投票、互邀评审、gate 全记录 + 看板截图 |
 | [`packages/agent-team-workflow/`](packages/agent-team-workflow/) | 可安装插件包（零外部依赖，纯 ESM） |
 
@@ -137,7 +138,7 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 "$NODE" --test test/engine.test.mjs test/tools.integration.test.mjs test/plugin.test.mjs
 ```
 
-168 个用例覆盖：计划校验（自审/环/写范围竞争/成员名/规模）、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类（含空证据、空命令、依赖未批准、评审无证据）、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。详见 [`docs/05-verification.md`](docs/05-verification.md)。
+193 个用例覆盖：计划校验（自审/环/写范围竞争/成员名/规模）、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类（含空证据、空命令、依赖未批准、评审无证据）、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。详见 [`docs/05-verification.md`](docs/05-verification.md)。
 
 **已通过真实 live run 验证**（2026-11-01，重启后）：4 个成员、2 个并行工作项、一次升级仲裁、两轮独立评审、门禁收敛并生成报告——记录与原始证据见 [`docs/08-live-run.md`](docs/08-live-run.md)。
 

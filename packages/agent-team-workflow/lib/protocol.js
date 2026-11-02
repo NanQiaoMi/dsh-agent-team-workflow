@@ -23,6 +23,13 @@ export function roleDuty(role) {
   return ROLE_DUTIES[role] ?? 'Own the assigned item, apply the team protocol, and report verifiable evidence.'
 }
 
+/** Render the role-specific guidance for one member, or an empty string. */
+export function roleGuidance(settings, role) {
+  const def = typeof role === 'string' && role.length > 0 ? settings?.roles?.[role] : undefined
+  if (def === undefined || typeof def.prompt !== 'string' || def.prompt.length === 0) return ''
+  return `\n\n# Role: ${role}\n${def.prompt}`
+}
+
 /**
  * Render the workflow protocol injected into every Team member system prompt.
  * @param settings - effective plugin settings.

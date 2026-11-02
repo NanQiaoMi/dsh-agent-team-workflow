@@ -825,3 +825,74 @@ export async function gitPrMerge(input = {}) {
     return fail(`gitPrMerge failed: ${messageOf(error)}`)
   }
 }
+
+/**
+ * Create one isolated git worktree (docs/19 §6 P1-2).
+ *
+ * Worktrees are the only real isolation git offers without rewriting the
+ * shared checkout; callers serialize item work because members share a cwd.
+ * @param input - `{ cwd, path, branch, startPoint?, exec }`.
+ * @returns `{ ok, path, branch }`.
+ */
+export async function gitWorktreeAdd(input = {}) {
+  try {
+    const cwd = textOf(input.cwd).trim()
+    if (cwd.length === 0) return fail('gitWorktreeAdd needs a cwd (repository path)')
+    const root = await repoRoot(input.exec, cwd)
+    if (root === null) return fail(`"${cwd}" is not a git repository`)
+    const target = textOf(input.path).trim()
+    if (target.length === 0 || target.startsWith('/')) return fail('worktreeAdd needs a relative path')
+    const branch = safeRefName(input.branch)
+    if (branch === null) return fail(`"${textOf(input.branch)}" is not a valid branch name`)
+    const start = textOf(input.startPoint).trim()
+    const args = ['worktree', 'add', '-b', branch, '--', target]
+    if (start.length > 0) args.push(start)
+    const added = await git(input.exec, root, args)
+    if (added.exitCode !== 0) return fail(`worktree add failed: ${tailOf(added.stderr || added.stdout, ERROR_TAIL)}`)
+    return ok({ path: target, branch })
+  } catch (error) {
+    return fail(`gitWorktreeAdd failed: ${messageOf(error)}`)
+  }
+}
+
+/** Remove one worktree (the branch is kept). */
+export async function gitWorktreeRemove(input = {}) {
+  try {
+    const cwd = textOf(input.cwd).trim()
+    if (cwd.length === 0) return fail('gitWorktreeRemove needs a cwd (repository path)')
+    const root = await repoRoot(input.exec, cwd)
+    if (root === null) return fail(`"${cwd}" is not a git repository`)
+    const target = textOf(input.path).trim()
+    if (target.length === 0) return fail('worktreeRemove needs a path')
+    const removed = await git(input.exec, root, ['worktree', 'remove', '--', target])
+    if (removed.exitCode !== 0) return fail(`worktree remove failed: ${tailOf(removed.stderr || removed.stdout, ERROR_TAIL)}`)
+    return ok({ path: target })
+  } catch (error) {
+    return fail(`gitWorktreeRemove failed: ${messageOf(error)}`)
+  }
+}
+
+/** @returns the registered worktrees `{ ok, worktrees: [{path, branch}] }`. */
+export async function gitWorktreeList(input = {}) {
+  try {
+    const cwd = textOf(input.cwd).trim()
+    if (cwd.length === 0) return fail('gitWorktreeList needs a cwd (repository path)')
+    const root = await repoRoot(input.exec, cwd)
+    if (root === null) return fail(`"${cwd}" is not a git repository`)
+    const listed = await git(input.exec, root, ['worktree', 'list', '--porcelain'])
+    if (listed.exitCode !== 0) return fail(`worktree list failed: ${tailOf(listed.stderr || listed.stdout, ERROR_TAIL)}`)
+    const worktrees = []
+    let current = {}
+    for (const line of listed.stdout.split('\n')) {
+      if (line.startsWith('worktree ')) current = { path: line.slice(9).trim(), branch: null }
+      else if (line.startsWith('branch ')) {
+        current.branch = line.slice(7).trim().replace(/^refs\/heads\//, '')
+        worktrees.push(current)
+        current = {}
+      }
+    }
+    return ok({ worktrees })
+  } catch (error) {
+    return fail(`gitWorktreeList failed: ${messageOf(error)}`)
+  }
+}

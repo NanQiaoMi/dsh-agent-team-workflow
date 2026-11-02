@@ -32,6 +32,8 @@ function createHarness(cwd) {
   /** @type {Array<{id: string, revision: number, subject: string, description: string, status: string, ownerId?: string, blockedBy: string[], writeScopes: string[]}>} */
   const tasks = []
   const messages = []
+  const spawns = []
+  const interrupts = []
   let taskNumber = 0
 
   const nameOf = (agent) => [...members].find((member) => member.id === agent.id)?.name
@@ -112,6 +114,10 @@ function createHarness(cwd) {
       if (target.status === 'inactive') target.status = 'running'
       return { messageId: `msg-${messages.length}` }
     },
+    interrupt(caller, targetName) {
+      interrupts.push(targetName)
+      return { previousStatus: 'running' }
+    },
     async spawnTeammate(caller, request) {
       if (caller.id !== lead.id) throw new Error('only the Team Lead can create teammates')
       if (typeof request.provider !== 'string' || request.provider.length === 0) throw new Error('provider is required')
@@ -119,13 +125,17 @@ function createHarness(cwd) {
       const agent = { id: `session-${request.name}`, session: { id: `session-${request.name}` } }
       agents.set(request.name, agent)
       members.push({ name: request.name, role: 'teammate', id: agent.id, status: 'provisioning', context: request.context })
+      spawns.push({ name: request.name, provider: request.provider, context: request.context, prompt: request.prompt?.[0]?.text ?? '' })
       return { member: { name: request.name, id: agent.id, status: 'provisioning' } }
     },
   }
 
   const ctx = {
     logger: { info() {}, warn() {} },
-    agents: { list: () => [...agents.values()] },
+    agents: {
+      list: () => [...agents.values()],
+      get: (id) => [...agents.values()].find((candidate) => candidate.id === id),
+    },
     workingDirectory: { get: () => cwd, defaultDirectory: cwd },
     agentTeams,
   }
@@ -137,7 +147,7 @@ function createHarness(cwd) {
     return agent
   }
 
-  return { ctx, lead, agentTeams, addTeammate, tasks, messages }
+  return { ctx, lead, agentTeams, addTeammate, tasks, messages, spawns, interrupts }
 }
 
 const settings = resolveSettings({})
@@ -168,7 +178,7 @@ test('every tool declares a supported output schema', () => {
   return withWorkspace(async (cwd) => {
     const { ctx } = createHarness(cwd)
     const tools = buildTools({ ctx, settings, store: createStore({ ctx, settings }), version: 'test' })
-    assert.equal(tools.length, 15)
+    assert.equal(tools.length, 17)
     for (const tool of tools) assertSupportedJsonSchema(tool.output.schema)
   })
 })
@@ -1267,5 +1277,258 @@ test('team-wide notices only reach run participants, not the idle roster', () =>
     assert.ok(!posted.includes('idle-one') && !posted.includes('idle-two'), 'idle roster members are not woken')
     assert.equal(typeof idle.id, 'string')
     assert.equal(typeof idle2.id, 'string')
+  })
+})
+
+test('a configured role picks the spawn provider and appends its guidance', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const roleSettings = resolveSettings({
+      roles: {
+        'fast-reviewer': { provider: 'review-fast', prompt: 'Focus on injection, secrets and auth boundaries.' },
+      },
+    })
+    const store = createStore({ ctx: harness.ctx, settings: roleSettings })
+    const tools = buildTools({ ctx: harness.ctx, settings: roleSettings, store, version: 'test' })
+    harness.addTeammate('rev')
+    const plan = await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'Ship a module',
+        acceptance_criteria: ['module works'],
+        items: [{ id: 'W1', subject: 'Implement it', owner: 'impl-new', role: 'fast-reviewer', write_scopes: ['src/'], definition_of_done: ['works'], reviewers: ['rev'] }],
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    assert.deepEqual(plan.staffed.spawned.map((entry) => entry.name), ['impl-new'])
+    const spawn = harness.spawns.find((entry) => entry.name === 'impl-new')
+    assert.equal(spawn.provider, 'review-fast', 'the role provider selects the spawn provider (and thus the model)')
+    assert.match(spawn.prompt, /Focus on injection, secrets and auth boundaries/, 'role guidance is appended to the brief')
+    assert.equal(spawn.context, 'fresh')
+    // The role assignment is frozen into the run and surfaced by the status tool.
+    const status = await byName(tools, 'team_flow_status').execute({}, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assert.equal(status.items[0].role, 'fast-reviewer')
+    const raw = await store.readState(harness.lead)
+    assert.equal(raw.roleAssignments['impl-new'], undefined, 'item roles live on the item; role assignments stay for explicit worker roles')
+  })
+})
+
+test('graceful stop: request, accept and interrupt', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test' })
+    const impl = harness.addTeammate('impl')
+    const rev = harness.addTeammate('rev')
+    await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'Ship a module',
+        acceptance_criteria: ['works'],
+        items: [{ id: 'W1', subject: 'Implement it', owner: 'impl', write_scopes: ['src/'], definition_of_done: ['works'], reviewers: ['rev'] }],
+        auto_spawn: false,
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    const requested = await byName(tools, 'team_flow_stop').execute({ action: 'request', member: 'impl', reason: 'wind down' }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assertOutput(byName(tools, 'team_flow_stop'), requested)
+    assert.equal(requested.stop.status, 'pending')
+    assert.equal(harness.messages.at(-1).to, 'impl')
+    assert.match(harness.messages.at(-1).text, /^\[SHUTDOWN\]/)
+
+    // A member cannot answer a request addressed to someone else.
+    await assert.rejects(
+      () => byName(tools, 'team_flow_stop').execute({ action: 'accept' }, { agent: rev, signal: EXEC_SIGNAL }),
+      /no pending stop request/,
+    )
+    const accepted = await byName(tools, 'team_flow_stop').execute({ action: 'accept' }, { agent: impl, signal: EXEC_SIGNAL })
+    assert.equal(accepted.stop.status, 'accepted')
+    assert.match(harness.messages.at(-1).text, /impl accepted/)
+
+    const forced = await byName(tools, 'team_flow_stop').execute({ action: 'interrupt', member: 'rev', reason: 'stuck' }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assert.equal(forced.stop.status, 'interrupted')
+    assert.equal(forced.stop.mode, 'interrupt')
+    assert.deepEqual(harness.interrupts, ['rev'])
+    const status = await byName(tools, 'team_flow_stop').execute({ action: 'status' }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assert.equal(status.stops.length, 2)
+  })
+})
+
+test('lifecycle hooks can veto item creation, approval and going idle', () => {
+  return withWorkspace(async (cwd) => {
+    const hookSettings = resolveSettings({
+      hooks: { taskCreated: [{ command: 'exit 2' }] },
+    })
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings: hookSettings })
+    const tools = buildTools({ ctx: harness.ctx, settings: hookSettings, store, version: 'test' })
+    harness.addTeammate('impl')
+    harness.addTeammate('rev')
+    await assert.rejects(
+      () => byName(tools, 'team_flow_plan').execute(
+        {
+          objective: 'blocked by hook',
+          acceptance_criteria: ['x'],
+          items: [{ id: 'W1', subject: 'Implement it', owner: 'impl', write_scopes: ['src/'], definition_of_done: ['works'], reviewers: ['rev'] }],
+        },
+        { agent: harness.lead, signal: EXEC_SIGNAL },
+      ),
+      /taskCreated hook blocked/,
+    )
+    assert.equal(await store.readState(harness.lead), null, 'a vetoed plan writes nothing')
+
+    // Approval veto: plan without hooks, then submit with a blocking taskCompleted hook.
+    const okSettings = resolveSettings({})
+    const okStore = createStore({ ctx: harness.ctx, settings: okSettings })
+    const okTools = buildTools({ ctx: harness.ctx, settings: okSettings, store: okStore, version: 'test' })
+    await byName(okTools, 'team_flow_plan').execute(
+      {
+        objective: 'ship',
+        acceptance_criteria: ['works'],
+        items: [{ id: 'W1', subject: 'Implement it', owner: 'impl', write_scopes: ['src/'], definition_of_done: ['works'], reviewers: ['rev'] }],
+        auto_spawn: false,
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    await byName(okTools, 'team_flow_report').execute(
+      { item_id: 'W1', summary: 'done', files: ['src/x.js'], commands: [{ command: 'true', exit_code: 0 }], evidence: ['ran it'], open_questions: [], risks: [] },
+      { agent: harness.addTeammate('impl'), signal: EXEC_SIGNAL },
+    )
+    // Swap in a blocking hook by rewriting the run settings, then approve.
+    await okStore.mutateState(harness.lead, (state) => {
+      state.settings.hooks = { taskCreated: [], taskCompleted: [{ command: 'echo "tests not green" >&2; exit 2' }], teammateIdle: [] }
+      return state
+    })
+    const reviewer = harness.addTeammate('rev')
+    await assert.rejects(
+      () => byName(okTools, 'team_flow_review_submit').execute(
+        { item_id: 'W1', verdict: 'approve', summary: 'looks good', findings: [], evidence_checked: ['read src/x.js'] },
+        { agent: reviewer, signal: EXEC_SIGNAL },
+      ),
+      /taskCompleted hook blocked/,
+    )
+    const state = await okStore.readState(harness.lead)
+    assert.notEqual(state.items[0].status, 'approved', 'the vetoed approval did not land')
+
+    // Idle veto: a stop request cannot be accepted while the idle hook blocks.
+    await okStore.mutateState(harness.lead, (current) => {
+      current.settings.hooks = { taskCreated: [], taskCompleted: [], teammateIdle: [{ command: 'exit 2' }] }
+      return current
+    })
+    await byName(okTools, 'team_flow_stop').execute({ action: 'request', member: 'rev' }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    await assert.rejects(
+      () => byName(okTools, 'team_flow_stop').execute({ action: 'accept' }, { agent: reviewer, signal: EXEC_SIGNAL }),
+      /teammateIdle hook blocked/,
+    )
+    const after = await okStore.readState(harness.lead)
+    assert.equal(after.stops[0].status, 'pending', 'the member stays running and can retry')
+  })
+})
+
+test('plan-first: submit, block, approve, then report', () => {
+  return withWorkspace(async (cwd) => {
+    const planSettings = resolveSettings({ planFirst: true, autoApprovePlan: false, planApprover: 'lead' })
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings: planSettings })
+    const tools = buildTools({ ctx: harness.ctx, settings: planSettings, store, version: 'test' })
+    const impl = harness.addTeammate('impl')
+    const rev = harness.addTeammate('rev')
+    await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'ship',
+        acceptance_criteria: ['works'],
+        items: [{ id: 'W1', subject: 'Implement it', owner: 'impl', write_scopes: ['src/'], definition_of_done: ['works'], reviewers: ['rev'] }],
+        auto_spawn: false,
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    const reportArgs = { item_id: 'W1', summary: 'done', files: ['src/x.js'], commands: [{ command: 'true', exit_code: 0 }], evidence: ['ran it'], open_questions: [], risks: [] }
+    await assert.rejects(
+      () => byName(tools, 'team_flow_report').execute(reportArgs, { agent: impl, signal: EXEC_SIGNAL }),
+      /plan-first/,
+    )
+    const submitted = await byName(tools, 'team_flow_plan_approval').execute(
+      { action: 'submit', item_id: 'W1', plan: { steps: ['read', 'implement', 'test'], files: ['src/x.js'], risks: ['none'] } },
+      { agent: impl, signal: EXEC_SIGNAL },
+    )
+    assertOutput(byName(tools, 'team_flow_plan_approval'), submitted)
+    assert.equal(submitted.plan.status, 'pending')
+    const blockedStatus = await byName(tools, 'team_flow_status').execute({}, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assert.ok(blockedStatus.next_actions.some((action) => action.includes('Plans awaiting approval')), 'the Lead is told a plan awaits approval')
+    const approved = await byName(tools, 'team_flow_plan_approval').execute({ action: 'approve', item_id: 'W1' }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assert.equal(approved.plan.status, 'approved')
+    const reported = await byName(tools, 'team_flow_report').execute(reportArgs, { agent: impl, signal: EXEC_SIGNAL })
+    assert.equal(reported.status, 'in_review')
+  })
+})
+
+test('a role can deny specific workflow actions', () => {
+  return withWorkspace(async (cwd) => {
+    const roleSettings = resolveSettings({ roles: { auditor: { deny: ['team_flow_report', 'team_flow_item'] } } })
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings: roleSettings })
+    const tools = buildTools({ ctx: harness.ctx, settings: roleSettings, store, version: 'test' })
+    const impl = harness.addTeammate('impl')
+    const rev = harness.addTeammate('rev')
+    await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'audit',
+        acceptance_criteria: ['audited'],
+        items: [{ id: 'W1', subject: 'Audit it', owner: 'impl', role: 'auditor', write_scopes: ['src/'], definition_of_done: ['audited'], reviewers: ['rev'] }],
+        workers: [{ name: 'impl', role: 'auditor' }],
+        auto_spawn: false,
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    await assert.rejects(
+      () => byName(tools, 'team_flow_report').execute(
+        { item_id: 'W1', summary: 'done', files: ['src/x.js'], commands: [{ command: 'true', exit_code: 0 }], evidence: ['x'], open_questions: [], risks: [] },
+        { agent: impl, signal: EXEC_SIGNAL },
+      ),
+      /role "auditor" may not use team_flow_report/,
+    )
+    await assert.rejects(
+      () => byName(tools, 'team_flow_item').execute(
+        { action: 'create', subject: 'extra', write_scopes: ['src/extra.js'], definition_of_done: ['works'] },
+        { agent: impl, signal: EXEC_SIGNAL },
+      ),
+      /role "auditor" may not use team_flow_item/,
+    )
+    // The reviewer role is unrestricted.
+    const status = await byName(tools, 'team_flow_status').execute({}, { agent: rev, signal: EXEC_SIGNAL })
+    assert.equal(status.run_id !== undefined || status.phase !== undefined, true)
+  })
+})
+
+test('the gate captures token usage and enforces budgets', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const budgetSettings = resolveSettings({ tokenBudgetPerMember: 100 })
+    const store = createStore({ ctx: harness.ctx, settings: budgetSettings })
+    const usage = (agent) => (agent?.id === 'session-impl' ? { uncachedInputTokens: 300, outputTokens: 250, cacheReadTokens: 0, cacheWriteTokens: 0 } : { uncachedInputTokens: 10, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0 })
+    const tools = buildTools({ ctx: harness.ctx, settings: budgetSettings, store, version: 'test', tokenUsage: () => usage })
+    const impl = harness.addTeammate('impl')
+    const rev = harness.addTeammate('rev')
+    await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'ship',
+        acceptance_criteria: ['works'],
+        items: [{ id: 'W1', subject: 'Implement it', owner: 'impl', write_scopes: ['src/'], definition_of_done: ['works'], reviewers: ['rev'] }],
+        auto_spawn: false,
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    await byName(tools, 'team_flow_report').execute(
+      { item_id: 'W1', summary: 'done', files: ['src/x.js'], commands: [{ command: 'true', exit_code: 0 }], evidence: ['ran'], open_questions: [], risks: [] },
+      { agent: impl, signal: EXEC_SIGNAL },
+    )
+    await byName(tools, 'team_flow_review_submit').execute(
+      { item_id: 'W1', verdict: 'approve', summary: 'ok', findings: [], evidence_checked: ['read it'] },
+      { agent: rev, signal: EXEC_SIGNAL },
+    )
+    const gate = await byName(tools, 'team_flow_gate').execute({ finalize: false }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assert.equal(gate.pass, false)
+    assert.ok(gate.team_failures.some((failure) => failure.includes('used 550 tokens')), 'the per-member budget failure is reported')
+    const state = await store.readState(harness.lead)
+    assert.equal(state.usage.members.impl.outputTokens, 250)
+    assert.equal(state.usage.totals.outputTokens, 270)
   })
 })

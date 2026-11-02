@@ -9,6 +9,7 @@
 
 import { runSettings } from './config.js'
 import * as G from './git.js'
+import { fireHooks } from './hooks.js'
 import * as W from './workflow.js'
 import {
   approvedMessage,
@@ -17,6 +18,7 @@ import {
   renderReportMarkdown,
   renderReviewerBrief,
   renderWorkerBrief,
+  roleGuidance,
   reviewRequestMessage,
 } from './protocol.js'
 
@@ -191,6 +193,53 @@ function audienceFor(state, callerName) {
   return [...names]
 }
 
+
+/**
+ * Fire one lifecycle hook set and throw a readable error when it vetoes.
+ * Hooks receive the event payload as JSON on stdin; exit code 2 blocks.
+ */
+async function runHook(event, payload, { agent, settings, store }) {
+  const handlers = settings.hooks?.[event] ?? []
+  if (handlers.length === 0) return
+  let cwd = process.cwd()
+  try {
+    cwd = store.workingDir(agent)
+  } catch {
+    /* fall back to the process cwd when the workspace cannot resolve */
+  }
+  const outcome = await fireHooks({ handlers, event, payload, cwd, env: process.env })
+  if (!outcome.blocked) return
+  const last = outcome.results.at(-1)
+  throw new Error(`${event} hook blocked the action: ${last?.command ?? ''}${last?.output ? `: ${last.output}` : ''}`)
+}
+
+
+/**
+ * Reject a workflow action the caller's role denies (docs/19 §6).
+ *
+ * This is a workflow-level guard, not a filesystem sandbox: DSH still owns the
+ * session's real permissions. A member with no configured role is never
+ * restricted.
+ */
+function assertRoleAllowed(settings, state, memberName, toolName, action) {
+  if (state === null || state === undefined) return
+  const roles = settings.roles ?? {}
+  const explicit = state.roleAssignments?.[memberName]
+  let role = typeof explicit === 'string' && roles[explicit] !== undefined ? explicit : undefined
+  if (role === undefined) {
+    const ownedRoles = new Set(
+      (Array.isArray(state.items) ? state.items : [])
+        .filter((item) => item.owner === memberName && typeof item.role === 'string' && roles[item.role] !== undefined)
+        .map((item) => item.role),
+    )
+    if (ownedRoles.size === 1) role = [...ownedRoles][0]
+  }
+  if (role === undefined) return
+  const deny = Array.isArray(roles[role].deny) ? roles[role].deny : []
+  const denied = deny.includes(toolName) || (typeof action === 'string' && deny.includes(`${toolName}:${action}`))
+  if (denied) throw new Error(`role "${role}" may not use ${toolName}${typeof action === 'string' ? ` ${action}` : ''} (see roles.${role}.deny in the plugin config)`)
+}
+
 /** @returns whether one member name is currently in the roster. */
 function isLiveMember(ctx, agent, name) {
   try {
@@ -291,6 +340,7 @@ function normalizeItem(raw, index) {
     reportedAt: null,
     approvedAt: null,
     approvedBy: null,
+    planFirst: raw?.planFirst === true,
   }
 }
 
@@ -324,7 +374,7 @@ function reportView(item) {
  * @param options - `{ ctx, settings, store, version }`.
  * @returns array of ToolDefinition-compatible objects.
  */
-export function buildTools({ ctx, settings, store, version }) {
+export function buildTools({ ctx, settings, store, version, tokenUsage = () => null }) {
   const definitions = [
     // ---------------------------------------------------------------- plan
     {
@@ -358,7 +408,16 @@ export function buildTools({ ctx, settings, store, version }) {
             },
             description: 'Work items; each becomes one shared Team task plus one owner brief (or an open-queue entry a peer claims).',
           },
-          workers: { type: 'array', items: { type: 'string' }, description: 'Teammate names to spawn as the claim pool for assignment:"open" items; the plan returns ready-made queue prompts.' },
+          workers: {
+            type: 'array',
+            items: {
+              anyOf: [
+                { type: 'string' },
+                { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string' } }, required: ['name'] },
+              ],
+            },
+            description: 'Workers for the open-queue pool: a member name, or {name, role} to pick a configured role (provider/model + role prompt).',
+          },
           replace: { type: 'boolean', description: 'Archive the existing run and start a new one.' },
         },
         required: ['objective', 'acceptance_criteria', 'items'],
@@ -385,16 +444,44 @@ export function buildTools({ ctx, settings, store, version }) {
         const now = new Date().toISOString()
         const rawItems = Array.isArray(args.items) ? args.items : []
         const items = rawItems.map((raw, index) => normalizeItem(raw, index))
-        const poolNames = Array.isArray(args.workers) ? args.workers.map((name) => String(name).trim()).filter(Boolean) : []
-        for (const name of poolNames) assertMemberName(name, 'workers[]')
-        if (new Set(poolNames).size !== poolNames.length) throw new Error('workers repeats a member name')
+        const roleAssignments = {}
+        const poolNames = []
+        const poolEntries = (Array.isArray(args.workers) ? args.workers : []).map((entry) => {
+          const name = typeof entry === 'string' ? entry.trim() : typeof entry?.name === 'string' ? entry.name.trim() : ''
+          const role = typeof entry === 'object' && entry !== null && typeof entry.role === 'string' ? entry.role.trim() : ''
+          if (name.length === 0) throw new Error('workers[] entries need a member name')
+          assertMemberName(name, 'workers[]')
+          if (role.length > 0) {
+            if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(role)) throw new Error(`worker role "${role}" is not lower-kebab-case`)
+            if (settings.roles[role] === undefined) throw new Error(`unknown role "${role}"; configure it under roles in the plugin config`)
+            roleAssignments[name] = role
+          }
+          return { name, role }
+        })
+        for (const entry of poolEntries) {
+          if (!poolNames.includes(entry.name)) poolNames.push(entry.name)
+        }
+        if (poolEntries.filter((entry) => entry.name.length > 0).length !== new Set(poolEntries.map((entry) => entry.name)).size) {
+          throw new Error('workers repeats a member name')
+        }
+        const providerFor = (role) => {
+          const configured = typeof role === 'string' && role.length > 0 ? settings.roles[role]?.provider : undefined
+          return typeof configured === 'string' && configured.length > 0 ? configured : settings.freshProvider
+        }
+        const effective = runSettings(settings)
+        for (const item of items) {
+          await runHook('taskCreated', {
+            item: { id: item.id, subject: item.subject, role: item.role, owner: item.owner ?? null, assignment: item.assignment, writeScopes: item.writeScopes },
+            objective: String(args.objective ?? ''),
+            actor: membership.name,
+          }, { agent, settings: effective, store })
+        }
         const plan = {
           objective: String(args.objective ?? '').trim(),
           acceptanceCriteria: (Array.isArray(args.acceptance_criteria) ? args.acceptance_criteria : []).map((entry) => String(entry).trim()).filter(Boolean),
           constraints: (Array.isArray(args.constraints) ? args.constraints : []).map((entry) => String(entry).trim()).filter(Boolean),
           items,
         }
-        const effective = runSettings(settings)
         const validation = W.validatePlan(plan, effective)
         if (validation.errors.length > 0) {
           throw new Error(`the plan violates the workflow rules:\n- ${validation.errors.join('\n- ')}`)
@@ -497,11 +584,28 @@ export function buildTools({ ctx, settings, store, version }) {
         const workerSpawn = assignedItems.map((item) => {
           const reviewing = items.filter((other) => other.reviewers.includes(item.owner)).map((other) => other.id)
           const brief = renderWorkerBrief(state, item, reviewing, settings.workerContext)
-          return { kind: 'worker', item_id: item.id, name: brief.name, description: brief.description, context: brief.context, prompt: brief.prompt }
+          const role = roleAssignments[item.owner] ?? (settings.roles[item.role] === undefined ? '' : item.role)
+          return {
+            kind: 'worker',
+            item_id: item.id,
+            name: brief.name,
+            description: brief.description,
+            context: brief.context,
+            provider: providerFor(role),
+            prompt: brief.prompt + roleGuidance(settings, role),
+          }
         })
-        const queueSpawn = openItems.length === 0 ? [] : poolNames.map((name) => {
-          const brief = renderQueueBrief(state, name, openItems)
-          return { kind: 'worker-pool', name: brief.name, description: brief.description, context: brief.context, prompt: brief.prompt }
+        const queueSpawn = openItems.length === 0 ? [] : poolEntries.map((entry) => {
+          const brief = renderQueueBrief(state, entry.name, openItems)
+          const role = roleAssignments[entry.name] ?? entry.role ?? ''
+          return {
+            kind: 'worker-pool',
+            name: brief.name,
+            description: brief.description,
+            context: brief.context,
+            provider: providerFor(role),
+            prompt: brief.prompt + roleGuidance(settings, role),
+          }
         })
         const allReviewers = W.collectReviewers(items)
         const reviewerSpawn = allReviewers
@@ -509,7 +613,16 @@ export function buildTools({ ctx, settings, store, version }) {
           .map((reviewer) => {
             const reviewed = items.filter((item) => item.reviewers.includes(reviewer))
             const brief = renderReviewerBrief(state, reviewer, reviewed)
-            return { kind: 'reviewer', reviews: reviewed.map((item) => item.id), name: brief.name, description: brief.description, context: brief.context, prompt: brief.prompt }
+            const role = roleAssignments[reviewer] ?? (settings.roles.reviewer === undefined ? '' : 'reviewer')
+            return {
+              kind: 'reviewer',
+              reviews: reviewed.map((item) => item.id),
+              name: brief.name,
+              description: brief.description,
+              context: brief.context,
+              provider: providerFor(role),
+              prompt: brief.prompt + roleGuidance(settings, role),
+            }
           })
         const autoSpawn = args.auto_spawn === undefined ? settings.autoStaff === true : args.auto_spawn === true
         const staffInputs = [
@@ -614,6 +727,13 @@ export function buildTools({ ctx, settings, store, version }) {
             role: member.role,
             status: member.status,
             context: member.context,
+            agent: (() => {
+              try {
+                return ctx.agents.get(member.id)
+              } catch {
+                return undefined
+              }
+            })(),
           }))
         } catch {
           members = []
@@ -735,6 +855,7 @@ export function buildTools({ ctx, settings, store, version }) {
         const state = await store.mutateState(agent, (current) => {
           if (current === null) throw new Error('no workflow run exists yet; the Lead must call team_flow_plan first')
           requireWritableRun(current, 'team_flow_report')
+          assertRoleAllowed(settings, current, membership.name, 'team_flow_report')
           const item = W.findItem(current, String(args.item_id ?? ''))
           if (item.owner !== membership.name) {
             throw new Error(`item "${item.id}" belongs to "${item.owner}"; only its owner may report it. If the owner is stuck, message it or escalate.`)
@@ -851,7 +972,7 @@ export function buildTools({ ctx, settings, store, version }) {
         }
         if (!W.VERDICTS.includes(args.verdict)) throw new Error(`verdict must be one of ${W.VERDICTS.join('/')}`)
         let outcome = null
-        const state = await store.mutateState(agent, (current) => {
+        const state = await store.mutateState(agent, async (current) => {
           if (current === null) throw new Error('no workflow run exists yet')
           requireWritableRun(current, 'team_flow_review_submit')
           const item = W.findItem(current, String(args.item_id ?? ''))
@@ -866,6 +987,13 @@ export function buildTools({ ctx, settings, store, version }) {
               'an approving verdict must declare what you actually inspected in evidence_checked (read the files, re-run a command, or quote the evidence you checked)',
               'WORKFLOW_REVIEW_EVIDENCE_REQUIRED',
             )
+          }
+          if (W.isApproving(args.verdict)) {
+            await runHook('taskCompleted', {
+              item: { id: item.id, subject: item.subject, owner: item.owner, writeScopes: item.writeScopes, status: item.status },
+              verdict: args.verdict,
+              reviewer: membership.name,
+            }, { agent, settings: current.settings, store })
           }
           outcome = W.applyReviewSubmit(current, {
             itemId: item.id,
@@ -976,7 +1104,7 @@ export function buildTools({ ctx, settings, store, version }) {
           }
         }
         let outcome = null
-        const state = await store.mutateState(agent, (current) => {
+        const state = await store.mutateState(agent, async (current) => {
           if (current === null) throw new Error('no workflow run exists yet')
           requireWritableRun(current, 'team_flow_review_respond')
           const item = W.findItem(current, String(args.item_id ?? ''))
@@ -1078,7 +1206,19 @@ export function buildTools({ ctx, settings, store, version }) {
           nativeTasks = []
         }
         try {
-          members = ctx.agentTeams.listMembers(agent).map((member) => ({ name: member.name, role: member.role, status: member.status, context: member.context }))
+          members = ctx.agentTeams.listMembers(agent).map((member) => ({
+            name: member.name,
+            role: member.role,
+            status: member.status,
+            context: member.context,
+            agent: (() => {
+              try {
+                return ctx.agents.get(member.id)
+              } catch {
+                return undefined
+              }
+            })(),
+          }))
         } catch {
           members = []
         }
@@ -1088,7 +1228,34 @@ export function buildTools({ ctx, settings, store, version }) {
         const state = await store.mutateState(agent, async (current) => {
           if (current === null) throw new Error('no workflow run exists yet')
           for (const override of overrides) W.findItem(current, override.itemId)
+          // Capture token usage (when the Host exposes the token-meter projection)
+          // so the gate can enforce budgets and the board can show real numbers.
+          const usage = { capturedAt: now, members: {}, totals: { uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 } }
+          const readUsage = tokenUsage?.()
+          for (const member of members) {
+            if (typeof readUsage !== 'function') break
+            const totals = readUsage(member.agent)
+            if (totals === null || totals === undefined) continue
+            usage.members[member.name] = totals
+            for (const key of Object.keys(usage.totals)) usage.totals[key] += Number.isFinite(totals[key]) ? totals[key] : 0
+          }
+          current.usage = usage
           gate = W.evaluateGates(current, { settings: current.settings, members, nativeTasks, overrides, now })
+          const tokenTotal = (totals) => ['uncachedInputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'].reduce((sum, key) => sum + (Number.isFinite(totals?.[key]) ? totals[key] : 0), 0)
+          const budget = { perMember: current.settings.tokenBudgetPerMember, perRun: current.settings.tokenBudgetPerRun }
+          if (budget.perMember > 0) {
+            for (const [name, totals] of Object.entries(usage.members)) {
+              const used = tokenTotal(totals)
+              if (used > budget.perMember) {
+                gate.pass = false
+                gate.teamFailures.push(`member "${name}" used ${used} tokens (budget ${budget.perMember})`)
+              }
+            }
+          }
+          if (budget.perRun > 0 && tokenTotal(usage.totals) > budget.perRun) {
+            gate.pass = false
+            gate.teamFailures.push(`run used ${tokenTotal(usage.totals)} tokens (budget ${budget.perRun})`)
+          }
           if (args.finalize === true && gate.pass) {
             for (const override of overrides) {
               const item = W.findItem(current, override.itemId)
@@ -1193,7 +1360,7 @@ export function buildTools({ ctx, settings, store, version }) {
           requireLead(membership, 'team_flow_escalate (resolve mode)')
           const resolution = String(args.resolution ?? '').trim()
           if (resolution.length === 0) throw new Error('resolving an escalation requires a resolution text recording the decision')
-          const state = await store.mutateState(agent, (current) => {
+          const state = await store.mutateState(agent, async (current) => {
             if (current === null) throw new Error('no workflow run exists yet')
             W.resolveEscalation(current, { escalationId: String(args.escalation_id), resolution, actor: membership.name, now })
             return current
@@ -1207,7 +1374,7 @@ export function buildTools({ ctx, settings, store, version }) {
         if (subject.length === 0) throw new Error('a new escalation needs a subject')
         const detail = String(args.detail ?? '').trim()
         let escalation = null
-        const state = await store.mutateState(agent, (current) => {
+        const state = await store.mutateState(agent, async (current) => {
           if (current === null) throw new Error('no workflow run exists yet')
           requireWritableRun(current, 'team_flow_escalate')
           const item = args.item_id === undefined ? null : W.findItem(current, String(args.item_id))
@@ -1281,7 +1448,7 @@ export function buildTools({ ctx, settings, store, version }) {
         const reason = String(args.reason ?? '').trim()
         if (reason.length === 0) throw new Error('every repair needs a reason; it is recorded in the audit trail')
         let outcome = null
-        const state = await store.mutateState(agent, (current) => {
+        const state = await store.mutateState(agent, async (current) => {
           if (current === null) throw new Error('no workflow run exists yet')
           requireWritableRun(current, 'team_flow_repair')
           const item = W.findItem(current, String(args.item_id ?? ''))
@@ -1422,21 +1589,32 @@ export function buildTools({ ctx, settings, store, version }) {
           : state.items.filter((item) => item.status !== W.ITEM_STATUS.APPROVED).map((item) => item.id)
         const targets = requested.map((id) => W.findItem(state, id))
         const entries = []
+        const providerFor = (role) => {
+          const configured = typeof role === 'string' && role.length > 0 ? settings.roles[role]?.provider : undefined
+          return typeof configured === 'string' && configured.length > 0 ? configured : settings.freshProvider
+        }
+        const roleOf = (name, fallback) => state.roleAssignments?.[name] ?? (settings.roles[fallback] === undefined ? '' : fallback)
         for (const item of targets) {
           if (typeof item.owner === 'string' && item.owner.length > 0) {
             const reviewing = state.items.filter((other) => other.reviewers.includes(item.owner)).map((other) => other.id)
-            entries.push({ ...renderWorkerBrief(state, item, reviewing, state.settings.workerContext), kind: 'worker' })
+            const role = roleOf(item.owner, item.role)
+            const brief = renderWorkerBrief(state, item, reviewing, state.settings.workerContext)
+            entries.push({ ...brief, kind: 'worker', provider: providerFor(role), prompt: brief.prompt + roleGuidance(settings, role) })
           }
           for (const reviewer of item.reviewers) {
             const reviewed = state.items.filter((other) => other.reviewers.includes(reviewer))
-            entries.push({ ...renderReviewerBrief(state, reviewer, reviewed), kind: 'reviewer' })
+            const role = roleOf(reviewer, 'reviewer')
+            const brief = renderReviewerBrief(state, reviewer, reviewed)
+            entries.push({ ...brief, kind: 'reviewer', provider: providerFor(role), prompt: brief.prompt + roleGuidance(settings, role) })
           }
         }
         const pool = Array.isArray(state.staffPool) ? state.staffPool : []
         const openItems = state.items.filter((item) => item.assignment === 'open' && (typeof item.owner !== 'string' || item.owner.length === 0))
         for (const name of pool) {
           if (openItems.length === 0) break
-          entries.push({ ...renderQueueBrief(state, name, openItems, state.settings.workerContext), kind: 'worker-pool' })
+          const role = state.roleAssignments?.[name] ?? ''
+          const brief = renderQueueBrief(state, name, openItems, state.settings.workerContext)
+          entries.push({ ...brief, kind: 'worker-pool', provider: providerFor(role), prompt: brief.prompt + roleGuidance(settings, role) })
         }
         const staffed = await staffEntries({ ctx, agent, entries, settings, signal: exec.signal })
         const warnings = staffed.failed.map((entry) => `${entry.name}: ${entry.error}`)
@@ -1456,7 +1634,7 @@ export function buildTools({ ctx, settings, store, version }) {
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['status', 'prepare', 'commit', 'verify', 'push', 'pr', 'review', 'merge'], description: 'Git/PR action.' },
+          action: { type: 'string', enum: ['status', 'prepare', 'commit', 'verify', 'push', 'pr', 'review', 'merge', 'worktree_add', 'worktree_remove', 'worktree_list'], description: 'Git/PR action.' },
           item_id: { type: 'string', description: 'Work item id for commit/verify/review/merge (status/pr may omit).' },
           message: { type: 'string', description: 'commit: optional commit message; merge: merge message.' },
           files: { type: 'array', items: { type: 'string' }, description: 'commit: explicit files; defaults to the report files.' },
@@ -1491,6 +1669,7 @@ export function buildTools({ ctx, settings, store, version }) {
         W.ensureCollaboration(state)
         const cwd = store.workingDir(agent)
         const warnings = []
+        assertRoleAllowed(settings, state, membership.name, 'team_flow_git', action)
         const requireItem = () => {
           if (typeof args.item_id !== 'string' || args.item_id.length === 0) throw new Error(`team_flow_git ${action} needs item_id`)
           return W.findItem(state, args.item_id)
@@ -1507,6 +1686,39 @@ export function buildTools({ ctx, settings, store, version }) {
             item_git: state.items.map((item) => ({ item_id: item.id, owner: item.owner ?? null, git: item.git ?? null })),
             warnings,
           }
+        }
+        if (action === 'worktree_list') {
+          const result = await G.gitWorktreeList({ cwd })
+          if (result.ok !== true) throw new Error(`worktree list failed: ${result.error}`)
+          return { action, detail: result, warnings }
+        }
+        if (action === 'worktree_add' || action === 'worktree_remove') {
+          requireLead(membership, `team_flow_git ${action}`)
+          const target = requireItem()
+          const vs = state.settings
+          if (vs.worktreeIsolation !== true) throw new Error('worktree isolation is disabled; set worktreeIsolation: true in the plugin config')
+          const path = `.agentteam/worktrees/${target.id}`.replace(/[^A-Za-z0-9._/-]+/g, '-')
+          if (action === 'worktree_add') {
+            const result = await G.gitWorktreeAdd({ cwd, path, branch: `agentteam-wt/${state.runId}/${target.id}`.replace(/[^A-Za-z0-9._/-]+/g, '-') })
+            if (result.ok !== true) throw new Error(`worktree add failed: ${result.error}`)
+            await store.mutateState(agent, (current) => {
+              W.ensureCollaboration(current)
+              const item = W.findItem(current, target.id)
+              item.git = { ...(item.git ?? {}), worktree: result.path, worktreeBranch: result.branch }
+              W.appendEvent(current, { at: new Date().toISOString(), type: 'git/worktree', actor: membership.name, detail: `${item.id} ${result.path}` })
+              return current
+            })
+            return { action, item_id: target.id, detail: result, warnings }
+          }
+          const result = await G.gitWorktreeRemove({ cwd, path })
+          if (result.ok !== true) throw new Error(`worktree remove failed: ${result.error}`)
+          await store.mutateState(agent, (current) => {
+            W.ensureCollaboration(current)
+            const item = W.findItem(current, target.id)
+            item.git = { ...(item.git ?? {}), worktree: null, worktreeBranch: null }
+            return current
+          })
+          return { action, item_id: target.id, detail: result, warnings }
         }
         if (action === 'prepare') {
           requireLead(membership, 'team_flow_git prepare')
@@ -1661,6 +1873,171 @@ export function buildTools({ ctx, settings, store, version }) {
         throw new Error(`unknown team_flow_git action "${action}"`)
       },
     },
+
+    {
+      name: 'team_flow_stop',
+      description:
+        'Graceful shutdown protocol. The Lead requests a teammate stop (the teammate accepts or rejects with a reason) or escalates to an interrupt; any member can answer a pending stop request addressed to it. status lists recent stop records.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['request', 'accept', 'reject', 'interrupt', 'status'], description: 'Stop action.' },
+          member: { type: 'string', description: 'request/interrupt: teammate name to stop.' },
+          reason: { type: 'string', description: 'Optional reason shown to the member (request/interrupt) or to the Lead (accept/reject).' },
+          stop_id: { type: 'string', description: 'interrupt: optional stop record id to escalate; defaults to the newest open record for the member.' },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+      output: jsonOutput({
+        type: 'object',
+        properties: {
+          action: { type: 'string' },
+          stop: {},
+          stops: { type: 'array', items: {} },
+          warnings: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['action'],
+      }),
+      async execute(args, exec) {
+        const { agent, membership } = resolveCaller(ctx, exec, 'team_flow_stop')
+        const action = String(args.action ?? '')
+        const now = new Date().toISOString()
+        const warnings = []
+        if (action === 'status') {
+          const state = await requireRun(store, agent, 'team_flow_stop')
+          W.ensureCollaboration(state)
+          return { action, stops: (state.stops ?? []).slice(-16), warnings }
+        }
+        if (action === 'request' || action === 'interrupt') {
+          requireLead(membership, `team_flow_stop ${action}`)
+          const target = String(args.member ?? '').trim()
+          if (target.length === 0) throw new Error(`team_flow_stop ${action} needs member`)
+          let record = null
+          await store.mutateState(agent, async (current) => {
+            if (current === null) throw new Error('no workflow run exists yet')
+            W.ensureCollaboration(current)
+            if (action === 'interrupt') {
+              const open = (current.stops ?? []).filter((stop) => stop.target === target && stop.status !== 'rejected' && stop.status !== 'interrupted').at(-1)
+              record = open === undefined
+                ? W.requestStop(current, { by: membership.name, target, mode: 'interrupt', reason: args.reason, now })
+                : W.escalateStopToInterrupt(current, { stopId: open.id, by: membership.name, now })
+            } else {
+              record = W.requestStop(current, { by: membership.name, target, mode: 'graceful', reason: args.reason, now })
+            }
+            return current
+          })
+          if (action === 'interrupt') {
+            try {
+              ctx.agentTeams.interrupt(agent, target)
+            } catch (error) {
+              warnings.push(`interrupt failed: ${error instanceof Error ? error.message : String(error)}`)
+            }
+            return { action, stop: record, warnings }
+          }
+          const failure = await sendPeer(ctx, agent, target, `[SHUTDOWN] The Lead asks you to stop${typeof args.reason === 'string' && args.reason.trim().length > 0 ? `: ${args.reason.trim()}` : '.'}\nAccept with team_flow_stop {action:"accept", reason?} or reject with {action:"reject", reason:"why you should continue"}. Finish the current tool call safely before accepting.`, exec.signal)
+          if (failure !== null) warnings.push(failure)
+          return { action, stop: record, warnings }
+        }
+        if (action === 'accept' || action === 'reject') {
+          let record = null
+          await store.mutateState(agent, async (current) => {
+            if (current === null) throw new Error('no workflow run exists yet')
+            W.ensureCollaboration(current)
+            if (action === 'accept') {
+              await runHook('teammateIdle', {
+                member: membership.name,
+                stopId: W.pendingStopFor(current, membership.name)?.id ?? null,
+                reason: typeof args.reason === 'string' ? args.reason : null,
+              }, { agent, settings: current.settings, store })
+            }
+            record = W.respondStop(current, { by: membership.name, accept: action === 'accept', reason: args.reason, now })
+            return current
+          })
+          const failure = await sendPeer(ctx, agent, 'lead', `[SHUTDOWN] ${membership.name} ${action === 'accept' ? 'accepted' : 'rejected'} the stop request${typeof args.reason === 'string' && args.reason.trim().length > 0 ? `: ${args.reason.trim()}` : '.'}`, exec.signal)
+          if (failure !== null) warnings.push(failure)
+          return { action, stop: record, warnings }
+        }
+        throw new Error(`unknown team_flow_stop action "${action}"`)
+      },
+    },
+
+    {
+      name: 'team_flow_plan_approval',
+      description:
+        'Plan-first workflow: the item owner submits a short implementation plan (steps/files/risks); the Lead (or the first peer reviewer when planApprover is "peer") approves or rejects it. With autoApprovePlan the plan is approved immediately, matching the official "lead did not review it" default.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['submit', 'approve', 'reject', 'status'], description: 'Plan action.' },
+          item_id: { type: 'string', description: 'Work item id.' },
+          plan: {
+            type: 'object',
+            properties: {
+              steps: { type: 'array', items: { type: 'string' }, description: 'Ordered implementation steps (at least one).' },
+              files: { type: 'array', items: { type: 'string' }, description: 'Files the plan expects to touch.' },
+              risks: { type: 'array', items: { type: 'string' }, description: 'Known risks or open questions.' },
+            },
+            description: 'submit: the plan itself.',
+          },
+          reason: { type: 'string', description: 'reject: why the plan was sent back; approve: optional note.' },
+        },
+        required: ['action', 'item_id'],
+        additionalProperties: false,
+      },
+      output: jsonOutput({
+        type: 'object',
+        properties: {
+          action: { type: 'string' },
+          item_id: { type: 'string' },
+          plan: {},
+          warnings: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['action', 'item_id'],
+      }),
+      async execute(args, exec) {
+        const { agent, membership } = resolveCaller(ctx, exec, 'team_flow_plan_approval')
+        const action = String(args.action ?? '')
+        const itemId = String(args.item_id ?? '')
+        const now = new Date().toISOString()
+        const warnings = []
+        if (action === 'status') {
+          const state = await requireRun(store, agent, 'team_flow_plan_approval')
+          const item = W.findItem(state, itemId)
+          return { action, item_id: item.id, plan: item.plan ?? null, warnings }
+        }
+        let plan = null
+        await store.mutateState(agent, (current) => {
+          if (current === null) throw new Error('no workflow run exists yet')
+          requireWritableRun(current, 'team_flow_plan_approval')
+          if (action === 'submit') {
+            plan = W.submitPlan(current, {
+              itemId,
+              by: membership.name,
+              plan: args.plan,
+              autoApprove: current.settings.autoApprovePlan === true,
+              now,
+            })
+            return current
+          }
+          if (action === 'approve' || action === 'reject') {
+            const item = W.findItem(current, itemId)
+            const approver = current.settings.planApprover === 'peer' ? item.reviewers[0] ?? 'lead' : 'lead'
+            if (membership.role !== 'lead' && membership.name !== approver) {
+              throw new Error(`item "${item.id}" plans are approved by "${approver}", not "${membership.name}"`)
+            }
+            plan = W.decidePlan(current, { itemId: item.id, by: membership.name, accept: action === 'approve', reason: args.reason, now })
+            return current
+          }
+          throw new Error(`unknown team_flow_plan_approval action "${action}"`)
+        })
+        if (action === 'submit' && plan !== null && plan.status === 'pending') {
+          const failure = await sendPeer(ctx, agent, 'lead', `[PLAN] ${membership.name} submitted a plan for ${itemId}: ${plan.steps.length} step(s); approve with team_flow_plan_approval {action:"approve", item_id:"${itemId}"}.`, exec.signal)
+          if (failure !== null) warnings.push(failure)
+        }
+        return { action, item_id: itemId, plan, warnings }
+      },
+    },
     {
       name: 'team_flow_item',
       description:
@@ -1710,6 +2087,7 @@ export function buildTools({ ctx, settings, store, version }) {
         await store.mutateState(agent, async (current) => {
           if (current === null) throw new Error('no workflow run exists yet; the Lead must call team_flow_plan first')
           requireWritableRun(current, 'team_flow_item')
+          assertRoleAllowed(settings, current, membership.name, 'team_flow_item')
           const taskIdByItem = new Map(current.items.filter((candidate) => typeof candidate.taskId === 'string').map((candidate) => [candidate.id, candidate.taskId]))
           const blockedByTasks = (Array.isArray(args.blocked_by) ? args.blocked_by : [])
             .map((blocker) => taskIdByItem.get(String(blocker)))
@@ -1730,6 +2108,11 @@ export function buildTools({ ctx, settings, store, version }) {
             maxItems: settings.maxItems,
             allowScopeOverlap: current.settings?.allowScopeOverlap,
           })
+          await runHook('taskCreated', {
+            item: { id: item.id, subject: item.subject, role: item.role, owner: item.owner === '' ? null : item.owner, assignment: item.assignment, writeScopes: item.writeScopes },
+            objective: current.objective,
+            actor: membership.name,
+          }, { agent, settings: current.settings, store })
           try {
             const task = await ctx.agentTeams.createTask(agent, {
               subject: item.subject.slice(0, 200),
@@ -1748,6 +2131,9 @@ export function buildTools({ ctx, settings, store, version }) {
             }
           } catch (error) {
             warnings.push(`backing Team task not created: ${error instanceof Error ? error.message : String(error)}`)
+          }
+          if (typeof item.owner === 'string' && item.owner.length > 0 && typeof item.role === 'string' && item.role.length > 0) {
+            current.roleAssignments = { ...(current.roleAssignments ?? {}), [item.owner]: current.roleAssignments?.[item.owner] ?? item.role }
           }
           return current
         })

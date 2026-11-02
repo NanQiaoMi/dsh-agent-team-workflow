@@ -54,6 +54,31 @@ export const DEFAULT_SETTINGS = Object.freeze({
   freshProvider: 'spawn',
   /** DSH provider name used when spawning a teammate that inherits the Lead. */
   forkProvider: 'fork',
+  /**
+   * Reusable role definitions: `{ name: { provider?, prompt? } }`.
+   * A role selects the DSH provider used to spawn that member (DSH picks the
+   * model from the provider configuration) and appends a domain prompt to the
+   * member's brief.
+   */
+  roles: {},
+  /**
+   * Lifecycle hooks: `{ taskCreated: [], taskCompleted: [], teammateIdle: [] }`
+   * where every handler is `{ command, timeoutMs?, cwd? }`. Exit code 2 vetoes
+   * the action; the event JSON arrives on stdin.
+   */
+  hooks: {},
+  /** Require a short implementation plan (and its approval) before work starts. */
+  planFirst: false,
+  /** Auto-approve a submitted plan when nobody reviews it (official default). */
+  autoApprovePlan: true,
+  /** Who approves plans: the Lead or the item's first peer reviewer. */
+  planApprover: 'lead',
+  /** Token budget per member for the whole run; 0 disables the check. */
+  tokenBudgetPerMember: 0,
+  /** Token budget for the whole run; 0 disables the check. */
+  tokenBudgetPerRun: 0,
+  /** Allow serialized git worktrees per item (experimental isolation). */
+  worktreeIsolation: false,
 })
 
 function clampInt(value, fallback, min, max) {
@@ -63,6 +88,50 @@ function clampInt(value, fallback, min, max) {
   if (rounded < min) return min
   if (rounded > max) return max
   return rounded
+}
+
+function readHooks(value) {
+  const safe = { taskCreated: [], taskCompleted: [], teammateIdle: [] }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return safe
+  for (const event of Object.keys(safe)) {
+    const handlers = Array.isArray(value[event]) ? value[event] : []
+    for (const handler of handlers) {
+      const command = readString(handler?.command, '', 4000)
+      if (command.length === 0) continue
+      const entry = { command }
+      if (Number.isInteger(handler?.timeoutMs)) entry.timeoutMs = handler.timeoutMs
+      const cwd = readString(handler?.cwd, '', 1024)
+      if (cwd.length > 0) entry.cwd = cwd
+      safe[event].push(entry)
+      if (safe[event].length >= 8) break
+    }
+  }
+  return safe
+}
+
+function readRoles(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {}
+  const roles = {}
+  for (const [rawName, rawRole] of Object.entries(value)) {
+    const name = String(rawName).trim().toLowerCase()
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) continue
+    if (rawRole === null || typeof rawRole !== 'object') continue
+    const role = {}
+    const provider = readString(rawRole.provider, '', 200)
+    if (provider.length > 0) role.provider = provider
+    const prompt = readString(rawRole.prompt, '', 4000)
+    if (prompt.length > 0) role.prompt = prompt
+    if (Array.isArray(rawRole.deny)) {
+      const deny = rawRole.deny
+        .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+        .filter((entry) => /^[a-z_]+(:[a-z_]+)?$/.test(entry))
+        .slice(0, 24)
+      if (deny.length > 0) role.deny = deny
+    }
+    if (Object.keys(role).length > 0) roles[name] = role
+    if (Object.keys(roles).length >= 32) break
+  }
+  return roles
 }
 
 function readCommands(value) {
@@ -114,6 +183,14 @@ export function resolveSettings(raw = {}) {
     gitRequireVerify: readBool(config.gitRequireVerify, DEFAULT_SETTINGS.gitRequireVerify),
     freshProvider: readString(config.freshProvider, DEFAULT_SETTINGS.freshProvider, 200),
     forkProvider: readString(config.forkProvider, DEFAULT_SETTINGS.forkProvider, 200),
+    roles: readRoles(config.roles),
+    hooks: readHooks(config.hooks),
+    planFirst: readBool(config.planFirst, DEFAULT_SETTINGS.planFirst),
+    autoApprovePlan: readBool(config.autoApprovePlan, DEFAULT_SETTINGS.autoApprovePlan),
+    planApprover: readString(config.planApprover, DEFAULT_SETTINGS.planApprover, 16) === 'peer' ? 'peer' : 'lead',
+    tokenBudgetPerMember: clampInt(config.tokenBudgetPerMember, DEFAULT_SETTINGS.tokenBudgetPerMember, 0, 1_000_000_000),
+    tokenBudgetPerRun: clampInt(config.tokenBudgetPerRun, DEFAULT_SETTINGS.tokenBudgetPerRun, 0, 1_000_000_000),
+    worktreeIsolation: readBool(config.worktreeIsolation, DEFAULT_SETTINGS.worktreeIsolation),
   })
 }
 
@@ -141,5 +218,13 @@ export function runSettings(settings) {
     gitRequireVerify: settings.gitRequireVerify,
     freshProvider: settings.freshProvider,
     forkProvider: settings.forkProvider,
+    roles: { ...settings.roles },
+    hooks: { taskCreated: [...settings.hooks.taskCreated], taskCompleted: [...settings.hooks.taskCompleted], teammateIdle: [...settings.hooks.teammateIdle] },
+    planFirst: settings.planFirst,
+    autoApprovePlan: settings.autoApprovePlan,
+    planApprover: settings.planApprover,
+    tokenBudgetPerMember: settings.tokenBudgetPerMember,
+    tokenBudgetPerRun: settings.tokenBudgetPerRun,
+    worktreeIsolation: settings.worktreeIsolation,
   }
 }

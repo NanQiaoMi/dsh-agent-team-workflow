@@ -57,6 +57,12 @@ export const CHANNEL_LIMIT = 200
 /** Proposal length cap. */
 export const PROPOSAL_LIMIT = 100
 
+/** Plan-review states (workflow v1.4). */
+export const PLAN_STATUS = Object.freeze({ pending: 'pending', approved: 'approved', rejected: 'rejected' })
+
+/** Stop-request states (workflow v1.4). */
+export const STOP_STATUS = Object.freeze({ pending: 'pending', accepted: 'accepted', rejected: 'rejected', interrupted: 'interrupted' })
+
 /** Default claim lease in minutes (advisory; the engine never force-releases). */
 export const DEFAULT_LEASE_MINUTES = 30
 
@@ -79,7 +85,10 @@ export function ensureCollaboration(state) {
   if (!Array.isArray(state.channel)) state.channel = []
   if (!Array.isArray(state.proposals)) state.proposals = []
   if (!Array.isArray(state.staffPool)) state.staffPool = []
+  if (state.roleAssignments === null || typeof state.roleAssignments !== 'object' || Array.isArray(state.roleAssignments)) state.roleAssignments = {}
   if (state.git === undefined) state.git = null
+  if (!Array.isArray(state.stops)) state.stops = []
+  if (!Number.isInteger(state.stopSeq)) state.stopSeq = 0
   if (!Number.isInteger(state.messageSeq)) state.messageSeq = 0
   if (!Number.isInteger(state.proposalSeq)) state.proposalSeq = 0
   if (Array.isArray(state.items)) {
@@ -92,6 +101,7 @@ export function ensureCollaboration(state) {
       if (item.origin !== 'member') item.origin = 'plan'
       if (item.createdBy === undefined) item.createdBy = null
       if (item.git === undefined) item.git = null
+      if (item.plan === undefined) item.plan = null
     }
   }
   for (const proposal of Array.isArray(state.proposals) ? state.proposals : []) {
@@ -194,6 +204,9 @@ export function createRun(input) {
     channel: [],
     proposals: [],
     staffPool: [],
+    roleAssignments: input.roleAssignments ?? {},
+    stops: [],
+    stopSeq: 0,
     git: null,
     messageSeq: 0,
     proposalSeq: 0,
@@ -480,6 +493,12 @@ export function applyReport(state, input) {
   const item = findItem(state, input.itemId)
   const now = input.now
   const report = input.report
+  if (planPending(state, item)) {
+    throw new WorkflowError(
+      `item "${item.id}" is plan-first: submit a plan with team_flow_plan_approval and get it approved before reporting`,
+      'WORKFLOW_PLAN_REQUIRED',
+    )
+  }
   const open = unresolvedFindings(item)
   if (open.length > 0) {
     const ids = open.map((entry) => entry.finding.id).join(', ')
@@ -807,6 +826,7 @@ export function evaluateGates(state, input) {
     if (item.needsReview !== false && item.reviewers.length === 0) {
       failures.push('no peer reviewer was ever assigned; the owner must invite one with team_flow_work {action:"request_review"}')
     }
+    if (planPending(state, item)) failures.push('plan-first item has no approved plan')
     if (input.settings.gitRequireVerify === true) {
       const git = item.git ?? null
       if (git === null || git.verify === null || git.verify === undefined) failures.push('git verification missing (gitRequireVerify is on)')
@@ -984,6 +1004,10 @@ export function nextActions(state, input) {
     if (waitingReviewers.length > 0) {
       actions.push(`These reported items still need a peer reviewer: ${waitingReviewers.map((item) => item.id).join(', ')}. Their owners should invite one; if they are inactive, ask a peer to team_flow_work {action:"take_review"}.`)
     }
+    const pendingPlans = state.items.filter((item) => item.plan !== null && item.plan.status === 'pending')
+    if (pendingPlans.length > 0) {
+      actions.push(`Plans awaiting approval: ${pendingPlans.map((item) => item.id).join(', ')}. Approve with team_flow_plan_approval {action:"approve", item_id:"<id>"} or reject with a reason.`)
+    }
     const openProposalList = state.proposals.filter((proposal) => proposal.status === 'open')
     if (openProposalList.length > 0) {
       actions.push(`Open proposals: ${openProposalList.map((proposal) => `${proposal.id}(${proposal.kind})`).join(', ')}. Let affected peers vote with team_flow_decide {action:"vote"}; arbitrate only ties or deadlocks.`)
@@ -995,6 +1019,15 @@ export function nextActions(state, input) {
 
   const owned = state.items.filter((item) => item.owner === me)
   for (const item of owned) {
+    if (planPending(state, item)) {
+      const plan = item.plan
+      if (plan !== null && plan.status === 'pending') {
+        actions.push(`${item.id}: your plan is waiting for approval; do not start implementing until it is approved.`)
+      } else {
+        actions.push(`${item.id} is plan-first: submit a plan with team_flow_plan_approval {action:"submit", item_id:"${item.id}", plan:{steps:[...]}} and wait for approval before doing the work.`)
+      }
+      continue
+    }
     if (item.status === ITEM_STATUS.PENDING || item.status === ITEM_STATUS.RUNNING) {
       actions.push(`Do ${item.id} ("${item.subject}") inside ${item.writeScopes.length > 0 ? item.writeScopes.join(', ') : 'no declared scope'}; then call team_flow_report with files and verification commands.`)
     } else if (item.status === ITEM_STATUS.CHANGES_REQUESTED) {
@@ -1080,6 +1113,7 @@ export function buildStatus(state, input) {
       override: item.overrideReason ?? null,
       assignment: item.assignment ?? 'lead',
       claim: item.claim ?? null,
+      plan: item.plan ?? null,
       git: item.git ?? null,
       pending_reviewer: pending?.reviewer ?? item.pendingReviewer ?? null,
       review_requests: item.reviewRequests ?? [],
@@ -1128,6 +1162,7 @@ export function buildStatus(state, input) {
       created_by: escalation.createdBy,
     })),
     git: state.git ?? null,
+    usage: state.usage ?? null,
     team: members,
     collaboration: (() => {
       const summary = collaborationSummary(state, { me: me.name, role: input.role, members: input.members ?? [] })
@@ -1579,6 +1614,141 @@ function nextMemberItemId(state) {
   }
 }
 
+
+
+// ---------------------------------------------------------------------------
+// Plan-first workflow (workflow v1.4)
+// ---------------------------------------------------------------------------
+
+/** @returns whether the item must submit a plan and have it approved first. */
+export function requiresPlan(state, item) {
+  return item.planFirst === true || state.settings?.planFirst === true
+}
+
+/** @returns whether the item is still missing an approved plan. */
+export function planPending(state, item) {
+  return requiresPlan(state, item) && (item.plan === null || item.plan.status !== PLAN_STATUS.approved)
+}
+
+/**
+ * Submit a short implementation plan for one item.
+ * @param state - run state (mutated).
+ * @param input - `{ itemId, by, plan: {steps, files, risks}, now, autoApprove }`.
+ */
+export function submitPlan(state, input) {
+  ensureCollaboration(state)
+  const now = input.now ?? new Date().toISOString()
+  const item = findItem(state, input.itemId)
+  if (!requiresPlan(state, item)) throw new WorkflowError(`item "${item.id}" does not require a plan`, 'WORKFLOW_PLAN_NOT_REQUIRED')
+  if (item.owner !== input.by) throw new WorkflowError(`only the owner of "${item.id}" may submit its plan`, 'WORKFLOW_PLAN_OWNER_REQUIRED')
+  const steps = (Array.isArray(input.plan?.steps) ? input.plan.steps : []).map((step) => String(step).trim()).filter((step) => step.length > 0).slice(0, 40)
+  if (steps.length === 0) throw new WorkflowError('a plan needs at least one step', 'WORKFLOW_PLAN_STEPS_REQUIRED')
+  const files = (Array.isArray(input.plan?.files) ? input.plan.files : []).map((file) => String(file).trim()).filter((file) => file.length > 0).slice(0, 40)
+  const risks = (Array.isArray(input.plan?.risks) ? input.plan.risks : []).map((risk) => String(risk).trim()).filter((risk) => risk.length > 0).slice(0, 20)
+  const autoApprove = input.autoApprove === true
+  item.plan = {
+    steps,
+    files,
+    risks,
+    submittedAt: now,
+    submittedBy: input.by,
+    status: autoApprove ? PLAN_STATUS.approved : PLAN_STATUS.pending,
+    decidedAt: autoApprove ? now : null,
+    decidedBy: autoApprove ? 'auto' : null,
+    reason: null,
+  }
+  item.updatedAt = now
+  appendEvent(state, { at: now, type: `plan/${item.plan.status}`, actor: input.by, detail: `${item.id}${autoApprove ? ' (auto-approved)' : ''}` })
+  postChannelMessage(state, { from: input.by, to: autoApprove ? 'team' : 'lead', kind: 'status', text: `plan ${item.plan.status} for ${item.id}: ${steps.length} step(s)${autoApprove ? ' (auto-approved)' : ', waiting for approval'}`, itemId: item.id, now })
+  return item.plan
+}
+
+/** Approve or reject a pending plan. */
+export function decidePlan(state, input) {
+  ensureCollaboration(state)
+  const now = input.now ?? new Date().toISOString()
+  const item = findItem(state, input.itemId)
+  if (item.plan === null || item.plan.status !== PLAN_STATUS.pending) throw new WorkflowError(`item "${item.id}" has no pending plan`, 'WORKFLOW_PLAN_NONE')
+  item.plan.status = input.accept === true ? PLAN_STATUS.approved : PLAN_STATUS.rejected
+  item.plan.decidedAt = now
+  item.plan.decidedBy = input.by
+  item.plan.reason = typeof input.reason === 'string' && input.reason.trim().length > 0 ? input.reason.trim().slice(0, 2000) : null
+  item.updatedAt = now
+  appendEvent(state, { at: now, type: `plan/${item.plan.status}`, actor: input.by, detail: item.id })
+  postChannelMessage(state, { from: input.by, to: item.owner, kind: 'status', text: `plan ${item.plan.status} for ${item.id}${item.plan.reason === null ? '' : `: ${item.plan.reason}`}`, itemId: item.id, now })
+  return item.plan
+}
+
+// ---------------------------------------------------------------------------
+// Graceful shutdown protocol (workflow v1.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Ask one member to stop. The Leader only records the request here; the tool
+ * layer delivers it and the transport may interrupt after a rejection.
+ * @returns the stop record.
+ */
+export function requestStop(state, input) {
+  ensureCollaboration(state)
+  const now = input.now ?? new Date().toISOString()
+  const target = String(input.target ?? '').trim()
+  if (target.length === 0 || target === 'lead') throw new WorkflowError('a stop request needs a teammate name (not the Lead)', 'WORKFLOW_STOP_TARGET_REQUIRED')
+  const existing = state.stops.find((stop) => stop.target === target && (stop.status === STOP_STATUS.pending || stop.status === STOP_STATUS.accepted))
+  if (existing !== undefined) throw new WorkflowError(`a stop request for "${target}" is already ${existing.status}`, 'WORKFLOW_STOP_EXISTS')
+  const mode = input.mode === 'interrupt' ? 'interrupt' : 'graceful'
+  state.stopSeq += 1
+  const record = {
+    id: `stop${state.stopSeq}`,
+    at: now,
+    by: input.by,
+    target,
+    mode,
+    reason: typeof input.reason === 'string' && input.reason.trim().length > 0 ? input.reason.trim().slice(0, 1000) : null,
+    status: mode === 'interrupt' ? STOP_STATUS.interrupted : STOP_STATUS.pending,
+    decidedAt: mode === 'interrupt' ? now : null,
+    decisionReason: null,
+  }
+  state.stops.push(record)
+  appendEvent(state, { at: now, type: `stop/${record.status}`, actor: input.by, detail: `${target} (${mode})` })
+  postChannelMessage(state, { from: input.by, to: target, kind: 'status', text: `[SHUTDOWN] ${mode === 'interrupt' ? 'interrupted' : 'requested'} ${target}${record.reason === null ? '' : `: ${record.reason}`}`, now })
+  return record
+}
+
+/** Answer a pending stop request addressed to the caller. */
+export function respondStop(state, input) {
+  ensureCollaboration(state)
+  const now = input.now ?? new Date().toISOString()
+  const by = String(input.by ?? '')
+  const record = state.stops.find((stop) => stop.target === by && stop.status === STOP_STATUS.pending)
+  if (record === undefined) throw new WorkflowError(`no pending stop request for "${by}"`, 'WORKFLOW_STOP_NONE')
+  record.status = input.accept === true ? STOP_STATUS.accepted : STOP_STATUS.rejected
+  record.decidedAt = now
+  record.decisionReason = typeof input.reason === 'string' && input.reason.trim().length > 0 ? input.reason.trim().slice(0, 1000) : null
+  appendEvent(state, { at: now, type: `stop/${record.status}`, actor: by, detail: record.id })
+  postChannelMessage(state, { from: by, to: 'lead', kind: 'status', text: `[SHUTDOWN] ${record.status} ${record.id}${record.decisionReason === null ? '' : `: ${record.decisionReason}`}`, now })
+  return record
+}
+
+/** Escalate one accepted/pending stop to an interrupt after the member failed to stop. */
+export function escalateStopToInterrupt(state, input) {
+  ensureCollaboration(state)
+  const now = input.now ?? new Date().toISOString()
+  const record = state.stops.find((stop) => stop.id === input.stopId)
+  if (record === undefined) throw new WorkflowError(`unknown stop request "${input.stopId}"`, 'WORKFLOW_STOP_UNKNOWN')
+  if (record.status === STOP_STATUS.interrupted) return record
+  record.status = STOP_STATUS.interrupted
+  record.mode = 'interrupt'
+  record.decidedAt = now
+  appendEvent(state, { at: now, type: 'stop/interrupted', actor: input.by, detail: record.target })
+  return record
+}
+
+/** @returns the pending stop record for one member, or null. */
+export function pendingStopFor(state, name) {
+  ensureCollaboration(state)
+  return state.stops.find((stop) => stop.target === name && stop.status === STOP_STATUS.pending) ?? null
+}
+
 /**
  * Let one member add a new work item to the live run.
  *
@@ -1636,6 +1806,8 @@ export function createItem(state, input) {
     blockedBy,
     definitionOfDone,
     needsReview: input.needsReview !== false,
+    planFirst: input.planFirst === true,
+    plan: null,
     reviewers,
     evidenceOptional: input.evidenceOptional === true,
     status: ITEM_STATUS.PENDING,

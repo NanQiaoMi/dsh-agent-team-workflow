@@ -513,7 +513,7 @@ function createMountRuntime() {
  * @returns `{ tree, copyKeys, keydown, render, dispose }` while the globals stay
  *   stubbed; call `dispose()` (in a `finally`) to restore them.
  */
-async function mountBoard(snapshot) {
+async function mountBoard(snapshot, options = {}) {
   const runtime = createMountRuntime()
   const keydown = []
   const copyKeys = []
@@ -550,7 +550,25 @@ async function mountBoard(snapshot) {
     writable: true,
     value: { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} },
   })
-  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => snapshot })
+  // Every request is recorded so tests can assert the member route contract
+  // (GET member view, POST message) instead of guessing from rendered state.
+  const requests = []
+  const memberOption = options !== null && typeof options === 'object' ? options.member : undefined
+  globalThis.fetch = async (url, init) => {
+    const target = String(url)
+    const method = init && typeof init.method === 'string' ? init.method : 'GET'
+    const body = init && typeof init.body === 'string' ? init.body : null
+    requests.push({ url: target, method, body })
+    if (target.indexOf('/api/agent-team-workflow.member') !== -1) {
+      const reply = typeof memberOption === 'function' ? memberOption({ url: target, method, body }) : memberOption
+      if (reply === undefined || reply === null) {
+        return { ok: false, status: 404, json: async () => ({ ok: false, error: 'no member route' }) }
+      }
+      const status = typeof reply.status === 'number' ? reply.status : 200
+      return { ok: status >= 200 && status < 300, status, json: async () => reply.body }
+    }
+    return { ok: true, status: 200, json: async () => snapshot }
+  }
   // The board keeps a 1200ms poll; tests drive refreshes explicitly instead.
   globalThis.setInterval = () => 0
   globalThis.clearInterval = () => {}
@@ -598,7 +616,7 @@ async function mountBoard(snapshot) {
     return rendered
   }
   const render = () => runtime.render(component, { sessionId: 'session-1', t })
-  return { ...restored, render, copyKeys, keydown }
+  return { ...restored, render, copyKeys, keydown, requests }
 }
 
 /** Depth-first collect every element matching a predicate. */
@@ -1477,5 +1495,275 @@ test('docs/17 density: idle excludes the Lead, the flow panel is 520px, cards cl
     assert.equal(children[children.length - 1], flags, 'the flags row is the last card row (bottom-anchored)')
   } finally {
     dense.dispose()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// v1.4 member panel, plan-first and graceful-stop (docs/19 §4/§5)
+// ---------------------------------------------------------------------------
+
+/** Build one member-route GET payload with sensible defaults. */
+function memberPayload(overrides = {}) {
+  return {
+    ok: true,
+    member: {
+      name: 'impl-a',
+      role: 'implementer',
+      status: 'running',
+      context: 'fresh',
+      currentItems: [],
+      recentActivity: [],
+      channel: [],
+      stop: null,
+      plan: null,
+      roleDefinition: null,
+      ...overrides,
+    },
+  }
+}
+
+/** @returns the rendered topology node for one member name. */
+function findMemberNode(tree, name) {
+  return findByClass(tree, 'atw-node--member').find((element) => textOf(element).includes(name))
+}
+
+test('docs/19 member drawer: opens from a topology node and renders the member payload', async () => {
+  const payload = memberPayload({
+    name: 'impl-a',
+    currentItems: [{ id: 'W1', subject: 'v1 item', status: 'in_review', role: 'implementer' }],
+    recentActivity: [{ at: '2026-11-02T00:00:20.000Z', type: 'report/submitted', detail: 'W1' }],
+    channel: [{ id: 'm9', at: '2026-11-02T00:00:21.000Z', from: 'impl-a', to: 'rev-b', kind: 'answer', text: 'contract is X', item_id: 'W1' }],
+    stop: { id: 'stop1', status: 'pending', at: '2026-11-02T00:00:22.000Z' },
+    plan: { itemId: 'W1', status: 'pending' },
+    roleDefinition: { role: 'implementer', provider: 'review-fast', prompt: 'You focus on auth and injection risks.' },
+  })
+  const snapshot = withSnapshot({
+    run: {
+      collaboration: {
+        ...V2_SNAPSHOT.run.collaboration,
+        stops: [{ id: 'stop1', at: '2026-11-02T00:00:22.000Z', by: 'lead', target: 'impl-a', mode: 'graceful', status: 'pending', reason: 'round finished', decidedAt: null }],
+      },
+    },
+  })
+  const board = await mountBoard(snapshot, { member: () => ({ status: 200, body: payload }) })
+  try {
+    let tree = await board.render()
+    assert.equal(findByClass(tree, 'atw-node-stop').length, 1, 'a pending stop paints one warn dot on the topology')
+    assert.ok(String(findByClass(tree, 'atw-node-stop')[0].props.title).includes('k:member.stop.pending'))
+    findMemberNode(tree, 'impl-a').props.onClick()
+    tree = await board.render()
+    const drawers = findByClass(tree, 'atw-member')
+    assert.equal(drawers.length, 1, 'the member drawer opens')
+    const text = textOf(drawers[0])
+    for (const needle of [
+      'k:member.title',
+      'impl-a',
+      'k:member.role',
+      'k:member.status',
+      'k:member.items',
+      'W1',
+      'k:member.activity',
+      'report/submitted',
+      'k:member.channel',
+      'contract is X',
+      'k:member.roleDefinition',
+      'review-fast',
+      'You focus on auth and injection risks.',
+      'k:member.plan',
+      'k:plan.pending',
+      'k:member.stopState',
+      'k:member.stop.pending',
+    ]) {
+      assert.ok(text.includes(needle), 'member drawer is missing ' + needle)
+    }
+    assert.equal(findByClass(tree, 'atw-member-input').length, 1, 'the composer input renders')
+    assert.equal(findByClass(tree, 'atw-member-send').length, 1, 'the send button renders')
+    assert.match(source, /\.atw-member-channel-text\{[^}]*-webkit-line-clamp:3/, 'related channel bodies clamp at three lines')
+    const gets = board.requests.filter((entry) => entry.url.indexOf('/api/agent-team-workflow.member') !== -1 && entry.method === 'GET')
+    assert.equal(gets.length, 1, 'the drawer fetches the member route once per open')
+    assert.ok(gets[0].url.includes('session=session-1'), 'the route carries the session id')
+    assert.ok(gets[0].url.includes('name=impl-a'), 'the route carries the member name')
+
+    // A poll tick refreshes the open drawer: the header refresh forces the next
+    // snapshot, and the member effect keys on `lastUpdated`.
+    findButtonByText(tree, 'k:header.refresh').props.onClick()
+    tree = await board.render()
+    const refetched = board.requests.filter((entry) => entry.url.indexOf('/api/agent-team-workflow.member') !== -1 && entry.method === 'GET')
+    assert.equal(refetched.length, 2, 'an open drawer refetches the member view on the next tick')
+  } finally {
+    board.dispose()
+  }
+
+  // The empty-state member rows are click targets too (same open action).
+  const emptyBoard = await mountBoard({ ...V2_SNAPSHOT, run: null }, { member: () => ({ status: 200, body: payload }) })
+  try {
+    let tree = await emptyBoard.render()
+    const rows = findByClass(tree, 'atw-member-line--button')
+    assert.ok(rows.length > 0, 'the empty state still lists the roster')
+    rows.find((row) => textOf(row).includes('impl-a')).props.onClick()
+    tree = await emptyBoard.render()
+    assert.equal(findByClass(tree, 'atw-member').length, 1, 'a member row opens the same drawer')
+  } finally {
+    emptyBoard.dispose()
+  }
+})
+
+test('docs/19 member drawer: sending a message posts the route and reports success/failure/empty', async () => {
+  const calls = []
+  const board = await mountBoard(
+    withSnapshot({}),
+    {
+      member: ({ method, body }) => {
+        if (method === 'POST') {
+          calls.push(body)
+          return { status: 200, body: { ok: true, delivered: true, member: 'impl-a' } }
+        }
+        return { status: 200, body: memberPayload() }
+      },
+    },
+  )
+  try {
+    let tree = await board.render()
+    findMemberNode(tree, 'impl-a').props.onClick()
+    tree = await board.render()
+
+    // Empty input is rejected locally: the route answers 400 by contract.
+    findByClass(tree, 'atw-member-send')[0].props.onClick()
+    tree = await board.render()
+    assert.ok(textOf(findByClass(tree, 'atw-member')[0]).includes('k:member.emptyMessage'), 'empty message is called out')
+    assert.equal(calls.length, 0, 'an empty message is never posted')
+
+    findByClass(tree, 'atw-member-input')[0].props.onChange({ target: { value: '  hello member  ' } })
+    tree = await board.render()
+    assert.equal(findByClass(tree, 'atw-member-input')[0].props.value, '  hello member  ')
+    findByClass(tree, 'atw-member-send')[0].props.onClick()
+    tree = await board.render()
+    const drawerText = textOf(findByClass(tree, 'atw-member')[0])
+    assert.ok(drawerText.includes('k:member.sent'), 'success is reported')
+    assert.equal(findByClass(tree, 'atw-member-input')[0].props.value, '', 'the input is cleared on success')
+    assert.equal(calls.length, 1, 'exactly one POST happened')
+    assert.deepEqual(JSON.parse(calls[0]), { name: 'impl-a', message: 'hello member' }, 'the body carries the trimmed message')
+  } finally {
+    board.dispose()
+  }
+
+  const failing = await mountBoard(
+    withSnapshot({}),
+    {
+      member: ({ method }) =>
+        method === 'POST'
+          ? { status: 409, body: { ok: false, error: 'the message was rejected' } }
+          : { status: 200, body: memberPayload() },
+    },
+  )
+  try {
+    let tree = await failing.render()
+    findMemberNode(tree, 'impl-a').props.onClick()
+    tree = await failing.render()
+    findByClass(tree, 'atw-member-input')[0].props.onChange({ target: { value: 'please continue' } })
+    tree = await failing.render()
+    findByClass(tree, 'atw-member-send')[0].props.onClick()
+    tree = await failing.render()
+    const text = textOf(findByClass(tree, 'atw-member')[0])
+    assert.ok(text.includes('k:member.error'), 'a rejected POST surfaces an error')
+    assert.ok(text.includes('the message was rejected'), 'the route error message is shown')
+    assert.ok(!text.includes('k:member.sent'), 'no success is claimed on failure')
+  } finally {
+    failing.dispose()
+  }
+})
+
+test('docs/19 plan-first: card badges and the item drawer plan block', async () => {
+  const planSteps = ['read quote.mjs', 'run node --test']
+  const planFiles = ['collab-live-2/quote.mjs']
+  const planRisks = ['empty input contract']
+  const base = { steps: planSteps, files: planFiles, risks: planRisks, decidedBy: '', reason: '' }
+  const rejectedItem = { ...V2_SNAPSHOT.run.items[2], id: 'W4', subject: 'plan rejected item', wave: 2 }
+  const items = [
+    { ...V2_SNAPSHOT.run.items[0], plan: { ...base, status: 'pending' } },
+    { ...V2_SNAPSHOT.run.items[1], plan: { ...base, status: 'approved', decidedBy: 'lead', reason: 'looks fine' } },
+    V2_SNAPSHOT.run.items[2],
+    { ...rejectedItem, plan: { ...base, status: 'rejected', decidedBy: 'lead', reason: 'missing tests' } },
+  ]
+  const board = await mountBoard(withSnapshot({ run: { items } }))
+  try {
+    let tree = await board.render()
+    const cards = findByClass(tree, 'atw-card').filter((element) => element.props?.role === 'button')
+    const cardFor = (id) => cards.find((element) => textOf(element).includes(id))
+    const pendingCard = cardFor('W1')
+    assert.ok(textOf(pendingCard).includes('k:plan.pending'), 'pending plan badge')
+    assert.ok(
+      findByClass(pendingCard, 'atw-badge--warn').some((badgeElement) => textOf(badgeElement).includes('k:plan.pending')),
+      'pending plan uses the warn tone',
+    )
+    const approvedCard = cardFor('W2')
+    assert.ok(textOf(approvedCard).includes('k:plan.approved'), 'approved plan badge')
+    assert.ok(
+      findByClass(approvedCard, 'atw-badge--success').some((badgeElement) => textOf(badgeElement).includes('k:plan.approved')),
+      'approved plan uses the success tone',
+    )
+    const rejectedCard = cardFor('W4')
+    assert.ok(textOf(rejectedCard).includes('k:plan.rejected'), 'rejected plan badge')
+    assert.ok(
+      findByClass(rejectedCard, 'atw-badge--error').some((badgeElement) => textOf(badgeElement).includes('k:plan.rejected')),
+      'rejected plan uses the error tone',
+    )
+    assert.ok(!textOf(cardFor('W3')).includes('k:plan.'), 'items without a plan show no plan badge')
+
+    cardFor('W4').props.onClick()
+    tree = await board.render()
+    const drawer = textOf(findByClass(tree, 'atw-drawer')[0])
+    for (const needle of ['k:plan.title', 'k:plan.status', 'k:plan.rejected', 'k:plan.steps', 'read quote.mjs', 'k:plan.files', 'collab-live-2/quote.mjs', 'k:plan.risks', 'empty input contract', 'k:plan.reason', 'missing tests', 'k:plan.decidedBy', 'lead']) {
+      assert.ok(drawer.includes(needle), 'plan drawer is missing ' + needle)
+    }
+  } finally {
+    board.dispose()
+  }
+})
+
+test('docs/19 graceful stop: drawer shows every stop status and only pending paints a dot', async () => {
+  const stops = [
+    { id: 's1', at: '2026-11-02T00:00:30.000Z', by: 'lead', target: 'impl-a', mode: 'graceful', status: 'pending', reason: '', decidedAt: null },
+    { id: 's2', at: '2026-11-02T00:00:31.000Z', by: 'lead', target: 'rev-b', mode: 'graceful', status: 'accepted', reason: '', decidedAt: '2026-11-02T00:00:32.000Z' },
+    { id: 's3', at: '2026-11-02T00:00:33.000Z', by: 'lead', target: 'impl-b', mode: 'graceful', status: 'rejected', reason: '', decidedAt: '2026-11-02T00:00:34.000Z' },
+    { id: 's4', at: '2026-11-02T00:00:35.000Z', by: 'lead', target: 'impl-c', mode: 'interrupt', status: 'interrupted', reason: '', decidedAt: '2026-11-02T00:00:36.000Z' },
+  ]
+  const members = [
+    ...V2_SNAPSHOT.team.members,
+    { name: 'impl-c', role: 'teammate', status: 'running', context: 'fresh' },
+  ]
+  const stopByMember = { 'impl-a': 'pending', 'rev-b': 'accepted', 'impl-b': 'rejected', 'impl-c': 'interrupted' }
+  const board = await mountBoard(withSnapshot({ run: { collaboration: { ...V2_SNAPSHOT.run.collaboration, stops } }, team: { members } }), {
+    member: ({ url }) => {
+      const match = /[?&]name=([^&]+)/.exec(url)
+      const name = match === null ? 'impl-a' : decodeURIComponent(match[1])
+      return {
+        status: 200,
+        body: memberPayload({
+          name,
+          // impl-c exercises the run-level fallback: the route reports no stop.
+          stop: name === 'impl-c' ? null : { id: 's-' + name, status: stopByMember[name], at: '2026-11-02T00:00:30.000Z' },
+        }),
+      }
+    },
+  })
+  try {
+    let tree = await board.render()
+    assert.equal(findByClass(tree, 'atw-node-stop').length, 1, 'only the pending stop marks the topology')
+    const expectations = [
+      ['impl-a', 'k:member.stop.pending'],
+      ['rev-b', 'k:member.stop.accepted'],
+      ['impl-b', 'k:member.stop.rejected'],
+      ['impl-c', 'k:member.stop.interrupted'],
+    ]
+    for (const [name, needle] of expectations) {
+      findMemberNode(tree, name).props.onClick()
+      tree = await board.render()
+      const text = textOf(findByClass(tree, 'atw-member')[0])
+      assert.ok(text.includes(needle), name + ' drawer should show ' + needle)
+      assert.equal(findByClass(tree, 'atw-node-stop').length, 1, 'the dot stays tied to the pending stop')
+    }
+  } finally {
+    board.dispose()
   }
 })

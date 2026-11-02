@@ -36,6 +36,9 @@ const CONTRACT_FUNCTIONS = [
   'gitPrCreateOrUpdate',
   'gitPrReview',
   'gitPrMerge',
+  'gitWorktreeAdd',
+  'gitWorktreeRemove',
+  'gitWorktreeList',
 ].sort()
 
 /**
@@ -704,4 +707,31 @@ test('every exported function fails gracefully instead of throwing', async () =>
   }
   const probe = await Git.ghAvailable({ exec: () => Promise.reject(new Error('boom')) })
   assert.deepEqual(probe, { installed: false, authenticated: false, version: null })
+})
+
+test('worktrees can be added, listed and removed in a real repository', async () => {
+  await withRepo(async ({ repo }) => {
+    const added = await Git.gitWorktreeAdd({ cwd: repo, path: '.agentteam/worktrees/W1', branch: 'agentteam-wt/run-1/W1' })
+    assert.equal(added.ok, true)
+    assert.equal(added.branch, 'agentteam-wt/run-1/W1')
+    const listed = await Git.gitWorktreeList({ cwd: repo })
+    assert.equal(listed.ok, true)
+    assert.ok(listed.worktrees.some((entry) => entry.path.endsWith('.agentteam/worktrees/W1') && entry.branch === 'agentteam-wt/run-1/W1'))
+    const duplicate = await Git.gitWorktreeAdd({ cwd: repo, path: '.agentteam/worktrees/W1', branch: 'agentteam-wt/run-1/W1' })
+    assert.equal(duplicate.ok, false, 'an existing worktree branch cannot be re-added')
+    const removed = await Git.gitWorktreeRemove({ cwd: repo, path: '.agentteam/worktrees/W1' })
+    assert.equal(removed.ok, true)
+    const after = await Git.gitWorktreeList({ cwd: repo })
+    assert.ok(!after.worktrees.some((entry) => entry.path.endsWith('.agentteam/worktrees/W1')))
+  })
+})
+
+test('worktree helpers refuse bad paths and non-repositories', async () => {
+  const badPath = await Git.gitWorktreeAdd({ cwd: '/tmp', path: '/absolute/path', branch: 'x' })
+  assert.equal(badPath.ok, false)
+  await withTempDir(async (outside) => {
+    const result = await Git.gitWorktreeAdd({ cwd: outside, path: '.agentteam/worktrees/W1', branch: 'x' })
+    assert.equal(result.ok, false)
+    assert.match(result.error, /not a git repository/)
+  })
 })

@@ -534,3 +534,63 @@ test('reporting an unreviewed item keeps its nudge out of the channel', () => {
   assert.equal(outcome.item.pendingReviewer, null)
   assert.equal(state.channel.length, before, 'no channel nudge is posted; the reminder lives in next_actions')
 })
+
+test('the stop protocol rejects duplicates and records every decision', () => {
+  const state = run([item()])
+  const record = W.requestStop(state, { by: 'lead', target: 'rev', reason: 'wind down', now: NOW })
+  assert.equal(record.status, 'pending')
+  assert.equal(record.mode, 'graceful')
+  assert.throws(() => W.requestStop(state, { by: 'lead', target: 'rev', now: NOW }), /already pending/)
+  assert.throws(() => W.pendingStopFor(state, 'nobody') === null ? W.respondStop(state, { by: 'nobody', accept: true, now: NOW }) : null, /no pending stop request/)
+  const rejected = W.respondStop(state, { by: 'rev', accept: false, reason: 'still verifying', now: NOW })
+  assert.equal(rejected.status, 'rejected')
+  assert.equal(rejected.decisionReason, 'still verifying')
+  const interrupted = W.requestStop(state, { by: 'lead', target: 'rev', mode: 'interrupt', now: NOW })
+  assert.equal(interrupted.status, 'interrupted')
+  assert.equal(W.pendingStopFor(state, 'rev'), null)
+  assert.equal(state.events.some((event) => event.type === 'stop/pending'), true)
+  assert.equal(state.channel.some((message) => message.text.startsWith('[SHUTDOWN]')), true)
+})
+
+test('plan-first blocks reporting until the plan is approved', () => {
+  const state = run([item()])
+  state.settings = { ...state.settings, planFirst: true }
+  assert.equal(W.planPending(state, state.items[0]), true)
+  assert.throws(
+    () => W.applyReport(state, { itemId: 'W1', caller: 'impl', report: report(), now: NOW, settings: SETTINGS }),
+    /plan-first/,
+  )
+  const plan = W.submitPlan(state, {
+    itemId: 'W1',
+    by: 'impl',
+    plan: { steps: ['read the module', 'implement', 'run tests'], files: ['src/core/run.js'], risks: ['unknown edge'] },
+    autoApprove: false,
+    now: NOW,
+  })
+  assert.equal(plan.status, 'pending')
+  assert.equal(W.planPending(state, state.items[0]), true)
+  const decided = W.decidePlan(state, { itemId: 'W1', by: 'lead', accept: true, now: NOW })
+  assert.equal(decided.status, 'approved')
+  assert.equal(W.planPending(state, state.items[0]), false)
+  const outcome = W.applyReport(state, { itemId: 'W1', caller: 'impl', report: report(), now: NOW, settings: SETTINGS })
+  assert.equal(outcome.item.status, W.ITEM_STATUS.IN_REVIEW)
+})
+
+test('auto-approve records the plan as approved by the system', () => {
+  const state = run([item()])
+  state.settings = { ...state.settings, planFirst: true }
+  const plan = W.submitPlan(state, { itemId: 'W1', by: 'impl', plan: { steps: ['one step'] }, autoApprove: true, now: NOW })
+  assert.equal(plan.status, 'approved')
+  assert.equal(plan.decidedBy, 'auto')
+  assert.equal(state.events.some((event) => event.type === 'plan/approved'), true)
+})
+
+test('a plan-first item without an approved plan fails the gate', () => {
+  const state = run([item()])
+  state.settings = { ...state.settings, planFirst: true }
+  // The gate must flag the missing plan on the still-pending item.
+  const gate = W.evaluateGates(state, { settings: state.settings, members: MEMBERS, nativeTasks: [], overrides: [], now: NOW })
+  assert.equal(gate.pass, false)
+  const itemGate = gate.itemGates.find((entry) => entry.id === 'W1')
+  assert.ok(itemGate.failures.some((failure) => failure.includes('approved plan')))
+})
