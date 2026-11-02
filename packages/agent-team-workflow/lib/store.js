@@ -188,6 +188,19 @@ export function createStore({ ctx, settings }) {
   }
 
   /**
+   * Synchronously read the last state this process read or wrote.
+   *
+   * The tool sandbox runs inside a synchronous guard, so it cannot await the
+   * filesystem; after the first read/plan the state is cached here.
+   * @param agent - exact live Agent.
+   * @returns cloned state or `null` when this process has not seen it yet.
+   */
+  function cachedState(agent) {
+    const memorized = memoryStates.get(statePath(agent))
+    return memorized === undefined ? null : cloneJson(memorized)
+  }
+
+  /**
    * Write one artifact beside the state file.
    * @param agent - exact live Agent.
    * @param name - file name below the artifact root.
@@ -219,7 +232,7 @@ export function createStore({ ctx, settings }) {
     return withLock(statePath(agent), task)
   }
 
-  return { readState, mutateState, writeState, writeArtifact, artifactRoot, statePath, teamDir, teamIdOf, workingDir, cachedSummary, describeRoot, lock }
+  return { readState, mutateState, writeState, writeArtifact, artifactRoot, statePath, teamDir, teamIdOf, workingDir, cachedState, cachedSummary, describeRoot, lock }
 }
 
 /**
