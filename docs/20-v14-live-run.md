@@ -26,6 +26,13 @@
 8. gate 捕获 token 使用（真实 tokenUsage 或"未采集"）；
 9. 截图：计划徽章、成员抽屉、停止记录、token 面板/字段。
 
+## 2b. 独立 Host 的 UI 驱动尝试（未计入 live 证据）
+
+在独立 Host 中新建会话并发送「用 team_flow_plan 建立 v1.4 验证 run」的指令，期望由该 Host 内的 Lead 代理完成真实 run。实际观察：
+- 该代理花了约 5 分钟阅读 docs/配置并反复确认当前 profile，期间没有调用任何 `team_flow_*` 工具；
+- 超时后仍未建立黑板（`.agentteam/teams/<new-session>/` 不存在）；
+- 结论：**这次尝试不作为 live 证据**，只是证明了 1.4 的 Host/Client 已加载（§1）。完整 live run 仍应在重启后的桌面会话里做——那里的 Lead 有完整上下文，能按 `docs/20 §2` 的步骤执行。
+
 ## 3. 环境事实
 
 - 桌面 App 进程启动于 17:10，日志显示仍为 **1.3.1**（插件管理器在 21:14 触发了一次 reconcile，但没有重启进程，故模块代未变）；
