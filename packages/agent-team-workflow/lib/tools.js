@@ -8,6 +8,7 @@
  */
 
 import { runSettings } from './config.js'
+import * as G from './git.js'
 import * as W from './workflow.js'
 import {
   approvedMessage,
@@ -82,6 +83,68 @@ async function sendPeer(ctx, agent, target, text, signal) {
   } catch (error) {
     return `could not notify "${target}": ${error instanceof Error ? error.message : String(error)}`
   }
+}
+
+/** Maximum Team members including the Lead; the native roster refuses more. */
+const TEAM_MEMBER_LIMIT = 8
+
+/**
+ * Spawn or wake every member one plan needs.
+ *
+ * The Lead should publish a mission and let the plugin build the Team: this
+ * helper reuses a live member, wakes an inactive one with its brief, and only
+ * spawns when the name is genuinely absent. Capacity failures are returned as
+ * data instead of killed work so the Lead can decide what to drop.
+ * @param options - `{ ctx, agent, entries, signal }`.
+ * @returns `{ spawned, woken, skipped, failed, needs_spawn }`.
+ */
+async function staffEntries({ ctx, agent, entries, signal }) {
+  const outcome = { spawned: [], woken: [], skipped: [], failed: [], needs_spawn: [] }
+  let roster = []
+  try {
+    roster = ctx.agentTeams.listMembers(agent).map((member) => ({ name: member.name, status: member.status }))
+  } catch {
+    roster = []
+  }
+  const known = new Map(roster.map((member) => [member.name, member.status]))
+  let memberCount = roster.length
+  const seen = new Set()
+  for (const entry of entries) {
+    const name = typeof entry?.name === 'string' ? entry.name.trim() : ''
+    if (name.length === 0 || seen.has(name)) continue
+    seen.add(name)
+    if (known.has(name)) {
+      if (known.get(name) === 'inactive') {
+        const failure = await sendPeer(ctx, agent, name, `[RESUME] ${entry.description ?? entry.kind ?? 'work'}
+
+${entry.prompt ?? ''}`, signal)
+        if (failure === null) outcome.woken.push(name)
+        else outcome.failed.push({ name, error: failure })
+      } else {
+        outcome.skipped.push(name)
+      }
+      continue
+    }
+    if (memberCount >= TEAM_MEMBER_LIMIT) {
+      outcome.needs_spawn.push({ name, kind: entry.kind ?? 'worker', reason: `team member limit ${TEAM_MEMBER_LIMIT} reached` })
+      continue
+    }
+    try {
+      await ctx.agentTeams.spawnTeammate(agent, {
+        name,
+        description: String(entry.description ?? `${entry.kind ?? 'worker'} for the Agent Team workflow`).slice(0, 200),
+        prompt: [{ type: 'text', text: String(entry.prompt ?? '') }],
+        context: entry.context === 'fork' ? 'fork' : 'fresh',
+        signal,
+      })
+      known.set(name, 'provisioning')
+      memberCount += 1
+      outcome.spawned.push({ name, kind: entry.kind ?? 'worker' })
+    } catch (error) {
+      outcome.failed.push({ name, error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+  return outcome
 }
 
 /** @returns whether one member name is currently in the roster. */
@@ -265,6 +328,7 @@ export function buildTools({ ctx, settings, store, version }) {
           items: { type: 'array', items: {} },
           spawn: { type: 'array', items: {} },
           queue_spawn: { type: 'array', items: {} },
+          staffed: {},
           open_queue: { type: 'array', items: { type: 'string' } },
           reviewer_spawn: { type: 'array', items: {} },
           warnings: { type: 'array', items: { type: 'string' } },
@@ -277,6 +341,9 @@ export function buildTools({ ctx, settings, store, version }) {
         const now = new Date().toISOString()
         const rawItems = Array.isArray(args.items) ? args.items : []
         const items = rawItems.map((raw, index) => normalizeItem(raw, index))
+        const poolNames = Array.isArray(args.workers) ? args.workers.map((name) => String(name).trim()).filter(Boolean) : []
+        for (const name of poolNames) assertMemberName(name, 'workers[]')
+        if (new Set(poolNames).size !== poolNames.length) throw new Error('workers repeats a member name')
         const plan = {
           objective: String(args.objective ?? '').trim(),
           acceptanceCriteria: (Array.isArray(args.acceptance_criteria) ? args.acceptance_criteria : []).map((entry) => String(entry).trim()).filter(Boolean),
@@ -315,6 +382,7 @@ export function buildTools({ ctx, settings, store, version }) {
             now,
             artifacts: { statePath: store.statePath(agent), reportPath: null, root: store.describeRoot(agent) },
           })
+          state.staffPool = [...poolNames]
 
           // Create backing shared tasks in wave order so dependencies exist first.
           const created = []
@@ -381,11 +449,6 @@ export function buildTools({ ctx, settings, store, version }) {
 
         const openItems = items.filter((item) => item.assignment === 'open')
         const assignedItems = items.filter((item) => item.assignment !== 'open')
-        const poolNames = Array.isArray(args.workers) ? args.workers.map((name) => String(name).trim()).filter(Boolean) : []
-        for (const name of poolNames) {
-          assertMemberName(name, 'workers[]')
-          if (new Set(poolNames).size !== poolNames.length) throw new Error('workers repeats a member name')
-        }
         const workerNames = new Set(assignedItems.map((item) => item.owner))
         const workerSpawn = assignedItems.map((item) => {
           const reviewing = items.filter((other) => other.reviewers.includes(item.owner)).map((other) => other.id)
@@ -404,6 +467,15 @@ export function buildTools({ ctx, settings, store, version }) {
             const brief = renderReviewerBrief(state, reviewer, reviewed)
             return { kind: 'reviewer', reviews: reviewed.map((item) => item.id), name: brief.name, description: brief.description, context: brief.context, prompt: brief.prompt }
           })
+        const autoSpawn = args.auto_spawn === undefined ? settings.autoStaff === true : args.auto_spawn === true
+        const staffInputs = [
+          ...workerSpawn.map((entry) => ({ ...entry, kind: 'worker' })),
+          ...queueSpawn.map((entry) => ({ ...entry, kind: 'worker-pool' })),
+          ...reviewerSpawn.map((entry) => ({ ...entry, kind: 'reviewer' })),
+        ]
+        const staffed = autoSpawn
+          ? await staffEntries({ ctx, agent, entries: staffInputs, signal: exec.signal })
+          : { spawned: [], woken: [], skipped: [], failed: [], needs_spawn: staffInputs.map((entry) => ({ name: entry.name, kind: entry.kind, reason: 'auto_staff disabled' })) }
         const dualRole = allReviewers.filter((reviewer) => workerNames.has(reviewer))
         const leadReviews = allReviewers.includes('lead')
         const reviewerNotes = [
@@ -412,6 +484,15 @@ export function buildTools({ ctx, settings, store, version }) {
         ]
         const spawnContexts = [...new Set(workerSpawn.map((entry) => entry.context))].join('/')
         const nextActions = [
+          ...(staffed.spawned.length > 0 || staffed.woken.length > 0
+            ? [`Team staffed automatically: spawned ${staffed.spawned.map((entry) => `${entry.name}(${entry.kind})`).join(', ') || '(none)'}; woke ${staffed.woken.join(', ') || '(none)'}.`]
+            : []),
+          ...(staffed.needs_spawn.length > 0
+            ? [`Capacity limit: ${staffed.needs_spawn.map((entry) => entry.name).join(', ')} need manual handling (${staffed.needs_spawn[0].reason}).`]
+            : []),
+          ...(staffed.failed.length > 0
+            ? [`Staffing failures: ${staffed.failed.map((entry) => `${entry.name}: ${entry.error}`).join('; ')}`]
+            : []),
           ...(workerSpawn.length > 0
             ? [`Spawn wave 1 owners now: ${(validation.waves[0] ?? []).filter((id) => assignedItems.some((item) => item.id === id)).join(', ') || '(none)'}. Pass each returned spawn prompt verbatim with spawn_teammate and its own context value (${spawnContexts || settings.workerContext}).`]
             : []),
@@ -432,6 +513,7 @@ export function buildTools({ ctx, settings, store, version }) {
           items: items.map((item) => ({ id: item.id, subject: item.subject, owner: item.owner, task_id: item.taskId, reviewers: item.reviewers, write_scopes: item.writeScopes })),
           spawn: workerSpawn,
           queue_spawn: queueSpawn,
+          staffed,
           open_queue: openItems.map((item) => item.id),
           reviewer_spawn: reviewerSpawn,
           warnings: [...archived.map((path) => `archived previous run state to ${path}`), ...validation.warnings],
@@ -1265,6 +1347,276 @@ export function buildTools({ ctx, settings, store, version }) {
     // Peer collaboration (workflow v2): talk, work, decide, read
     // -----------------------------------------------------------------
 
+
+    {
+      name: 'team_flow_staff',
+      description:
+        'Lead-only. Make sure the Team actually exists: spawn missing owners/reviewers/pool members for the given (or all unfinished) items and wake inactive ones with their brief. Use it when a later wave becomes ready, or when a member went missing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          items: { type: 'array', items: { type: 'string' }, description: 'Item ids to staff; omit to staff every unfinished item.' },
+          reason: { type: 'string', description: 'Optional note recorded in the tool result.' },
+        },
+        additionalProperties: false,
+      },
+      output: jsonOutput({
+        type: 'object',
+        properties: {
+          staffed: {},
+          warnings: { type: 'array', items: { type: 'string' } },
+          next_actions: { type: 'array', items: { type: 'string' } },
+        },
+      }),
+      async execute(args, exec) {
+        const { agent, membership } = resolveCaller(ctx, exec, 'team_flow_staff')
+        requireLead(membership, 'team_flow_staff')
+        const state = await requireRun(store, agent, 'team_flow_staff')
+        W.ensureCollaboration(state)
+        const requested = Array.isArray(args.items) && args.items.length > 0
+          ? args.items.map((id) => String(id))
+          : state.items.filter((item) => item.status !== W.ITEM_STATUS.APPROVED).map((item) => item.id)
+        const targets = requested.map((id) => W.findItem(state, id))
+        const entries = []
+        for (const item of targets) {
+          if (typeof item.owner === 'string' && item.owner.length > 0) {
+            const reviewing = state.items.filter((other) => other.reviewers.includes(item.owner)).map((other) => other.id)
+            entries.push({ ...renderWorkerBrief(state, item, reviewing, state.settings.workerContext), kind: 'worker' })
+          }
+          for (const reviewer of item.reviewers) {
+            const reviewed = state.items.filter((other) => other.reviewers.includes(reviewer))
+            entries.push({ ...renderReviewerBrief(state, reviewer, reviewed), kind: 'reviewer' })
+          }
+        }
+        const pool = Array.isArray(state.staffPool) ? state.staffPool : []
+        const openItems = state.items.filter((item) => item.assignment === 'open' && (typeof item.owner !== 'string' || item.owner.length === 0))
+        for (const name of pool) {
+          if (openItems.length === 0) break
+          entries.push({ ...renderQueueBrief(state, name, openItems, state.settings.workerContext), kind: 'worker-pool' })
+        }
+        const staffed = await staffEntries({ ctx, agent, entries, signal: exec.signal })
+        const warnings = staffed.failed.map((entry) => `${entry.name}: ${entry.error}`)
+        if (staffed.needs_spawn.length > 0) warnings.push(`capacity limit: ${staffed.needs_spawn.map((entry) => entry.name).join(', ')}`)
+        if (args.reason) warnings.push(`reason: ${String(args.reason).slice(0, 200)}`)
+        return {
+          staffed,
+          warnings,
+          next_actions: W.nextActions(state, { me: { name: membership.name, role: membership.role }, role: membership.role, members: ctx.agentTeams.listMembers(agent).map((member) => ({ name: member.name, role: member.role })), settings: state.settings, now: new Date().toISOString() }),
+        }
+      },
+    },
+    {
+      name: 'team_flow_git',
+      description:
+        'Git/PR workflow (disabled unless gitEnabled). prepare creates the run branch (Lead), commit stages only the item files, verify runs the configured checks, push publishes the branch, pr opens/updates the pull request (gh when available, else a manual compare URL), review posts the reviewer verdict to the PR, merge lands it after the gate passes (Lead only).',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['status', 'prepare', 'commit', 'verify', 'push', 'pr', 'review', 'merge'], description: 'Git/PR action.' },
+          item_id: { type: 'string', description: 'Work item id for commit/verify/review/merge (status/pr may omit).' },
+          message: { type: 'string', description: 'commit: optional commit message; merge: merge message.' },
+          files: { type: 'array', items: { type: 'string' }, description: 'commit: explicit files; defaults to the report files.' },
+          commands: { type: 'array', items: { type: 'string' }, description: 'verify: explicit commands; defaults to the configured gitVerifyCommands.' },
+          method: { type: 'string', enum: ['squash', 'merge', 'no-ff'], description: 'merge: merge strategy (default squash for gh, no-ff locally).' },
+          title: { type: 'string', description: 'pr: optional pull-request title.' },
+          body: { type: 'string', description: 'pr: optional pull-request body.' },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+      output: jsonOutput({
+        type: 'object',
+        properties: {
+          action: { type: 'string' },
+          item_id: {},
+          repo: {},
+          run_git: {},
+          item_git: {},
+          detail: {},
+          warnings: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['action'],
+      }),
+      async execute(args, exec) {
+        const { agent, membership } = resolveCaller(ctx, exec, 'team_flow_git')
+        if (settings.gitEnabled !== true) {
+          throw new Error('the git workflow is disabled; enable it in the plugin config with gitEnabled: true')
+        }
+        const action = String(args.action ?? '')
+        const state = await requireRun(store, agent, 'team_flow_git')
+        W.ensureCollaboration(state)
+        const cwd = store.workingDir(agent)
+        const warnings = []
+        const requireItem = () => {
+          if (typeof args.item_id !== 'string' || args.item_id.length === 0) throw new Error(`team_flow_git ${action} needs item_id`)
+          return W.findItem(state, args.item_id)
+        }
+        const requireOwner = (item) => {
+          if (membership.role !== 'lead' && item.owner !== membership.name) throw new Error(`item "${item.id}" belongs to "${item.owner}"; only its owner (or the Lead) may run ${action}`)
+        }
+        if (action === 'status') {
+          const repo = await G.gitStatus({ cwd })
+          return {
+            action,
+            repo,
+            run_git: state.git ?? null,
+            item_git: state.items.map((item) => ({ item_id: item.id, owner: item.owner ?? null, git: item.git ?? null })),
+            warnings,
+          }
+        }
+        if (action === 'prepare') {
+          requireLead(membership, 'team_flow_git prepare')
+          const branch = `${state.settings.gitBranchPrefix ?? 'agentteam/'}${state.runId}`.replace(/[^A-Za-z0-9._/-]+/g, '-')
+          const base = state.settings.gitBaseBranch ?? 'main'
+          const result = await G.gitEnsureBranch({ cwd, branch, base })
+          if (result.ok !== true) throw new Error(`could not prepare the run branch: ${result.error}`)
+          let next = null
+          await store.mutateState(agent, (current) => {
+            if (current === null) throw new Error('no workflow run exists yet')
+            W.ensureCollaboration(current)
+            current.git = {
+              branch,
+              base,
+              remote: current.settings.gitRemote ?? 'origin',
+              branchCreated: result.created === true,
+              pushedAt: null,
+              pr: null,
+              mergedAt: null,
+              mergeSha: null,
+            }
+            W.appendEvent(current, { at: new Date().toISOString(), type: 'git/prepared', actor: membership.name, detail: `${branch} (base ${base})` })
+            next = current
+            return current
+          })
+          return { action, repo: await G.gitStatus({ cwd }), run_git: next.git, warnings }
+        }
+        const item = action === 'merge' ? null : requireItem()
+        if (action === 'commit') {
+          requireOwner(item)
+          if (state.git === null || typeof state.git.branch !== 'string') throw new Error('no run branch yet; the Lead must run team_flow_git {action:"prepare"} first')
+          const repo = await G.gitStatus({ cwd })
+          if (repo.ok !== true) throw new Error(`not a git repository: ${repo.error}`)
+          if (repo.branch !== state.git.branch) throw new Error(`the repository is on "${repo.branch}", not the run branch "${state.git.branch}"; check it out before committing`)
+          const files = Array.isArray(args.files) && args.files.length > 0 ? args.files.map((file) => W.normalizePath(file)) : (item.report?.files ?? [])
+          if (files.length === 0) throw new Error('nothing to commit: pass files or report the item first')
+          const message = String(args.message ?? `agentteam(${item.id}): ${item.subject}`).slice(0, 200)
+          const result = await G.gitCommit({ cwd, files, message })
+          if (result.ok !== true) throw new Error(`commit failed: ${result.error}`)
+          let next = null
+          await store.mutateState(agent, (current) => {
+            W.ensureCollaboration(current)
+            const target = W.findItem(current, item.id)
+            const previous = target.git ?? {}
+            target.git = {
+              ...previous,
+              sha: result.sha,
+              commits: [...(previous.commits ?? []), { sha: result.sha, at: new Date().toISOString(), files: result.files ?? files, message }],
+            }
+            W.appendEvent(current, { at: new Date().toISOString(), type: 'git/committed', actor: membership.name, detail: `${target.id} ${result.sha}` })
+            next = target
+            return current
+          })
+          return { action, item_id: item.id, item_git: next.git, run_git: state.git, repo: await G.gitStatus({ cwd }), warnings }
+        }
+        if (action === 'verify') {
+          requireOwner(item)
+          const commands = Array.isArray(args.commands) && args.commands.length > 0 ? args.commands.map((command) => String(command)) : (state.settings.gitVerifyCommands ?? [])
+          if (commands.length === 0) throw new Error('no verification commands configured; pass commands or set gitVerifyCommands')
+          const result = await G.gitVerify({ cwd, commands })
+          let next = null
+          await store.mutateState(agent, (current) => {
+            W.ensureCollaboration(current)
+            const target = W.findItem(current, item.id)
+            target.git = { ...(target.git ?? {}), verify: { ok: result.ok === true, results: result.results, at: new Date().toISOString() } }
+            W.appendEvent(current, { at: new Date().toISOString(), type: 'git/verified', actor: membership.name, detail: `${target.id}: ${result.ok === true ? 'ok' : 'failed'}` })
+            next = target
+            return current
+          })
+          return { action, item_id: item.id, item_git: next.git, detail: result, warnings }
+        }
+        if (action === 'push') {
+          requireOwner(item)
+          if (state.git === null || typeof state.git.branch !== 'string') throw new Error('no run branch yet; run prepare first')
+          const result = await G.gitPush({ cwd, remote: state.git.remote, branch: state.git.branch })
+          if (result.ok !== true) throw new Error(`push failed: ${result.error}`)
+          let next = null
+          await store.mutateState(agent, (current) => {
+            W.ensureCollaboration(current)
+            current.git = { ...(current.git ?? {}), pushedAt: new Date().toISOString(), pushedSha: result.sha ?? null }
+            W.appendEvent(current, { at: new Date().toISOString(), type: 'git/pushed', actor: membership.name, detail: `${current.git.branch} → ${current.git.remote}` })
+            next = current
+            return current
+          })
+          return { action, item_id: item.id, run_git: next.git, detail: result, warnings }
+        }
+        if (action === 'pr') {
+          if (membership.role !== 'lead' && item.owner !== membership.name) requireOwner(item)
+          if (state.git === null || typeof state.git.branch !== 'string') throw new Error('no run branch yet; run prepare first')
+          if (state.git.pushedAt === null || state.git.pushedAt === undefined) throw new Error('push the branch before opening a pull request')
+          const title = String(args.title ?? `[agentteam] ${state.objective}`).slice(0, 120)
+          const body = String(args.body ?? state.items.map((entry) => `- ${entry.id}: ${entry.subject} (${entry.status})`).join('\n')).slice(0, 8000)
+          const result = await G.gitPrCreateOrUpdate({ cwd, branch: state.git.branch, base: state.git.base, title, body, remote: state.git.remote })
+          if (result.ok !== true) throw new Error(`pull request failed: ${result.error}`)
+          let next = null
+          await store.mutateState(agent, (current) => {
+            W.ensureCollaboration(current)
+            current.git = {
+              ...(current.git ?? {}),
+              pr: { url: result.url ?? null, number: result.number ?? null, mode: result.mode, status: 'open', updatedAt: new Date().toISOString() },
+            }
+            W.appendEvent(current, { at: new Date().toISOString(), type: 'git/pr', actor: membership.name, detail: `${result.mode} ${result.url ?? ''}`.trim() })
+            next = current
+            return current
+          })
+          return { action, item_id: item.id, run_git: next.git, detail: result, warnings }
+        }
+        if (action === 'review') {
+          if (membership.role !== 'lead' && item.owner === membership.name) throw new Error('authors do not review their own work')
+          const pending = W.pendingReview(item)
+          if (membership.role !== 'lead' && (pending === null || pending.reviewer !== membership.name)) throw new Error(`you are not the pending reviewer of "${item.id}"`)
+          const submitted = [...item.reviews].reverse().find((review) => review.reviewer === membership.name && review.status === 'submitted')
+          if (submitted === undefined) throw new Error(`no submitted verdict from you on "${item.id}" yet; submit the review first`)
+          const verdict = submitted.verdict === 'approve' || submitted.verdict === 'approve_with_nits' ? 'approve' : submitted.verdict === 'request_changes' ? 'request-changes' : 'comment'
+          const pr = state.git?.pr ?? null
+          const result = pr === null
+            ? { ok: true, mode: 'record-only', detail: 'no PR recorded; the verdict stays on the board' }
+            : await G.gitPrReview({ cwd, number: pr.number, verdict, body: submitted.summary ?? '' })
+          let next = null
+          await store.mutateState(agent, (current) => {
+            W.ensureCollaboration(current)
+            const target = W.findItem(current, item.id)
+            target.git = { ...(target.git ?? {}), prReview: { verdict, at: new Date().toISOString(), mode: result.mode ?? 'record-only' } }
+            next = target
+            return current
+          })
+          return { action, item_id: item.id, item_git: next.git, detail: result, warnings }
+        }
+        if (action === 'merge') {
+          requireLead(membership, 'team_flow_git merge')
+          if (state.phase !== W.RUN_PHASE.CONVERGED && state.phase !== W.RUN_PHASE.FINALIZED) throw new Error(`the run is "${state.phase}"; merge only after every item is approved`)
+          if (state.gate === null || state.gate.pass !== true) throw new Error('the quality gate has not passed; run team_flow_gate first')
+          if (state.git === null || typeof state.git.branch !== 'string') throw new Error('no run branch recorded')
+          if (state.git.mergedAt !== null && state.git.mergedAt !== undefined) throw new Error('this run branch is already merged')
+          const method = args.method === 'merge' || args.method === 'no-ff' ? args.method : 'squash'
+          const pr = state.git.pr ?? null
+          const result = pr !== null && pr.mode === 'gh'
+            ? await G.gitPrMerge({ cwd, number: pr.number, method })
+            : await G.gitMerge({ cwd, branch: state.git.branch, into: state.git.base, method: 'no-ff', message: String(args.message ?? `agentteam: merge ${state.runId}`) })
+          if (result.ok !== true) throw new Error(`merge failed: ${result.error}`)
+          let next = null
+          await store.mutateState(agent, (current) => {
+            W.ensureCollaboration(current)
+            current.git = { ...(current.git ?? {}), mergedAt: new Date().toISOString(), mergeSha: result.sha ?? null, mergedInto: current.git?.base ?? null, mergeMode: result.mode ?? 'local' }
+            if (current.git?.pr != null) current.git.pr = { ...current.git.pr, status: 'merged' }
+            W.appendEvent(current, { at: new Date().toISOString(), type: 'git/merged', actor: membership.name, detail: `${current.git?.branch ?? ''} → ${current.git?.base ?? ''}` })
+            next = current
+            return current
+          })
+          return { action, run_git: next.git, detail: result, warnings }
+        }
+        throw new Error(`unknown team_flow_git action "${action}"`)
+      },
+    },
     {
       name: 'team_flow_item',
       description:

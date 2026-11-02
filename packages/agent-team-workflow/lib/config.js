@@ -36,6 +36,20 @@ export const DEFAULT_SETTINGS = Object.freeze({
   requireReviewEvidence: true,
   /** Minutes an open proposal waits for votes before lazy settlement; 0 disables it. */
   proposalTimeoutMinutes: 15,
+  /** Spawn/wake the members a plan needs instead of only returning spawn prompts. */
+  autoStaff: true,
+  /** Enable the git/PR workflow tools (branch, commit, verify, push, PR, merge). */
+  gitEnabled: false,
+  /** Base branch the PR workflow branches from and merges into. */
+  gitBaseBranch: 'main',
+  /** Remote pushed to by the git workflow. */
+  gitRemote: 'origin',
+  /** Prefix for per-item branches. */
+  gitBranchPrefix: 'agentteam/',
+  /** Verification commands the `verify` action runs. */
+  gitVerifyCommands: [],
+  /** Require item git verification to pass before the gate accepts it. */
+  gitRequireVerify: false,
 })
 
 function clampInt(value, fallback, min, max) {
@@ -45,6 +59,11 @@ function clampInt(value, fallback, min, max) {
   if (rounded < min) return min
   if (rounded > max) return max
   return rounded
+}
+
+function readCommands(value) {
+  if (!Array.isArray(value)) return []
+  return value.map((entry) => (typeof entry === 'string' ? entry.trim() : '')).filter((entry) => entry.length > 0).slice(0, 16)
 }
 
 function readBool(value, fallback) {
@@ -82,6 +101,13 @@ export function resolveSettings(raw = {}) {
     autoNotify: readBool(config.autoNotify, DEFAULT_SETTINGS.autoNotify),
     requireReviewEvidence: readBool(config.requireReviewEvidence, DEFAULT_SETTINGS.requireReviewEvidence),
     proposalTimeoutMinutes: clampInt(config.proposalTimeoutMinutes, DEFAULT_SETTINGS.proposalTimeoutMinutes, 0, 1440),
+    autoStaff: readBool(config.autoStaff, DEFAULT_SETTINGS.autoStaff),
+    gitEnabled: readBool(config.gitEnabled, DEFAULT_SETTINGS.gitEnabled),
+    gitBaseBranch: readString(config.gitBaseBranch, DEFAULT_SETTINGS.gitBaseBranch, 200),
+    gitRemote: readString(config.gitRemote, DEFAULT_SETTINGS.gitRemote, 200),
+    gitBranchPrefix: readString(config.gitBranchPrefix, DEFAULT_SETTINGS.gitBranchPrefix, 200),
+    gitVerifyCommands: readCommands(config.gitVerifyCommands),
+    gitRequireVerify: readBool(config.gitRequireVerify, DEFAULT_SETTINGS.gitRequireVerify),
   })
 }
 
@@ -100,5 +126,12 @@ export function runSettings(settings) {
     allowScopeOverlap: settings.allowScopeOverlap,
     requireReviewEvidence: settings.requireReviewEvidence,
     proposalTimeoutMinutes: settings.proposalTimeoutMinutes,
+    autoStaff: settings.autoStaff,
+    gitEnabled: settings.gitEnabled,
+    gitBaseBranch: settings.gitBaseBranch,
+    gitRemote: settings.gitRemote,
+    gitBranchPrefix: settings.gitBranchPrefix,
+    gitVerifyCommands: [...settings.gitVerifyCommands],
+    gitRequireVerify: settings.gitRequireVerify,
   }
 }

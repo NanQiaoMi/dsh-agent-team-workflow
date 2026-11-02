@@ -31,3 +31,14 @@
         requireReviewEvidence: true
         # Minutes an open proposal waits for votes before lazy settlement (0 disables).
         proposalTimeoutMinutes: 15
+        # Spawn/wake the members a plan needs automatically (false = return prompts only).
+        autoStaff: true
+        # Git/PR workflow: off by default; enable per deployment.
+        gitEnabled: false
+        gitBaseBranch: main
+        gitRemote: origin
+        gitBranchPrefix: agentteam/
+        # Verification commands the `verify` action runs (e.g. ["pnpm -r test"]).
+        gitVerifyCommands: []
+        # Require item git verification before the gate accepts it.
+        gitRequireVerify: false

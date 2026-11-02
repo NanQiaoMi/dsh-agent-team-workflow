@@ -19,6 +19,8 @@ window.__ModuleLoader__.load({
     /** Peer-collaboration caps mirrored from the Host contract (docs/12 §5). */
     const CHANNEL_LIMIT = 60
     const PROPOSAL_LIMIT = 32
+    /** Peer↔peer links drawn by the topology (docs/16 §3 noise budget). */
+    const PEER_EDGE_LIMIT = 8
 
     // ---------------------------------------------------------------------
     // Copy (zh is the key-set source of truth; the contract test enforces parity)
@@ -62,10 +64,7 @@ window.__ModuleLoader__.load({
       'flow.wave': '第 {n} 波',
       'flow.waveUnknown': '未分层',
       'flow.owner': '执行者 {name}',
-      'flow.pendingReviewer': '待评审：{name}',
       'flow.round': '评审 {submitted}/{max}',
-      'flow.findings': '未决 {n}',
-      'flow.escalated': '已升级',
       'flow.empty': '还没有工作项',
       'topology.title': '协作拓扑',
       'topology.lead': 'Lead',
@@ -249,6 +248,29 @@ window.__ModuleLoader__.load({
       'drawer.handoff.status.accepted': '已接受',
       'drawer.handoff.status.declined': '已拒绝',
       'drawer.relatedProposals': '相关提案',
+      'drawer.origin': '来源',
+      'drawer.originPlan': '计划',
+      'topology.idle': '空闲 {n} 人',
+      'topology.idleNames': '空闲成员：{names}',
+      'git.title': 'Git / PR',
+      'git.branch': '分支 {branch}',
+      'git.branchLabel': '分支',
+      'git.base': '基线分支',
+      'git.sha': '提交',
+      'git.remote': '远程',
+      'git.pushState': '推送',
+      'git.pushed': '已推送',
+      'git.notPushed': '未推送',
+      'git.verifyState': '验证',
+      'git.verifyOk': '已验证',
+      'git.verifyFail': '验证失败',
+      'git.verifyMissing': '未验证',
+      'git.pr': 'PR #{number}',
+      'git.prUnknown': 'PR',
+      'git.prManual': 'PR（手动）',
+      'git.merged': '已合并',
+      'git.mergedAt': '合并时间',
+      'git.prReview': 'PR 评审',
     }
 
     const en = {
@@ -289,10 +311,7 @@ window.__ModuleLoader__.load({
       'flow.wave': 'Wave {n}',
       'flow.waveUnknown': 'unscheduled',
       'flow.owner': 'owner {name}',
-      'flow.pendingReviewer': 'awaiting {name}',
       'flow.round': 'round {submitted}/{max}',
-      'flow.findings': '{n} open',
-      'flow.escalated': 'escalated',
       'flow.empty': 'No work items yet',
       'topology.title': 'Collaboration topology',
       'topology.lead': 'Lead',
@@ -476,6 +495,29 @@ window.__ModuleLoader__.load({
       'drawer.handoff.status.accepted': 'accepted',
       'drawer.handoff.status.declined': 'declined',
       'drawer.relatedProposals': 'related proposals',
+      'drawer.origin': 'origin',
+      'drawer.originPlan': 'planned',
+      'topology.idle': '{n} idle',
+      'topology.idleNames': 'idle members: {names}',
+      'git.title': 'Git / PR',
+      'git.branch': 'branch {branch}',
+      'git.branchLabel': 'branch',
+      'git.base': 'base',
+      'git.sha': 'commit',
+      'git.remote': 'remote',
+      'git.pushState': 'push',
+      'git.pushed': 'pushed',
+      'git.notPushed': 'not pushed',
+      'git.verifyState': 'verify',
+      'git.verifyOk': 'verified',
+      'git.verifyFail': 'verify failed',
+      'git.verifyMissing': 'not verified',
+      'git.pr': 'PR #{number}',
+      'git.prUnknown': 'PR',
+      'git.prManual': 'PR (manual)',
+      'git.merged': 'merged',
+      'git.mergedAt': 'merged at',
+      'git.prReview': 'PR review',
     }
 
     // ---------------------------------------------------------------------
@@ -550,16 +592,34 @@ window.__ModuleLoader__.load({
       return Math.round(value * 10) / 10
     }
 
+    /** @returns a two-decimal number (opacity bands need the extra digit). */
+    function round2(value) {
+      return Math.round(value * 100) / 100
+    }
+
     /** @returns a cubic path between two anchor points (top-down flow). */
     function linkPath(x1, y1, x2, y2) {
       const mid = (y1 + y2) / 2
       return 'M' + round1(x1) + ',' + round1(y1) + ' C' + round1(x1) + ',' + round1(mid) + ' ' + round1(x2) + ',' + round1(mid) + ' ' + round1(x2) + ',' + round1(y2)
     }
 
-    /** @returns a sideways cubic path between two peer nodes (peer↔peer links). */
-    function peerPath(x1, y1, x2, y2) {
-      const midX = (x1 + x2) / 2
-      return 'M' + round1(x1) + ',' + round1(y1) + ' C' + round1(midX) + ',' + round1(y1) + ' ' + round1(midX) + ',' + round1(y2) + ' ' + round1(x2) + ',' + round1(y2)
+    /**
+     * @returns a bowing cubic arc between two peer nodes (percentage space).
+     *   `direction` flips the bow so A→B and B→A render as a lens, not a line.
+     */
+    function peerArc(x1, y1, x2, y2, direction) {
+      const dx = x2 - x1
+      const dy = y2 - y1
+      const length = Math.sqrt(dx * dx + dy * dy)
+      if (length === 0) return linkPath(x1, y1, x2, y2)
+      const bulge = Math.min(10, Math.max(3, length * 0.12)) * (direction >= 0 ? 1 : -1)
+      const controlX = (x1 + x2) / 2 + (-dy / length) * bulge
+      const controlY = (y1 + y2) / 2 + (dx / length) * bulge
+      const c1x = x1 + (2 / 3) * (controlX - x1)
+      const c1y = y1 + (2 / 3) * (controlY - y1)
+      const c2x = x2 + (2 / 3) * (controlX - x2)
+      const c2y = y2 + (2 / 3) * (controlY - y2)
+      return 'M' + round1(x1) + ',' + round1(y1) + ' C' + round1(c1x) + ',' + round1(c1y) + ' ' + round1(c2x) + ',' + round1(c2y) + ' ' + round1(x2) + ',' + round1(y2)
     }
 
     /** @returns a human message for a thrown value. */
@@ -764,7 +824,7 @@ window.__ModuleLoader__.load({
       return legacy
     }
 
-    function normalizeItem(raw) {
+    function normalizeItem(raw, runGit) {
       const item = raw && typeof raw === 'object' ? raw : {}
       return {
         id: str(item.id, '?'),
@@ -793,7 +853,63 @@ window.__ModuleLoader__.load({
         // docs/14 §4: peers may create items mid-run; planned items keep the default.
         origin: str(item.origin, 'plan') === 'member' ? 'member' : 'plan',
         createdBy: str(item.createdBy),
+        git: normalizeGit(item.git, runGit),
       }
+    }
+
+    /**
+     * @returns the normalized `items[].git` block, or null when the item has no
+     *   git record. Only the item record gates the badges; the run-level record
+     *   (`run.git`: branch/base/pushedAt/pr/mergedAt) fills in what the item
+     *   record does not carry — that is how the Host aggregates a run that uses
+     *   one branch and one pull request for several items (docs/16 §2.3).
+     */
+    function normalizeGit(raw, runGit) {
+      if (!isRecord(raw)) return null
+      const run = isRecord(runGit) ? runGit : {}
+      const verify = isRecord(raw.verify)
+        ? {
+            ok: raw.verify.ok === true,
+            at: parseTime(raw.verify.at),
+            results: toArray(raw.verify.results)
+              .filter(isRecord)
+              .slice(-4)
+              .map((result) => ({ command: str(result.command), exitCode: num(result.exitCode, Number.NaN) })),
+          }
+        : null
+      const prRaw = isRecord(raw.pr) ? raw.pr : isRecord(run.pr) ? run.pr : null
+      const pr =
+        prRaw === null
+          ? null
+          : { url: str(prRaw.url), number: num(prRaw.number, Number.NaN), mode: str(prRaw.mode), status: str(prRaw.status) }
+      const declaredPush = raw.pushed
+      const pushed =
+        declaredPush === true ||
+        (declaredPush === undefined && (Number.isFinite(parseTime(run.pushedAt)) || str(run.pushedSha) !== ''))
+      const itemMerged = parseTime(raw.mergedAt)
+      return {
+        branch: str(raw.branch, str(run.branch)),
+        base: str(raw.base, str(run.base)),
+        sha: str(raw.sha, str(run.pushedSha)),
+        remote: str(raw.remote, str(run.remote)),
+        pushed,
+        verify,
+        pr,
+        prReview: isRecord(raw.prReview) ? { verdict: str(raw.prReview.verdict), mode: str(raw.prReview.mode) } : null,
+        mergedAt: Number.isFinite(itemMerged) ? itemMerged : parseTime(run.mergedAt),
+        commits: toArray(raw.commits).length,
+      }
+    }
+
+    /** @returns the run-level git record (`run.git`), or null when absent. */
+    function normalizeRunGit(run) {
+      return isRecord(run) && isRecord(run.git) ? run.git : null
+    }
+
+    /** @returns the run's items with their git records enriched from `run.git`. */
+    function normalizeRunItems(run) {
+      const runGit = normalizeRunGit(run)
+      return toArray(run && run.items).map((item) => normalizeItem(item, runGit))
     }
 
     function normalizeReport(raw) {
@@ -1059,7 +1175,7 @@ window.__ModuleLoader__.load({
      * @returns `[{ label, items }]`.
      */
     function computeColumns(run) {
-      const items = toArray(run && run.items).map(normalizeItem).slice(0, MAX_ITEMS)
+      const items = normalizeRunItems(run).slice(0, MAX_ITEMS)
       const byId = new Map()
       for (const item of items) if (!byId.has(item.id)) byId.set(item.id, item)
       const columns = []
@@ -1177,17 +1293,80 @@ window.__ModuleLoader__.load({
      * reviewer→item links.
      * @returns `{ lead, memberNodes, itemNodes, edges }`.
      */
+    /**
+     * Split the roster into participants (members with work/review/channel
+     * activity, plus anyone not idle) and the idle members to fold into one node.
+     * @returns `{ participants, idle }` member records.
+     */
+    function splitParticipants(team, items, collaboration) {
+      const active = new Set()
+      const mark = (name) => {
+        const value = str(name)
+        if (value !== '') active.add(value)
+      }
+      for (const item of items) {
+        mark(item.owner)
+        for (const reviewer of item.reviewers) mark(reviewer)
+        if (item.claim !== null) mark(item.claim.by)
+        for (const request of item.reviewRequests) {
+          mark(request.by)
+          mark(request.reviewer)
+        }
+        for (const handoff of item.handoffs) {
+          mark(handoff.by)
+          mark(handoff.to)
+        }
+      }
+      if (isRecord(collaboration)) {
+        // Deliberately NOT `collaboration.edges`: a `to:"team"` broadcast fans
+        // out into an edge to every roster member, so trusting edges would
+        // promote silent/idle members back into the drawn set.
+        for (const entry of collaboration.channel) {
+          mark(entry.from)
+          if (entry.to !== 'team') mark(entry.to)
+        }
+        for (const pending of collaboration.pendingReviews) mark(pending.requestedBy)
+        for (const handoff of collaboration.handoffs) {
+          mark(handoff.by)
+          mark(handoff.to)
+        }
+        for (const proposal of collaboration.proposals) mark(proposal.by)
+      }
+      const participants = []
+      const idle = []
+      for (const member of team.members) {
+        const busy = member.status !== 'inactive' || active.has(member.name)
+        if (busy) participants.push(member)
+        else idle.push(member)
+      }
+      return { participants, idle }
+    }
+
     function computeTopology(team, items, collaboration) {
       const leadName = team.me && team.me.name ? team.me.name : ''
-      const lead = { x: 50, y: 13, name: leadName }
-      const memberSpread = spreadNodes(team.members.length, 45, 39, 57)
-      const memberNodes = team.members.map((member, index) => ({
+      const lead = { x: 50, y: 12, name: leadName }
+      const split = splitParticipants(team, items, collaboration)
+      // Defensive cap: the layout supports two rows, so keep the drawn set bounded.
+      const participants = split.participants.slice(0, 12)
+      const memberSpread = spreadNodes(participants.length, 44, 36, 52)
+      const memberRows = participants.length > 6 ? 2 : 1
+      const memberNodes = participants.map((member, index) => ({
         key: 'member-' + member.name + '-' + index,
         member,
         x: memberSpread.nodes[index].x,
         y: memberSpread.nodes[index].y,
       }))
-      const itemSpread = spreadNodes(items.length, 82, 76, 90)
+      const idleNode =
+        split.idle.length === 0
+          ? null
+          : {
+              key: 'idle',
+              count: split.idle.length,
+              names: split.idle.map((member) => member.name).join(', '),
+              x: 50,
+              y: memberRows === 2 ? 64 : 54,
+            }
+      const itemSpread = spreadNodes(items.length, 84, 78, 92)
       const itemNodes = items.map((item, index) => ({
         key: 'item-' + item.id,
         item,
@@ -1225,24 +1404,38 @@ window.__ModuleLoader__.load({
           })
         }
       }
-      const peerEdges = []
-      for (const edge of toArray(collaboration && collaboration.edges)) {
+      // Peer↔peer noise budget: only participants, only meaningful counts, top N.
+      const candidates = []
+      for (const edge of toArray(isRecord(collaboration) ? collaboration.edges : [])) {
         if (edge.from === edge.to) continue
         const fromNode = byName.get(edge.from)
         const toNode = byName.get(edge.to)
         if (fromNode === undefined || toNode === undefined) continue
-        const weight = Math.max(1, Math.min(9, num(edge.count, 1)))
-        peerEdges.push({
-          key: 'peer-' + edge.from + '-' + edge.to,
-          from: edge.from,
-          to: edge.to,
-          count: weight,
-          kinds: edge.kinds,
-          d: peerPath(fromNode.x, fromNode.y, toNode.x, toNode.y),
-          width: round1(1 + weight * 0.28),
-          opacity: round1(Math.min(0.9, 0.35 + weight * 0.07)),
-        })
+        candidates.push({ edge, fromNode, toNode })
       }
+      const nodeCount = memberNodes.length + 1
+      const threshold = nodeCount <= 4 ? 1 : 2
+      const ranked = candidates
+        .filter((entry) => num(entry.edge.count, 1) >= threshold)
+        .sort((left, right) => num(right.edge.count, 1) - num(left.edge.count, 1))
+        .slice(0, PEER_EDGE_LIMIT)
+      const counts = ranked.map((entry) => num(entry.edge.count, 1))
+      const maxCount = counts.length === 0 ? 1 : Math.max(...counts)
+      const minCount = counts.length === 0 ? 1 : Math.min(...counts)
+      const peerEdges = ranked.map((entry) => {
+        const count = num(entry.edge.count, 1)
+        const ratio = maxCount === minCount ? 0.5 : (count - minCount) / (maxCount - minCount)
+        return {
+          key: 'peer-' + entry.edge.from + '-' + entry.edge.to,
+          from: entry.edge.from,
+          to: entry.edge.to,
+          count,
+          kinds: entry.edge.kinds,
+          d: peerArc(entry.fromNode.x, entry.fromNode.y, entry.toNode.x, entry.toNode.y, entry.edge.from < entry.edge.to ? 1 : -1),
+          width: round1(0.8 + ratio * 1.6),
+          opacity: round2(0.25 + ratio * 0.3),
+        }
+      })
       // docs/12 §6: once peers talk to each other, de-emphasize the Lead spokes
       // so the board reads "peers collaborating", not only "Lead dispatching".
       const hasPeerEdges = peerEdges.length > 0
@@ -1252,11 +1445,14 @@ window.__ModuleLoader__.load({
       return {
         lead,
         memberNodes,
+        idleNode,
         itemNodes,
         edges,
         peerEdges,
         hasPeerEdges,
-        memberWidth: nodeWidth(memberSpread.perRow, 34, 9),
+        memberRows,
+        participantCount: memberNodes.length,
+        idleCount: split.idle.length,
         itemWidth: nodeWidth(itemSpread.perRow, 11, 5),
       }
     }
@@ -1295,17 +1491,16 @@ window.__ModuleLoader__.load({
 .atw-progress-fill{height:100%;border-radius:999px;background:var(--dsw-alias-state-success-primary)}
 .atw-error-strip{display:flex;align-items:center;justify-content:space-between;gap:8px;box-sizing:border-box;border:0.5px solid var(--dsw-alias-state-error-primary);border-radius:8px;background:var(--dsw-alias-bg-layer-1);padding:5px 10px;color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}
 .atw-error-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.atw-main{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:12px;align-items:start;min-width:0}
-.atw-lower{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start;min-width:0}
-@media (max-width:1180px){.atw-lower{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
-@media (max-width:900px){.atw-main,.atw-lower{grid-template-columns:minmax(0,1fr)}}
-.atw-panel{display:flex;flex-direction:column;box-sizing:border-box;min-width:0;border:0.5px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1);overflow:hidden}
-.atw-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;padding:7px 12px;border-bottom:0.5px solid var(--dsw-alias-border-l1)}
+.atw-main{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1.4fr);gap:12px;align-items:start;min-width:0}
+.atw-lower{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:start;min-width:0}
+@media (max-width:1180px){.atw-main,.atw-collab,.atw-lower{grid-template-columns:minmax(0,1fr)}}
+.atw-panel{display:flex;flex-direction:column;box-sizing:border-box;min-width:0;min-height:240px;max-height:320px;border:0.5px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1);overflow:hidden}
+.atw-panel-head{display:flex;flex:none;align-items:center;justify-content:space-between;gap:8px;min-width:0;height:32px;box-sizing:border-box;padding:0 12px;border-bottom:0.5px solid var(--dsw-alias-border-l1)}
 .atw-panel-title{font-size:12px;font-weight:600;line-height:18px;white-space:nowrap}
 .atw-panel-hint{min-width:0;color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:400;line-height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.atw-panel-body{padding:10px 12px;min-width:0}
+.atw-panel-body{padding:10px 12px;min-width:0;flex:1 1 auto;min-height:0;overflow:auto}
 .atw-panel-body--flush{padding:0}
-.atw-flow{overflow:auto;max-height:min(58vh,560px)}
+.atw-flow{overflow:auto}
 .atw-flow-canvas{position:relative}
 .atw-wave-label{position:absolute;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;white-space:nowrap}
 .atw-svg{position:absolute;left:0;top:0;pointer-events:none;color:var(--dsw-alias-label-secondary)}
@@ -1333,9 +1528,14 @@ window.__ModuleLoader__.load({
 .atw-card-meta{overflow:hidden;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:15px;white-space:nowrap;text-overflow:ellipsis}
 .atw-card-flags{display:flex;align-items:center;gap:5px;flex-wrap:wrap;max-height:32px;margin-top:auto;overflow:hidden;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:15px}
 .atw-card-pending{overflow:hidden;color:var(--dsw-alias-state-warn-primary);white-space:nowrap;text-overflow:ellipsis}
-.atw-topo-canvas{position:relative;height:280px;border-radius:8px;background:var(--dsw-alias-bg-base);overflow:hidden}
+.atw-card-git{display:flex;align-items:center;gap:4px;min-width:0;overflow:hidden;font-size:11px;line-height:15px;white-space:nowrap}
+.atw-badge--git{max-width:132px;font-size:10px;line-height:14px}
+.atw-badge--link{text-decoration:none;cursor:pointer}
+.atw-link{color:var(--dsw-alias-brand-primary);text-decoration:underline;overflow-wrap:anywhere}
+.atw-topo-canvas{position:relative;height:240px;border-radius:8px;background:var(--dsw-alias-bg-base);overflow:hidden}
 .atw-topo-svg{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;color:var(--dsw-alias-label-secondary)}
-.atw-node{position:absolute;z-index:1;display:flex;align-items:center;gap:4px;box-sizing:border-box;max-width:34%;padding:2px 8px;border:0.5px solid var(--dsw-alias-border-l2);border-radius:999px;background:var(--dsw-alias-bg-layer-1);font-size:11px;line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transform:translate(-50%,-50%)}
+.atw-node{position:absolute;z-index:1;display:flex;align-items:center;gap:4px;box-sizing:border-box;max-width:100%;padding:2px 8px;border:0.5px solid var(--dsw-alias-border-l2);border-radius:999px;background:var(--dsw-alias-bg-layer-1);font-size:11px;line-height:16px;white-space:nowrap;transform:translate(-50%,-50%)}
+.atw-node--idle{border-style:dashed;border-color:var(--dsw-alias-state-idle-primary);color:var(--dsw-alias-label-secondary);max-width:40%}
 .atw-node--lead{max-width:52%;border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary);font-weight:600}
 .atw-node-sub{max-width:110px;overflow:hidden;color:var(--dsw-alias-label-secondary);font-weight:400;text-overflow:ellipsis}
 .atw-node--item{max-width:11%;padding:2px 6px;font-size:10px;line-height:14px}
@@ -1359,7 +1559,7 @@ window.__ModuleLoader__.load({
 .atw-filter{border:0.5px solid var(--dsw-alias-border-l2);border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:16px;padding:1px 8px;cursor:pointer}
 .atw-filter:hover{background:var(--dsw-alias-bg-overlay)}
 .atw-filter--active{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
-.atw-events{display:flex;flex-direction:column;max-height:300px;overflow:auto}
+.atw-events{display:flex;flex-direction:column}
 .atw-event{display:flex;align-items:baseline;gap:6px;min-width:0;padding:3px 12px;border-bottom:0.5px solid var(--dsw-alias-border-l1);font-size:12px;line-height:17px}
 .atw-event:last-child{border-bottom:none}
 .atw-event-time{flex:none;color:var(--dsw-alias-label-secondary);font-size:11px;white-space:nowrap}
@@ -1414,8 +1614,7 @@ window.__ModuleLoader__.load({
 .atw-record-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
 .atw-record-summary{color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
 .atw-right{min-width:0;margin-left:auto}
-.atw-collab{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:12px;align-items:start;min-width:0}
-@media (max-width:1180px){.atw-collab{grid-template-columns:minmax(0,1fr)}}
+.atw-collab{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:12px;align-items:start;min-width:0}
 .atw-flow-stack{display:flex;flex-direction:column;gap:8px;min-width:0}
 .atw-open-queue{display:flex;flex-direction:column;gap:6px;min-width:0}
 .atw-open-queue-label{color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
@@ -1426,7 +1625,7 @@ window.__ModuleLoader__.load({
 .atw-open-card-head{display:flex;align-items:center;gap:4px;min-width:0}
 .atw-open-card-subject{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .atw-open-card-meta{overflow:hidden;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:15px;white-space:nowrap;text-overflow:ellipsis}
-.atw-channel{display:flex;flex-direction:column;max-height:340px;overflow:auto}
+.atw-channel{display:flex;flex-direction:column}
 .atw-channel-item{display:flex;flex-direction:column;gap:2px;min-width:0;padding:5px 12px;border-bottom:0.5px solid var(--dsw-alias-border-l1)}
 .atw-channel-item:last-child{border-bottom:none}
 .atw-channel-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
@@ -1436,7 +1635,7 @@ window.__ModuleLoader__.load({
 .atw-channel-ref:hover{background:var(--dsw-alias-bg-overlay)}
 .atw-channel-ref:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
 .atw-channel-text{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;font-size:12px;line-height:17px;overflow-wrap:anywhere}
-.atw-proposal-list{display:flex;flex-direction:column;gap:8px;max-height:340px;overflow:auto}
+.atw-proposal-list{display:flex;flex-direction:column;gap:8px}
 .atw-proposal{display:flex;flex-direction:column;gap:4px;box-sizing:border-box;min-width:0;padding:7px 8px;border:0.5px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}
 .atw-proposal--blocking{border-color:var(--dsw-alias-state-warn-primary)}
 .atw-proposal-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
@@ -1510,7 +1709,7 @@ window.__ModuleLoader__.load({
 
     function renderHeader(view, run, team) {
       const tr = view.tr
-      const items = run ? toArray(run.items).map(normalizeItem) : []
+      const items = run ? normalizeRunItems(run) : []
       const counts = run && run.counts && typeof run.counts === 'object' ? run.counts : null
       const total = counts === null ? items.length : num(counts.total, items.length)
       const approvedFromCounts = counts === null ? Number.NaN : num(counts.approved, Number.NaN)
@@ -1573,17 +1772,117 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /** @returns one small Git/PR badge (kept on the shared `atw-badge` scale). */
+    function gitBadge(label, tone, key) {
+      return h('span', { key, className: 'atw-badge atw-badge--git' + (tone ? ' atw-badge--' + tone : '') }, label)
+    }
+
+    /** @returns the compact Git/PR badge row of one flow card, or null. */
+    function renderGitBadges(view, git) {
+      if (git === null) return null
+      const tr = view.tr
+      const badges = []
+      if (git.branch !== '') {
+        badges.push(h('span', { key: 'branch', className: 'atw-badge atw-badge--git', title: git.branch }, tr('git.branch', { branch: git.branch })))
+      }
+      if (git.pushed) badges.push(gitBadge(tr('git.pushed'), 'success', 'pushed'))
+      if (git.verify !== null) badges.push(gitBadge(git.verify.ok ? tr('git.verifyOk') : tr('git.verifyFail'), git.verify.ok ? 'success' : 'error', 'verify'))
+      if (git.pr !== null) {
+        const label = Number.isFinite(git.pr.number) ? tr('git.pr', { number: git.pr.number }) : tr('git.prUnknown')
+        const clickable = git.pr.mode === 'gh' && git.pr.url !== ''
+        badges.push(
+          clickable
+            ? h(
+                'a',
+                { key: 'pr', className: 'atw-badge atw-badge--git atw-badge--brand atw-badge--link', href: git.pr.url, target: '_blank', rel: 'noreferrer noopener', title: git.pr.url },
+                label,
+              )
+            : h('span', { key: 'pr', className: 'atw-badge atw-badge--git', title: git.pr.mode === 'manual' ? tr('git.prManual') : git.pr.url }, label),
+        )
+      }
+      if (Number.isFinite(git.mergedAt)) badges.push(gitBadge(tr('git.merged'), 'success', 'merged'))
+      if (badges.length === 0) return null
+      return h('div', { className: 'atw-card-git' }, badges)
+    }
+
+    /** @returns the drawer's Git/PR detail block, or null when the item has no git record. */
+    function renderGitSection(view, item) {
+      const tr = view.tr
+      const git = item.git
+      if (git === null) return null
+      const rows = []
+      if (git.branch !== '') rows.push(kvRow('git-branch', tr('git.branchLabel'), git.branch))
+      if (git.base !== '') rows.push(kvRow('git-base', tr('git.base'), git.base))
+      if (git.sha !== '') rows.push(kvRow('git-sha', tr('git.sha'), git.sha))
+      if (git.remote !== '') rows.push(kvRow('git-remote', tr('git.remote'), git.remote))
+      rows.push(kvRow('git-push', tr('git.pushState'), badge(git.pushed ? tr('git.pushed') : tr('git.notPushed'), git.pushed ? 'success' : 'idle')))
+      rows.push(
+        kvRow(
+          'git-verify',
+          tr('git.verifyState'),
+          git.verify === null
+            ? tr('git.verifyMissing')
+            : h(
+                'span',
+                { className: 'atw-row' },
+                badge(git.verify.ok ? tr('git.verifyOk') : tr('git.verifyFail'), git.verify.ok ? 'success' : 'error'),
+                Number.isFinite(git.verify.at) ? h('span', { className: 'atw-muted' }, relativeTime(git.verify.at, view.now, tr)) : null,
+              ),
+        ),
+      )
+      if (git.pr !== null) {
+        const label = Number.isFinite(git.pr.number) ? tr('git.pr', { number: git.pr.number }) : tr('git.prUnknown')
+        rows.push(
+          kvRow(
+            'git-pr',
+            label,
+            h(
+              'span',
+              { className: 'atw-row' },
+              git.pr.url !== ''
+                ? h('a', { className: 'atw-link', href: git.pr.url, target: '_blank', rel: 'noreferrer noopener' }, git.pr.url)
+                : tr('git.prManual'),
+              git.pr.mode !== '' ? h('span', { className: 'atw-muted' }, git.pr.mode) : null,
+              git.pr.status !== '' ? h('span', { className: 'atw-muted' }, git.pr.status) : null,
+            ),
+          ),
+        )
+      }
+      if (git.prReview !== null) {
+        rows.push(kvRow('git-pr-review', tr('git.prReview'), badge(str(git.prReview.verdict, tr('common.unknown')), 'idle')))
+      }
+      if (git.verify !== null && git.verify.results.length > 0) {
+        rows.push(
+          h(
+            'div',
+            { key: 'git-verify-results', className: 'atw-section' },
+            git.verify.results.map((result, index) =>
+              h(
+                'div',
+                { key: 'git-verify-' + index, className: 'atw-command' },
+                h('span', { className: 'atw-command-text' }, str(result.command, tr('drawer.none'))),
+                badge(
+                  tr('drawer.exitCode') + ' ' + (Number.isFinite(result.exitCode) ? String(result.exitCode) : '-'),
+                  result.exitCode === 0 ? 'success' : Number.isFinite(result.exitCode) ? 'error' : 'idle',
+                ),
+              ),
+            ),
+          ),
+        )
+      }
+      if (Number.isFinite(git.mergedAt)) rows.push(kvRow('git-merged', tr('git.mergedAt'), relativeTime(git.mergedAt, view.now, tr)))
+      return h('div', { key: 'git', className: 'atw-section' }, h('div', { className: 'atw-section-title' }, tr('git.title')), rows)
+    }
+
     function renderItemCard(view, card) {
       const tr = view.tr
       const item = card.item
       const tone = statusTone(item.status)
       const reviews = item.reviews
-      const escalated = item.status === 'escalated'
       const selected = view.selectedItemId !== null && view.selectedItemId === item.id
       let className = 'atw-card atw-card--' + tone
       if (reviews.pendingReviewer !== '') className += ' atw-card--pending-review'
       if (selected) className += ' atw-card--selected'
-      const open = Number.isFinite(item.openFindings) && item.openFindings > 0
       const claimBy = item.claim === null ? '' : item.claim.by
       const claimable = item.assignment === 'open' && claimBy === '' && item.status === 'pending'
       const proposalsOpen = Number.isFinite(item.openProposals) && item.openProposals > 0
@@ -1611,14 +1910,16 @@ window.__ModuleLoader__.load({
           { className: 'atw-card-head' },
           h('span', { className: 'atw-card-id' }, item.id),
           badge(statusLabel(tr, item.status), tone, 'status'),
-          escalated ? badge(tr('flow.escalated'), 'error', 'escalated') : null,
         ),
         h('div', { className: 'atw-card-subject' }, str(item.subject, tr('drawer.none'))),
         h('div', { className: 'atw-card-meta' }, tr('flow.owner', { name: str(item.owner, tr('common.unknown')) })),
+        renderGitBadges(view, item.git),
         h(
           'div',
           { className: 'atw-card-flags' },
           h('span', { key: 'round' }, tr('flow.round', { submitted: reviews.submittedRounds, max: reviews.maxRounds })),
+          // Noise budget (docs/16 §3): the card keeps status + R + one flag; the
+          // rest of the flags live in the detail drawer.
           memberCreated
             ? h(
                 'span',
@@ -1629,12 +1930,13 @@ window.__ModuleLoader__.load({
                 },
                 tr('flow.memberItem'),
               )
-            : null,
-          claimBy !== '' ? badge(tr('flow.claimed', { name: claimBy }), 'brand', 'claim') : null,
-          claimable ? badge(tr('flow.openAssignment'), 'warn', 'open') : null,
-          proposalsOpen ? badge(tr('flow.proposalsOpen', { n: item.openProposals }), 'warn', 'proposals') : null,
-          open ? badge(tr('flow.findings', { n: item.openFindings }), 'warn', 'findings') : null,
-          reviews.pendingReviewer !== '' ? h('span', { key: 'pending', className: 'atw-card-pending' }, tr('flow.pendingReviewer', { name: reviews.pendingReviewer })) : null,
+            : claimBy !== ''
+              ? badge(tr('flow.claimed', { name: claimBy }), 'brand', 'claim')
+              : claimable
+                ? badge(tr('flow.openAssignment'), 'warn', 'open')
+                : proposalsOpen
+                  ? badge(tr('flow.proposalsOpen', { n: item.openProposals }), 'warn', 'proposals')
+                  : null,
         ),
       )
     }
@@ -1750,9 +2052,17 @@ window.__ModuleLoader__.load({
 
     function renderTopologyPanel(view, team, run) {
       const tr = view.tr
-      const items = run ? toArray(run.items).map(normalizeItem) : []
+      const items = run ? normalizeRunItems(run) : []
       const topology = computeTopology(team, items, normalizeCollaboration(run))
-      const hint = tr('topology.members') + ' ' + team.members.length + ' · ' + tr('topology.items') + ' ' + items.length
+      const hint =
+        tr('topology.members') +
+        ' ' +
+        topology.participantCount +
+        ' · ' +
+        tr('topology.items') +
+        ' ' +
+        items.length +
+        (topology.idleCount > 0 ? ' · ' + tr('topology.idle', { n: topology.idleCount }) : '')
       const empty = team.members.length === 0 && items.length === 0
       return h(
         'section',
@@ -1768,9 +2078,6 @@ window.__ModuleLoader__.load({
               ? h(
                   'svg',
                   { className: 'atw-topo-svg', viewBox: '0 0 100 100', preserveAspectRatio: 'none', 'aria-hidden': true },
-                  topology.edges.map((edge) =>
-                    h('path', { key: edge.key, className: 'atw-edge ' + edge.className, d: edge.d, vectorEffect: 'non-scaling-stroke' }),
-                  ),
                   topology.peerEdges.map((edge) =>
                     h(
                       'path',
@@ -1783,6 +2090,9 @@ window.__ModuleLoader__.load({
                       },
                       h('title', null, edge.from + ' ↔ ' + edge.to + ' · ' + edge.count),
                     ),
+                  ),
+                  topology.edges.map((edge) =>
+                    h('path', { key: edge.key, className: 'atw-edge ' + edge.className, d: edge.d, vectorEffect: 'non-scaling-stroke' }),
                   ),
                 )
               : null,
@@ -1799,7 +2109,7 @@ window.__ModuleLoader__.load({
                 {
                   key: node.key,
                   className: 'atw-node atw-node--member atw-node--st-' + str(node.member.status, 'inactive'),
-                  style: { left: node.x + '%', top: node.y + '%', maxWidth: topology.memberWidth + '%' },
+                  style: { left: node.x + '%', top: node.y + '%' },
                   title: node.member.name + ' · ' + memberStatusLabel(tr, node.member.status),
                 },
                 h('span', { className: 'atw-dot' }),
@@ -1807,6 +2117,19 @@ window.__ModuleLoader__.load({
                 badge(contextLabel(tr, node.member.context), node.member.context === 'fork' ? 'warn' : 'idle', 'ctx'),
               ),
             ),
+            topology.idleNode === null
+              ? null
+              : h(
+                  'div',
+                  {
+                    key: 'idle',
+                    className: 'atw-node atw-node--idle',
+                    style: { left: topology.idleNode.x + '%', top: topology.idleNode.y + '%' },
+                    title: tr('topology.idleNames', { names: topology.idleNode.names }),
+                  },
+                  h('span', { className: 'atw-dot' }),
+                  h('span', null, tr('topology.idle', { n: topology.idleNode.count })),
+                ),
             topology.itemNodes.map((node) =>
               h(
                 'div',
@@ -2362,6 +2685,13 @@ window.__ModuleLoader__.load({
         kvRow('subject', tr('drawer.subject'), str(item.subject, tr('drawer.none'))),
         kvRow('owner', tr('drawer.owner'), str(item.owner, tr('common.unknown'))),
         kvRow('role', tr('drawer.role'), str(item.role, tr('common.unknown'))),
+        kvRow(
+          'origin',
+          tr('drawer.origin'),
+          item.origin === 'member'
+            ? tr('flow.memberItem') + (item.createdBy === '' ? '' : ' · ' + item.createdBy)
+            : tr('drawer.originPlan'),
+        ),
         kvRow('assignment', tr('drawer.assignment'), tr('drawer.assignment.' + item.assignment, undefined, item.assignment)),
         kvRow(
           'claim',
@@ -2388,6 +2718,8 @@ window.__ModuleLoader__.load({
         meta.push(kvRow('task', tr('drawer.noTask'), tr('common.none')))
       }
       sections.push(h('div', { key: 'meta', className: 'atw-section' }, meta))
+      const gitSection = renderGitSection(view, item)
+      if (gitSection !== null) sections.push(gitSection)
       sections.push(bulletList('dod', tr('drawer.dod'), item.definitionOfDone))
       if (item.override !== null) {
         sections.push(
@@ -2626,7 +2958,7 @@ window.__ModuleLoader__.load({
       )
       const notes = renderDiagnostics(view, diagnostics)
       if (notes !== null) content.push(notes)
-      const items = toArray(run.items).map(normalizeItem)
+      const items = normalizeRunItems(run)
       const selected = view.selectedItemId === null ? null : items.find((item) => item.id === view.selectedItemId) || null
       if (selected !== null) content.push(renderDrawer(view, selected, collaboration))
       return h('div', { className: 'atw-scroll' }, content)

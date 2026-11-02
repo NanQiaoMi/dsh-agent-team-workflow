@@ -78,6 +78,8 @@ export const PROPOSAL_TIMEOUT_MAX = 1440
 export function ensureCollaboration(state) {
   if (!Array.isArray(state.channel)) state.channel = []
   if (!Array.isArray(state.proposals)) state.proposals = []
+  if (!Array.isArray(state.staffPool)) state.staffPool = []
+  if (state.git === undefined) state.git = null
   if (!Number.isInteger(state.messageSeq)) state.messageSeq = 0
   if (!Number.isInteger(state.proposalSeq)) state.proposalSeq = 0
   if (Array.isArray(state.items)) {
@@ -89,6 +91,7 @@ export function ensureCollaboration(state) {
       if (item.pendingReviewer === undefined) item.pendingReviewer = null
       if (item.origin !== 'member') item.origin = 'plan'
       if (item.createdBy === undefined) item.createdBy = null
+      if (item.git === undefined) item.git = null
     }
   }
   for (const proposal of Array.isArray(state.proposals) ? state.proposals : []) {
@@ -190,6 +193,8 @@ export function createRun(input) {
     events: [],
     channel: [],
     proposals: [],
+    staffPool: [],
+    git: null,
     messageSeq: 0,
     proposalSeq: 0,
     gate: null,
@@ -807,6 +812,11 @@ export function evaluateGates(state, input) {
     if (item.needsReview !== false && item.reviewers.length === 0) {
       failures.push('no peer reviewer was ever assigned; the owner must invite one with team_flow_work {action:"request_review"}')
     }
+    if (input.settings.gitRequireVerify === true) {
+      const git = item.git ?? null
+      if (git === null || git.verify === null || git.verify === undefined) failures.push('git verification missing (gitRequireVerify is on)')
+      else if (git.verify.ok !== true) failures.push(`git verification failed (${git.verify.results?.filter((entry) => entry.exitCode !== 0).map((entry) => entry.command).join(', ') || 'commands not green'})`)
+    }
     const blockingProposals = openBlockingProposals(state, item.id)
     if (blockingProposals.length > 0) {
       failures.push(`open blocking proposal(s): ${blockingProposals.map((proposal) => `${proposal.id}(${proposal.kind})`).join(', ')}`)
@@ -1075,6 +1085,7 @@ export function buildStatus(state, input) {
       override: item.overrideReason ?? null,
       assignment: item.assignment ?? 'lead',
       claim: item.claim ?? null,
+      git: item.git ?? null,
       pending_reviewer: pending?.reviewer ?? item.pendingReviewer ?? null,
       review_requests: item.reviewRequests ?? [],
       handoffs: item.handoffs ?? [],
@@ -1121,6 +1132,7 @@ export function buildStatus(state, input) {
       resolution: escalation.resolution,
       created_by: escalation.createdBy,
     })),
+    git: state.git ?? null,
     team: members,
     collaboration: (() => {
       const summary = collaborationSummary(state, { me: me.name, role: input.role, members: input.members ?? [] })
@@ -1641,6 +1653,7 @@ export function createItem(state, input) {
     repairLog: [],
     origin: 'member',
     createdBy: input.by,
+    git: null,
     createdAt: now,
     updatedAt: now,
     reportedAt: null,

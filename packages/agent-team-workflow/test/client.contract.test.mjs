@@ -1069,3 +1069,272 @@ test('docs/14: boards without origin/deadline/quorum show no new badges and do n
     board.dispose()
   }
 })
+
+// ---------------------------------------------------------------------------
+// Board noise reduction + Git/PR badges (docs/16 §2.3/§3)
+// ---------------------------------------------------------------------------
+
+/** Clone the v2 fixture with a different roster/items/collaboration. */
+function withSnapshot(overrides) {
+  return {
+    ...V2_SNAPSHOT,
+    ...overrides,
+    run: { ...V2_SNAPSHOT.run, ...(overrides.run ?? {}) },
+    team: { ...V2_SNAPSHOT.team, ...(overrides.team ?? {}) },
+  }
+}
+
+test('docs/16 topology: only participants are drawn, idle members fold into one node', async () => {
+  // The three-row layout contract: 2fr/1.4fr + 2fr/1fr + thirds, a 240–320px
+  // panel band with an internal scroller, and a single column at <=1180px.
+  assert.ok(source.includes('grid-template-columns:minmax(0,2fr) minmax(0,1.4fr)'), 'flow + topology row ratios')
+  assert.ok(source.includes('grid-template-columns:minmax(0,2fr) minmax(0,1fr)'), 'channel + proposals row ratios')
+  assert.ok(source.includes('grid-template-columns:repeat(3,minmax(0,1fr))'), 'event/gate/escalation thirds')
+  assert.match(source, /\.atw-panel\{[^}]*min-height:240px[^}]*max-height:320px/, 'every panel keeps the 240–320px band')
+  assert.ok(source.includes('@media (max-width:1180px)'), 'narrow screens collapse to one column')
+  assert.match(source, /\.atw-panel-body\{[^}]*overflow:auto/, 'the panel body owns the scrollbar')
+
+  const idle = Array.from({ length: 6 }, (_, index) => ({ name: 'idle-' + (index + 1), role: 'teammate', status: 'inactive', context: 'fresh' }))
+  const busy = [
+    { name: 'impl-a', role: 'teammate', status: 'running', context: 'fresh' },
+    { name: 'rev-b', role: 'teammate', status: 'inactive', context: 'fresh' },
+    { name: 'impl-b', role: 'teammate', status: 'running', context: 'fork' },
+  ]
+  // The Host fans a `to:"team"` broadcast out into an edge to every roster
+  // member; those edges must not promote idle members back into the map.
+  const fanOutEdges = [
+    { from: 'impl-a', to: 'rev-b', count: 3, kinds: ['note'] },
+    ...idle.map((member) => ({ from: 'impl-a', to: member.name, count: 2, kinds: ['status'] })),
+  ]
+  const board = await mountBoard(
+    withSnapshot({
+      team: { members: [...busy, ...idle] },
+      run: { collaboration: { ...V2_SNAPSHOT.run.collaboration, edges: fanOutEdges } },
+    }),
+  )
+  try {
+    const tree = await board.render()
+    const drawn = findByClass(tree, 'atw-node--member')
+    assert.equal(drawn.length, busy.length, 'only members with work/review/channel activity are drawn')
+    const idleNodes = findByClass(tree, 'atw-node--idle')
+    assert.equal(idleNodes.length, 1, 'all idle members fold into exactly one node')
+    const idleText = textOf(idleNodes[0])
+    assert.ok(idleText.includes('k:topology.idle'), 'the folded node is labelled with the idle count')
+    assert.ok(String(idleNodes[0].props.title ?? '').includes('idle-1'), 'hovering lists the idle names')
+    assert.ok(String(idleNodes[0].props.title ?? '').includes('idle-6'))
+    assert.ok(!textOf(tree).includes('idle-2'), 'folded names are not rendered as separate nodes')
+  } finally {
+    board.dispose()
+  }
+
+  // >6 participants switch the members band to two rows (no overlap at 9 people).
+  const wide = [
+    ...busy,
+    { name: 'p1', role: 'teammate', status: 'running', context: 'fresh' },
+    { name: 'p2', role: 'teammate', status: 'running', context: 'fresh' },
+    { name: 'p3', role: 'teammate', status: 'running', context: 'fresh' },
+    { name: 'p4', role: 'teammate', status: 'running', context: 'fresh' },
+    { name: 'p5', role: 'teammate', status: 'running', context: 'fresh' },
+    { name: 'p6', role: 'teammate', status: 'running', context: 'fresh' },
+  ]
+  const nine = await mountBoard(withSnapshot({ team: { members: wide } }))
+  try {
+    const tree = await nine.render()
+    const nodes = findByClass(tree, 'atw-node--member')
+    assert.equal(nodes.length, 9, 'nine participants stay visible')
+    const tops = new Set(nodes.map((node) => String(node.props.style?.top ?? '')))
+    assert.equal(tops.size, 2, 'more than six participants use a two-row grid')
+    for (const node of nodes) assert.equal(node.props.style?.maxWidth, undefined, 'participant names are not width-capped')
+  } finally {
+    nine.dispose()
+  }
+})
+
+test('docs/16 topology: peer edges are capped at the 8 busiest and weighted', async () => {
+  const names = ['impl-a', 'rev-b', 'impl-b', 'p1', 'p2']
+  const members = names.map((name) => ({ name, role: 'teammate', status: 'running', context: 'fresh' }))
+  const pairs = []
+  for (let left = 0; left < names.length; left += 1) {
+    for (let right = left + 1; right < names.length; right += 1) pairs.push([names[left], names[right]])
+  }
+  // 10 peer pairs, counts 10..1 plus two sub-threshold edges.
+  const edges = pairs.map(([from, to], index) => ({ from, to, count: 10 - index, kinds: ['note'] }))
+  edges.push({ from: 'impl-a', to: 'p1', count: 1, kinds: ['note'] })
+  edges.push({ from: 'rev-b', to: 'p2', count: 1, kinds: ['note'] })
+  const board = await mountBoard(
+    withSnapshot({
+      team: { members },
+      run: { collaboration: { ...V2_SNAPSHOT.run.collaboration, edges } },
+    }),
+  )
+  try {
+    const tree = await board.render()
+    const peers = findByClass(tree, 'atw-edge--peer')
+    assert.equal(peers.length, 8, 'at most eight peer links are drawn')
+    const svg = findByClass(tree, 'atw-topo-svg')[0]
+    const paths = collectElements(svg, (element) => element.type === 'path')
+    assert.ok(String(paths[0].props?.className ?? '').includes('atw-edge--peer'), 'peer arcs are painted under the Lead spokes')
+    const counts = peers.map((path) => {
+      const match = /·\s*(\d+)/.exec(textOf(path))
+      return match === null ? 0 : Number(match[1])
+    })
+    assert.deepEqual(counts, [10, 9, 8, 7, 6, 5, 4, 3].slice(0, counts.length), 'the busiest links win')
+    for (const count of counts) assert.ok(count >= 2, 'count >= 2 keeps the map readable')
+    const widths = peers.map((path) => Number(path.props.style.strokeWidth))
+    assert.ok(widths[0] > widths[widths.length - 1], 'message count weights the stroke')
+    for (const width of widths) assert.ok(width >= 0.8 && width <= 2.4, `stroke width stays in 0.8..2.4 (${width})`)
+    for (const opacity of peers.map((path) => Number(path.props.style.opacity))) {
+      assert.ok(opacity >= 0.25 && opacity <= 0.55, `opacity stays in 0.25..0.55 (${opacity})`)
+    }
+  } finally {
+    board.dispose()
+  }
+
+  // Four or fewer drawn nodes relax the threshold so the map is not empty.
+  const smallBoard = await mountBoard(
+    withSnapshot({
+      team: { members: members.slice(0, 3) },
+      run: { collaboration: { ...V2_SNAPSHOT.run.collaboration, edges: [{ from: 'impl-a', to: 'rev-b', count: 1, kinds: ['note'] }] } },
+    }),
+  )
+  try {
+    const tree = await smallBoard.render()
+    assert.equal(findByClass(tree, 'atw-edge--peer').length, 1, 'a small participant set may draw single-message links')
+  } finally {
+    smallBoard.dispose()
+  }
+})
+
+test('docs/16: card badges stay within budget and Git/PR badges render (and vanish safely)', async () => {
+  const gitFull = {
+    branch: 'agentteam/run-v2/W1',
+    base: 'main',
+    sha: 'abc1234def',
+    remote: 'origin',
+    pushed: true,
+    verify: { ok: true, at: new Date().toISOString() },
+    pr: { url: 'https://github.com/o/r/pull/7', number: 7, mode: 'gh', status: 'open' },
+    mergedAt: null,
+  }
+  const gitManual = {
+    branch: 'agentteam/run-v2/W2',
+    base: 'main',
+    sha: '',
+    remote: 'origin',
+    pushed: false,
+    verify: { ok: false, at: new Date().toISOString() },
+    pr: { url: '', mode: 'manual' },
+    mergedAt: new Date().toISOString(),
+  }
+  const items = V2_SNAPSHOT.run.items.map((item, index) =>
+    index === 0 ? { ...item, git: gitFull } : index === 1 ? { ...item, git: gitManual } : item,
+  )
+  const board = await mountBoard(withSnapshot({ run: { items } }))
+  try {
+    let tree = await board.render()
+    const cards = findByClass(tree, 'atw-card').filter((element) => element.props?.role === 'button')
+    const cardFor = (id) => cards.find((element) => textOf(element).includes(id))
+    // Noise budget: status lives in the head, so at most two children remain in the flags row.
+    for (const card of cards) {
+      const flags = findByClass(card, 'atw-card-flags')
+      assert.equal(flags.length, 1, 'every card keeps one flags row')
+      assert.ok((flags[0].children ?? []).filter(Boolean).length <= 2, 'flags stay within the status + R + one-flag budget')
+    }
+    const w1 = textOf(cardFor('W1'))
+    assert.ok(w1.includes('k:git.branch'), 'branch badge')
+    assert.ok(w1.includes('k:git.pushed'), 'pushed badge')
+    assert.ok(w1.includes('k:git.verifyOk'), 'verified badge')
+    assert.ok(w1.includes('k:git.pr'), 'PR badge')
+    const links = collectElements(tree, (element) => element.type === 'a' && element.props?.href === gitFull.pr.url)
+    assert.equal(links.length, 1, 'a gh-mode PR renders as an external link')
+    assert.ok(String(links[0].props.className).includes('atw-badge--link'))
+    const w2 = textOf(cardFor('W2'))
+    assert.ok(w2.includes('k:git.verifyFail'), 'a failed verify is called out')
+    assert.ok(w2.includes('k:git.prUnknown'), 'a manual/no-number PR still shows a badge')
+    assert.ok(w2.includes('k:git.merged'), 'a merged item shows the merged badge')
+    assert.ok(!textOf(cardFor('W3')).includes('k:git.'), 'items without a git record show no git badges')
+
+    // The drawer is the detail surface: branch/base/sha/remote/verify/PR/merged.
+    cardFor('W1').props.onClick()
+    tree = await board.render()
+    const drawer = textOf(findByClass(tree, 'atw-drawer')[0])
+    for (const needle of ['k:git.title', gitFull.branch, gitFull.sha, gitFull.remote, 'k:git.verifyOk']) {
+      assert.ok(drawer.includes(needle), `the Git/PR drawer block is missing ${needle}`)
+    }
+    assert.ok(drawer.includes(gitFull.pr.url), 'the drawer links the PR url')
+    for (const handler of [...board.keydown]) handler({ key: 'Escape' })
+    tree = await board.render()
+    assert.equal(findByClass(tree, 'atw-drawer').length, 0)
+  } finally {
+    board.dispose()
+  }
+
+  // Real Host aggregation: shallow `item.git` (sha/commits/verify/prReview) plus a
+  // run-level `run.git` (branch/push/PR), which the client must merge defensively.
+  const hostShapeItems = V2_SNAPSHOT.run.items.map((item, index) =>
+    index === 0
+      ? {
+          ...item,
+          git: {
+            sha: 'deadbee',
+            commits: [{ sha: 'deadbee', at: new Date().toISOString(), message: 'agentteam(W1): x', files: ['a.js'] }],
+            verify: { ok: true, at: new Date().toISOString(), results: [{ command: 'node --test', exitCode: 0, outputTail: '' }] },
+            prReview: { verdict: 'approve', at: new Date().toISOString(), mode: 'gh' },
+          },
+        }
+      : item,
+  )
+  const hostShape = await mountBoard(
+    withSnapshot({
+      run: {
+        items: hostShapeItems,
+        git: {
+          branch: 'agentteam/run-2',
+          base: 'main',
+          remote: 'origin',
+          branchCreated: true,
+          pushedSha: 'deadbee',
+          pushedAt: new Date().toISOString(),
+          pr: { url: 'https://github.com/o/r/pull/9', number: 9, mode: 'gh', status: 'OPEN' },
+          mergedAt: null,
+        },
+      },
+    }),
+  )
+  try {
+    let tree = await hostShape.render()
+    const cards = findByClass(tree, 'atw-card').filter((element) => element.props?.role === 'button')
+    const cardFor = (id) => cards.find((element) => textOf(element).includes(id))
+    const w1 = textOf(cardFor('W1'))
+    assert.ok(w1.includes('k:git.branch') && w1.includes('agentteam/run-2'), 'the run branch enriches the item badges')
+    assert.ok(w1.includes('k:git.pushed'), 'run.git.pushedAt marks the branch as pushed')
+    assert.ok(w1.includes('k:git.verifyOk'), 'item verify result renders')
+    assert.ok(w1.includes('k:git.pr'), 'the run pull request renders on the card')
+    const prLinks = collectElements(tree, (element) => element.type === 'a' && element.props?.href === 'https://github.com/o/r/pull/9')
+    assert.equal(prLinks.length, 1, 'the run PR is clickable')
+    assert.ok(!textOf(cardFor('W2')).includes('k:git.'), 'items without their own git record stay clean')
+
+    cardFor('W1').props.onClick()
+    tree = await hostShape.render()
+    const drawer = textOf(findByClass(tree, 'atw-drawer')[0])
+    for (const needle of ['agentteam/run-2', 'main', 'origin', 'deadbee', 'https://github.com/o/r/pull/9', 'k:git.prReview', 'node --test']) {
+      assert.ok(drawer.includes(needle), `the drawer is missing ${needle}`)
+    }
+  } finally {
+    hostShape.dispose()
+  }
+
+  // Legacy snapshot: no `item.git` at all → no git badges/section, no crash.
+  const legacy = await mountBoard(V2_SNAPSHOT)
+  try {
+    const tree = await legacy.render()
+    const tokens = classTokens(tree)
+    const text = textOf(tree)
+    assert.ok(!tokens.includes('atw-card-git'), 'no git row without data')
+    assert.ok(!tokens.includes('atw-badge--git'), 'no git badges without data')
+    assert.ok(!text.includes('k:git.'), 'no git copy without data')
+    assert.ok(!text.includes('k:error.title'), 'missing git data must not reach the error card')
+  } finally {
+    legacy.dispose()
+  }
+})

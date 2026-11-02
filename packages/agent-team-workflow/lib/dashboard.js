@@ -429,6 +429,70 @@ function buildItem(raw, id, context) {
     // documented defaults, and only the documented 'member' marker is trusted.
     origin: textOf(raw.origin).trim().toLowerCase() === 'member' ? 'member' : 'plan',
     createdBy: isoOf(raw.createdBy),
+    git: buildItemGit(raw.git),
+  }
+}
+
+/**
+ * Aggregate one item's git record (docs/16 §2.3): commit, verification and PR.
+ * @param raw - raw `item.git`.
+ * @returns normalized git record or null.
+ */
+function buildItemGit(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const commits = Array.isArray(raw.commits)
+    ? raw.commits.slice(-10).map((commit) => ({
+        sha: textOf(commit?.sha) || null,
+        at: isoOf(commit?.at),
+        message: clip(commit?.message, 200),
+        files: textList(commit?.files).slice(0, 20),
+      }))
+    : []
+  const verify = raw.verify !== null && typeof raw.verify === 'object'
+    ? { ok: raw.verify.ok === true, at: isoOf(raw.verify.at), results: recordList(raw.verify.results).slice(-8).map((entry) => ({
+        command: clip(entry?.command, 300),
+        exitCode: integerOf(entry?.exitCode),
+        outputTail: clip(entry?.outputTail, 400),
+      })) }
+    : null
+  const prReview = raw.prReview !== null && typeof raw.prReview === 'object'
+    ? { verdict: textOf(raw.prReview.verdict) || null, at: isoOf(raw.prReview.at), mode: textOf(raw.prReview.mode) || null }
+    : null
+  return {
+    sha: textOf(raw.sha) || null,
+    commits,
+    verify,
+    prReview,
+  }
+}
+
+/**
+ * Aggregate the run-level git record: branch, push and pull request state.
+ * @param raw - raw `state.git`.
+ * @returns normalized run git record or null.
+ */
+function buildRunGit(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const pr = raw.pr !== null && typeof raw.pr === 'object'
+    ? {
+        url: textOf(raw.pr.url) || null,
+        number: raw.pr.number === null || raw.pr.number === undefined ? null : integerOf(raw.pr.number),
+        mode: textOf(raw.pr.mode) || null,
+        status: textOf(raw.pr.status) || null,
+      }
+    : null
+  return {
+    branch: textOf(raw.branch) || null,
+    base: textOf(raw.base) || null,
+    remote: textOf(raw.remote) || null,
+    branchCreated: raw.branchCreated === true,
+    pushedAt: isoOf(raw.pushedAt),
+    pushedSha: textOf(raw.pushedSha) || null,
+    pr,
+    mergedAt: isoOf(raw.mergedAt),
+    mergeSha: textOf(raw.mergeSha) || null,
+    mergedInto: textOf(raw.mergedInto) || null,
+    mergeMode: textOf(raw.mergeMode) || null,
   }
 }
 
@@ -1064,6 +1128,7 @@ function buildRun(state, context) {
     escalations: buildEscalations(state.escalations, warnings),
     events: buildEvents(state.events, warnings),
     collaboration,
+    git: buildRunGit(state.git),
     artifacts: buildArtifacts(state.artifacts, context.artifacts),
   }
 }

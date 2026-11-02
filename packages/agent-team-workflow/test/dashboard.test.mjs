@@ -1198,3 +1198,52 @@ test('malformed autonomy fields degrade instead of throwing', () => {
   assert.equal(proposals[2].autoResolved, true)
   assert.equal(proposals[2].quorum, 1) // negative quorum clamped to the documented floor
 })
+
+
+test('the snapshot exposes the run and item git records (docs/16 §2.3)', () => {
+  const state = makeState({
+    git: {
+      branch: 'agentteam/run-1',
+      base: 'main',
+      remote: 'origin',
+      branchCreated: true,
+      pushedAt: '2026-11-01T00:05:00.000Z',
+      pushedSha: 'abc123',
+      pr: { url: 'https://github.com/o/r/pull/7', number: 7, mode: 'gh', status: 'open' },
+      mergedAt: null,
+      mergeSha: null,
+      mergedInto: null,
+      mergeMode: null,
+    },
+    items: [
+      makeItem({
+        git: {
+          sha: 'def456',
+          commits: [{ sha: 'def456', at: '2026-11-01T00:03:00.000Z', message: 'feat: thing', files: ['src/core/run.js'] }],
+          verify: { ok: true, at: '2026-11-01T00:04:00.000Z', results: [{ command: 'true', exitCode: 0, outputTail: '' }] },
+          prReview: { verdict: 'approve', at: '2026-11-01T00:06:00.000Z', mode: 'gh' },
+        },
+      }),
+    ],
+  })
+  const snapshot = buildSnapshot(makeInput(state, { team: makeTeam() }))
+  assert.equal(snapshot.run.git.branch, 'agentteam/run-1')
+  assert.equal(snapshot.run.git.base, 'main')
+  assert.equal(snapshot.run.git.pr.number, 7)
+  assert.equal(snapshot.run.git.branchCreated, true)
+  const git = snapshot.run.items[0].git
+  assert.equal(git.sha, 'def456')
+  assert.equal(git.commits.length, 1)
+  assert.equal(git.commits[0].files[0], 'src/core/run.js')
+  assert.equal(git.verify.ok, true)
+  assert.equal(git.prReview.verdict, 'approve')
+})
+
+test('a board without git records yields nulls and never throws', () => {
+  const state = makeState({ items: [makeItem()] })
+  const snapshot = buildSnapshot(makeInput(state, { team: makeTeam() }))
+  assert.equal(snapshot.run.git, null)
+  assert.equal(snapshot.run.items[0].git, null)
+  assert.doesNotThrow(() => buildSnapshot(makeInput(makeState({ git: 'nope', items: [makeItem({ git: 42 })] }), { team: makeTeam() })))
+  assert.equal(buildSnapshot(makeInput(makeState({ git: 'nope', items: [makeItem({ git: 42 })] }), { team: makeTeam() })).run.git, null)
+})

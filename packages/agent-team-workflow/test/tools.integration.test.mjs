@@ -21,6 +21,7 @@ import { createStore } from '../lib/store.js'
 import { buildTools } from '../lib/tools.js'
 
 const DSH_TOOLS = '/Applications/DSH Desktop.app/Contents/Resources/app/node_modules/@deepseek-ai/dsh-tools/lib/index.js'
+const { execFileSync } = await import('node:child_process')
 const { assertSupportedJsonSchema, validateJsonSchemaValue } = await import(DSH_TOOLS)
 
 /** In-memory double of the Agent Teams service plus the plugin's host needs. */
@@ -107,7 +108,17 @@ function createHarness(cwd) {
     async sendMessage(caller, request) {
       messages.push({ from: nameOf(caller) ?? caller.id, to: request.target, text: request.content[0].text })
       if (!members.some((member) => member.name === request.target)) throw new Error(`unknown member ${request.target}`)
+      const target = members.find((member) => member.name === request.target)
+      if (target.status === 'inactive') target.status = 'running'
       return { messageId: `msg-${messages.length}` }
+    },
+    async spawnTeammate(caller, request) {
+      if (caller.id !== lead.id) throw new Error('only the Team Lead can create teammates')
+      if (members.some((member) => member.name === request.name)) throw new Error(`member ${request.name} already exists`)
+      const agent = { id: `session-${request.name}`, session: { id: `session-${request.name}` } }
+      agents.set(request.name, agent)
+      members.push({ name: request.name, role: 'teammate', id: agent.id, status: 'provisioning', context: request.context })
+      return { member: { name: request.name, id: agent.id, status: 'provisioning' } }
     },
   }
 
@@ -156,7 +167,7 @@ test('every tool declares a supported output schema', () => {
   return withWorkspace(async (cwd) => {
     const { ctx } = createHarness(cwd)
     const tools = buildTools({ ctx, settings, store: createStore({ ctx, settings }), version: 'test' })
-    assert.equal(tools.length, 13)
+    assert.equal(tools.length, 15)
     for (const tool of tools) assertSupportedJsonSchema(tool.output.schema)
   })
 })
@@ -1039,5 +1050,168 @@ test('status settles an expired proposal and persists the decision', () => {
     assert.equal(readBack.proposals[0].autoResolved, true)
     assert.match(readBack.proposals[0].resolution, /auto-accepted/)
     assert.equal(readBack.items[0].definitionOfDone.includes('Also assert the empty case'), true)
+  })
+})
+
+test('the plan staffs its own Team: spawns missing owners and wakes inactive reviewers', async () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test' })
+    harness.addTeammate('rev-old')
+    const plan = await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'Ship a module',
+        acceptance_criteria: ['module works'],
+        items: [{ id: 'W1', subject: 'Implement it', owner: 'impl-new', write_scopes: ['src/'], definition_of_done: ['works'], reviewers: ['rev-old'] }],
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    assert.equal(plan.staffed.spawned.length, 1)
+    assert.deepEqual(plan.staffed.spawned[0], { name: 'impl-new', kind: 'worker' })
+    assert.deepEqual(plan.staffed.woken, ['rev-old'])
+    assert.ok(harness.ctx.agentTeams.listMembers().some((member) => member.name === 'impl-new'))
+    const resume = harness.messages.find((message) => message.to === 'rev-old')
+    assert.match(resume.text, /^\[RESUME\]/)
+  })
+})
+
+test('staffing respects the eight-member roster limit', async () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test' })
+    for (const name of ['one', 'two', 'three', 'four', 'five', 'six', 'seven']) harness.addTeammate(name)
+    const plan = await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'Ship a module',
+        acceptance_criteria: ['module works'],
+        items: [{ id: 'W1', subject: 'Implement it', owner: 'impl-new', write_scopes: ['src/'], definition_of_done: ['works'], reviewers: ['one'] }],
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    assert.equal(plan.staffed.spawned.length, 0)
+    assert.equal(plan.staffed.needs_spawn[0].name, 'impl-new')
+    assert.match(plan.staffed.needs_spawn[0].reason, /limit 8/)
+    assert.ok(!harness.ctx.agentTeams.listMembers().some((member) => member.name === 'impl-new'))
+  })
+})
+
+test('team_flow_staff fills later waves on demand', async () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test' })
+    const impl = harness.addTeammate('impl')
+    harness.addTeammate('rev')
+    await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'Ship a module',
+        acceptance_criteria: ['module works'],
+        items: [
+          { id: 'W1', subject: 'Implement it', owner: 'impl', write_scopes: ['src/'], definition_of_done: ['works'], reviewers: ['rev'] },
+          { id: 'W2', subject: 'Write the guide', assignment: 'open', write_scopes: ['docs/'], definition_of_done: ['guide works'], reviewers: [] },
+        ],
+        workers: ['pool-a'],
+        auto_spawn: false,
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    const staffed = await byName(tools, 'team_flow_staff').execute({}, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assertOutput(byName(tools, 'team_flow_staff'), staffed)
+    assert.deepEqual(staffed.staffed.spawned.map((entry) => entry.name), ['pool-a'])
+    const again = await byName(tools, 'team_flow_staff').execute({}, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assert.equal(again.staffed.spawned.length, 0, 'staffing is idempotent')
+    assert.ok(again.staffed.skipped.includes('pool-a'))
+  })
+})
+
+test('team_flow_git refuses to run while the workflow is disabled', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test' })
+    harness.addTeammate('impl')
+    await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'Ship a module',
+        acceptance_criteria: ['module works'],
+        items: [{ id: 'W1', subject: 'Implement it', owner: 'impl', write_scopes: ['src/'], definition_of_done: ['works'], reviewers: ['rev'] }],
+        auto_spawn: false,
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    await assert.rejects(
+      () => byName(tools, 'team_flow_git').execute({ action: 'status' }, { agent: harness.lead, signal: EXEC_SIGNAL }),
+      /git workflow is disabled/,
+    )
+  })
+})
+
+test('git workflow end to end: prepare, commit, verify, push, PR, gate, merge', async () => {
+  return withWorkspace(async (cwd) => {
+    const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+    git('init', '-q', '-b', 'main')
+    git('config', 'user.email', 'team@example.com')
+    git('config', 'user.name', 'Agent Team')
+    await (await import('node:fs/promises')).writeFile(join(cwd, 'README.md'), '# demo\n', 'utf8')
+    await (await import('node:fs/promises')).writeFile(join(cwd, '.gitignore'), '.agentteam/\n', 'utf8')
+    git('add', 'README.md', '.gitignore')
+    git('commit', '-q', '-m', 'chore: baseline')
+    const remoteDir = await mkdtemp(join(tmpdir(), 'atw-remote-'))
+    execFileSync('git', ['init', '-q', '--bare', remoteDir], { stdio: 'ignore' })
+    git('remote', 'add', 'origin', remoteDir)
+
+    const gitSettings = resolveSettings({ gitEnabled: true, gitBaseBranch: 'main', gitVerifyCommands: ['printf verified'] })
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings: gitSettings })
+    const tools = buildTools({ ctx: harness.ctx, settings: gitSettings, store, version: 'test' })
+    const impl = harness.addTeammate('impl')
+    const rev = harness.addTeammate('rev')
+    await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'Ship a feature',
+        acceptance_criteria: ['feature lands'],
+        items: [{ id: 'W1', subject: 'Add feature', owner: 'impl', write_scopes: ['src/'], definition_of_done: ['feature works'], reviewers: ['rev'] }],
+        auto_spawn: false,
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    const prepared = await byName(tools, 'team_flow_git').execute({ action: 'prepare' }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assertOutput(byName(tools, 'team_flow_git'), prepared)
+    assert.match(prepared.run_git.branch, /^agentteam\//)
+    assert.equal(git('branch', '--show-current'), prepared.run_git.branch)
+
+    await (await import('node:fs/promises')).mkdir(join(cwd, 'src'), { recursive: true })
+    await (await import('node:fs/promises')).writeFile(join(cwd, 'src', 'feature.txt'), 'feature\n', 'utf8')
+    const committed = await byName(tools, 'team_flow_git').execute(
+      { action: 'commit', item_id: 'W1', files: ['src/feature.txt'] },
+      { agent: impl, signal: EXEC_SIGNAL },
+    )
+    assert.equal(typeof committed.item_git.sha, 'string')
+    const verified = await byName(tools, 'team_flow_git').execute({ action: 'verify', item_id: 'W1' }, { agent: impl, signal: EXEC_SIGNAL })
+    assert.equal(verified.item_git.verify.ok, true)
+    const pushed = await byName(tools, 'team_flow_git').execute({ action: 'push', item_id: 'W1' }, { agent: impl, signal: EXEC_SIGNAL })
+    assert.equal(typeof pushed.run_git.pushedAt, 'string')
+    const pr = await byName(tools, 'team_flow_git').execute({ action: 'pr', item_id: 'W1' }, { agent: impl, signal: EXEC_SIGNAL })
+    assert.equal(pr.run_git.pr.mode, 'manual', 'a local bare remote cannot answer gh, so the workflow falls back to a manual PR record')
+
+    const report = {
+      summary: 'feature added', files: ['src/feature.txt'], commands: [{ command: 'true', exit_code: 0 }], evidence: ['file created'], openQuestions: [], risks: [],
+    }
+    await byName(tools, 'team_flow_report').execute({ item_id: 'W1', ...report }, { agent: impl, signal: EXEC_SIGNAL })
+    await byName(tools, 'team_flow_review_submit').execute(
+      { item_id: 'W1', verdict: 'approve', summary: 'verified', findings: [], evidence_checked: ['read src/feature.txt'] },
+      { agent: rev, signal: EXEC_SIGNAL },
+    )
+    const gate = await byName(tools, 'team_flow_gate').execute({ finalize: true }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assert.equal(gate.pass, true)
+    const merged = await byName(tools, 'team_flow_git').execute({ action: 'merge' }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    assert.equal(typeof merged.run_git.mergedAt, 'string')
+    assert.equal(merged.run_git.mergeMode, 'local')
+    assert.equal(git('branch', '--show-current'), 'main')
+    assert.match(git('show', '--stat', '--oneline', 'HEAD'), /feature|Merge/)
+    const mergedText = await (await import('node:fs/promises')).readFile(join(cwd, 'src', 'feature.txt'), 'utf8')
+    assert.equal(mergedText.trim(), 'feature')
   })
 })
