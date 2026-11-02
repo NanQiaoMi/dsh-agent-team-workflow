@@ -224,11 +224,14 @@ async function runHook(event, payload, { agent, settings, store }) {
  * session's real permissions. A member with no configured role is never
  * restricted.
  */
-/** Workflow tools that change the run; a read-only role may not call them. */
-const MUTATING_TOOLS = new Set([
-  'team_flow_plan', 'team_flow_report', 'team_flow_work', 'team_flow_item', 'team_flow_git',
-  'team_flow_gate', 'team_flow_repair', 'team_flow_staff', 'team_flow_stop', 'team_flow_decide',
-  'team_flow_plan_approval', 'team_flow_review_respond', 'team_flow_escalate', 'team_flow_talk',
+/**
+ * Workflow tools a read-only role may not call. Reporting, reviewing, talking
+ * and escalating are collaboration duties, not workspace mutations, so they
+ * stay available — otherwise a read-only owner could never hand off a report.
+ */
+const READ_ONLY_DENIED_TOOLS = new Set([
+  'team_flow_plan', 'team_flow_work', 'team_flow_item', 'team_flow_git', 'team_flow_gate',
+  'team_flow_repair', 'team_flow_staff', 'team_flow_stop', 'team_flow_decide', 'team_flow_plan_approval',
 ])
 
 function assertRoleAllowed(settings, state, memberName, toolName, action) {
@@ -247,7 +250,7 @@ function assertRoleAllowed(settings, state, memberName, toolName, action) {
   if (role === undefined) return
   const policy = roles[role]
   const describe = `${toolName}${typeof action === 'string' ? ` ${action}` : ''}`
-  if (policy.readOnly === true && MUTATING_TOOLS.has(toolName)) {
+  if (policy.readOnly === true && READ_ONLY_DENIED_TOOLS.has(toolName)) {
     throw new Error(`role "${role}" is read-only and may not use ${describe} (see roles.${role}.readOnly in the plugin config)`)
   }
   const deny = Array.isArray(policy.deny) ? policy.deny : []

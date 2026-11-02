@@ -23,13 +23,14 @@ import { buildTools } from './lib/tools.js'
 import { registerDashboardRoute } from './lib/dashboard-route.js'
 import { registerMemberRoute } from './lib/member-route.js'
 import { summarizeTranscript } from './lib/transcript.js'
+import { toolGuardReason } from './lib/tool-guard.js'
 
 export const name = 'agent-team-workflow'
 
 /** Services this plugin needs; the plugin stays inactive without Agent Teams. */
 export const inject = ['agents', 'agentTeams', 'tools', 'systemPrompt', 'workingDirectory']
 
-const VERSION = '1.6.0'
+const VERSION = '1.7.1'
 
 /** Shared tool list, built once per plugin instance. */
 export function apply(ctx, config = {}) {
@@ -38,6 +39,23 @@ export function apply(ctx, config = {}) {
   const tools = buildTools({ ctx, settings, store, version: VERSION, tokenUsage: () => tokenUsage })
   const policy = buildPolicy(settings)
   const installed = new Map()
+
+  // Native-tool sandbox: one global guard that only acts on teammates whose
+  // role names a tool policy (allow/deny/readOnly). The guard runs before the
+  // tool executes, so a blocked call never reaches the tool body.
+  ctx.effect(
+    () => {
+      const dispose = ctx.tools.guard((exec) => toolGuardReason(exec, ctx, store, settings))
+      return () => {
+        try {
+          dispose()
+        } catch {
+          /* the guard owner may already be disposed on shutdown */
+        }
+      }
+    },
+    'agent-team-workflow.toolSandbox()',
+  )
 
   const maybeInstall = (agent) => {
     if (installed.has(agent)) return

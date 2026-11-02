@@ -47,9 +47,14 @@ roles:
 - `readOnly` 禁止的工具集：plan/report/work/item/git/gate/repair/staff/stop/decide/plan_approval/review_respond/escalate/talk；允许 read/status/review_submit（评审是只读判断）；
 - 与 `strictScopes` + worktree 门禁叠加，构成"能力 + 写范围 + 产物位置"三层约束。
 
-### 2.1 平台边界（为什么不叫 NFS 沙箱）
+### 2.1 平台边界（v1.7 已进一步收口，见 docs/25）
 
-本 build 的 Agent Teams spawn 契约只有 `{name, description, prompt, context, provider, signal}`（`roster.spawnAdmitted`），**没有 per-teammate tools/permission/preset 字段**；DSH 的 permission preset 是**会话级**的，teammate 继承 Lead，无法按成员注入。因此插件只能在**工作流层**执行能力/写范围/产物位置约束，原生 Bash 等工具仍受平台会话权限管辖。这是平台限制，已在 docs/18 差距矩阵中记录；若后续 DSH 暴露 per-agent tool 注入，`assertRoleAllowed` 与 brief 可无缝扩展。
+本 build 的 Agent Teams spawn 契约只有 `{name, description, prompt, context, provider, signal}`（`roster.spawnAdmitted`），**没有 per-teammate tools/permission/preset 字段**；DSH 的 permission preset 是**会话级**的。因此"用 spawn 参数注入工具集"不可行。
+
+**但 v1.7 使用了 `ctx.tools.guard()`（公开 API）把沙箱推进到原生工具调用边界**：teammate 角色命中
+`readOnly/allow/deny` 时，被禁止的原生工具（write/edit/bash/terminal 等）会在执行前被拒绝。
+详见 [`25-native-tool-sandbox.md`](25-native-tool-sandbox.md)。残余边界：guard 是工具调用级而非 OS 级；
+bash 内部行为仍受会话权限管辖。
 
 ## 3. 小项收口
 

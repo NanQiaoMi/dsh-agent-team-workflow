@@ -47,6 +47,7 @@ function createContext(cwd) {
   const routes = []
   const sections = []
   const contexts = []
+  const guards = []
   const handlers = new Map()
   const effects = []
   const membership = new Map()
@@ -134,6 +135,18 @@ function createContext(cwd) {
       },
     },
     workingDirectory: { get: () => cwd, defaultDirectory: cwd },
+    tools: {
+      register() {
+        return () => {}
+      },
+      guard(fn) {
+        guards.push(fn)
+        return () => {
+          const index = guards.indexOf(fn)
+          if (index >= 0) guards.splice(index, 1)
+        }
+      },
+    },
     on(event, handler) {
       const list = handlers.get(event) ?? []
       list.push(handler)
@@ -180,7 +193,7 @@ function createContext(cwd) {
       },
     },
   }
-  return { ctx, lead, teammate, outsider, tools, sections, contexts, handlers, membership, scopedFor, tasks, messages, routes }
+  return { ctx, lead, teammate, outsider, tools, sections, contexts, guards, handlers, membership, scopedFor, tasks, messages, routes }
 }
 
 async function withWorkspace(fn) {
@@ -294,6 +307,18 @@ test('two Teams in one workspace never share a board', () => {
     const leadB = { id: 'session-team-b', session: { id: 'session-team-b' } }
     const ctx = {
       workingDirectory: { get: () => cwd, defaultDirectory: cwd },
+    tools: {
+      register() {
+        return () => {}
+      },
+      guard(fn) {
+        guards.push(fn)
+        return () => {
+          const index = guards.indexOf(fn)
+          if (index >= 0) guards.splice(index, 1)
+        }
+      },
+    },
       agentTeams: {
         tryMembership: (agent) => ({ root: agent, id: agent.id, name: 'lead', role: 'lead' }),
       },
@@ -320,5 +345,16 @@ test('two Teams in one workspace never share a board', () => {
     await store.writeState(leadA, state)
     assert.equal((await store.readState(leadA)).runId, 'run-a')
     assert.equal(await store.readState(leadB), null, 'Team B must not see Team A run')
+  })
+})
+
+test('the native tool sandbox registers one guard and lets non-members through', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createContext(cwd)
+    apply(harness.ctx, {})
+    assert.equal(harness.guards.length, 1, 'exactly one global tool guard is registered')
+    const guard = harness.guards[0]
+    // A plain Agent without Team membership is never blocked.
+    assert.equal(guard({ name: 'write', agent: { id: 'session-outsider' } }), undefined)
   })
 })

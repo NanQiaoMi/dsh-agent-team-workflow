@@ -1560,14 +1560,21 @@ test('a read-only role and an allow list enforce the workflow capability sandbox
       { agent: harness.lead, signal: EXEC_SIGNAL },
     )
     await assert.rejects(
-      () => byName(tools, 'team_flow_report').execute(
-        { item_id: 'W1', summary: 'done', files: ['src/x.js'], commands: [{ command: 'true', exit_code: 0 }], evidence: ['x'], open_questions: [], risks: [] },
+      () => byName(tools, 'team_flow_item').execute(
+        { action: 'create', subject: 'extra', write_scopes: ['src/extra.js'], definition_of_done: ['x'] },
         { agent: obs, signal: EXEC_SIGNAL },
       ),
-      /role "observer" is read-only and may not use team_flow_report/,
+      /role "observer" is read-only and may not use team_flow_item/,
     )
     const status = await byName(tools, 'team_flow_status').execute({}, { agent: obs, signal: EXEC_SIGNAL })
     assert.equal(typeof status.phase, 'string', 'a read-only role can still inspect the board')
+    // Reporting is a collaboration duty, not a workspace mutation: a read-only
+    // owner must still be able to hand off its findings.
+    const report = await byName(tools, 'team_flow_report').execute(
+      { item_id: 'W1', summary: 'observed', files: [], commands: [{ command: 'true', exit_code: 0 }], evidence: ['read only'], open_questions: [], risks: [] },
+      { agent: obs, signal: EXEC_SIGNAL },
+    )
+    assert.equal(report.status, 'in_review')
     await assert.rejects(
       () => byName(tools, 'team_flow_item').execute(
         { action: 'create', subject: 'extra', write_scopes: ['src/extra.js'], definition_of_done: ['works'] },
