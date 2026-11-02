@@ -70,5 +70,6 @@
         # Token budgets (0 = off): gate fails when a member or the run exceeds them.
         tokenBudgetPerMember: 0
         tokenBudgetPerRun: 0
-        # Experimental: allow serialized per-item git worktrees (share the repo, one item at a time).
-        worktreeIsolation: false
+        # Per-item git worktree isolation: off | serial (one active worktree) | parallel (one per item).
+        # Parallel mode isolates overlapping write scopes and lets items commit/verify in their own checkout.
+        worktreeIsolation: off

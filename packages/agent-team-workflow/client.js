@@ -331,6 +331,16 @@ window.__ModuleLoader__.load({
       'member.role.assistant': '助手',
       'member.role.system': '系统',
       'member.role.tool': '工具',
+      'member.transcriptExpand': '展开',
+      'member.transcriptCollapse': '收起',
+      'board.usage': '用量',
+      'board.usageEmpty': '尚无用量数据（gate 执行后采集）',
+      'board.usageTotals': '合计',
+      'board.usageCapturedAt': '采集于 {time}',
+      'board.usageInput': '输入',
+      'board.usageOutput': '输出',
+      'board.usageCacheRead': '缓存读',
+      'board.usageCacheWrite': '缓存写',
     }
 
     const en = {
@@ -632,6 +642,16 @@ window.__ModuleLoader__.load({
       'member.role.assistant': 'assistant',
       'member.role.system': 'system',
       'member.role.tool': 'tool',
+      'member.transcriptExpand': 'expand',
+      'member.transcriptCollapse': 'collapse',
+      'board.usage': 'Token usage',
+      'board.usageEmpty': 'No usage yet (captured when the gate runs)',
+      'board.usageTotals': 'Totals',
+      'board.usageCapturedAt': 'captured {time}',
+      'board.usageInput': 'input',
+      'board.usageOutput': 'output',
+      'board.usageCacheRead': 'cache read',
+      'board.usageCacheWrite': 'cache write',
     }
 
     // ---------------------------------------------------------------------
@@ -1890,6 +1910,20 @@ window.__ModuleLoader__.load({
 .atw-member-transcript-item:last-child{border-bottom:none;padding-bottom:0}
 .atw-member-transcript-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
 .atw-member-transcript-text{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:16px;overflow-wrap:anywhere}
+.atw-member-transcript-item--button{cursor:pointer;border-radius:6px;padding:2px 4px 6px}
+.atw-member-transcript-item--button:hover{background:var(--dsw-alias-bg-layer-1)}
+.atw-member-transcript-item--button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.atw-member-transcript-text--expanded{display:block;overflow:visible}
+.atw-member-transcript-toggle{color:var(--dsw-alias-brand-primary);font-size:11px;line-height:16px}
+.atw-usage-wrap{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;min-width:0}
+.atw-usage-table{display:flex;flex-direction:column;gap:2px;min-width:0}
+.atw-usage-line{display:grid;grid-template-columns:minmax(96px,1.6fr) repeat(4,minmax(0,1fr));gap:8px;align-items:center;min-width:0;font-size:11px;line-height:16px;padding:2px 0;border-bottom:0.5px solid var(--dsw-alias-border-l1)}
+.atw-usage-line:last-child{border-bottom:none}
+.atw-usage-head{color:var(--dsw-alias-label-secondary);font-weight:600}
+.atw-usage-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.atw-usage-cell{text-align:right;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary)}
+.atw-usage-head .atw-usage-cell{color:var(--dsw-alias-label-secondary)}
+.atw-usage-totals{border-top:0.5px solid var(--dsw-alias-border-l2);border-bottom:none;margin-top:4px;padding-top:4px;font-weight:600}
 .atw-member-prompt{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;overflow-wrap:anywhere}
 .atw-member-composer{display:flex;flex-direction:column;gap:6px;padding-top:8px;border-top:0.5px solid var(--dsw-alias-border-l1)}
 .atw-member-input{box-sizing:border-box;width:100%;padding:4px 8px;border:0.5px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:16px}
@@ -3330,6 +3364,95 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** @returns a stable expand/collapse key for one transcript message. */
+    function transcriptMessageKey(message, index) {
+      return Number.isFinite(message.seq) ? 'seq:' + message.seq : 'idx:' + index
+    }
+
+    /** @returns true when one transcript body is likely to exceed three lines. */
+    function transcriptNeedsToggle(text) {
+      if (text === '') return false
+      let visualLines = 0
+      for (const line of text.split('\n')) {
+        let cells = 0
+        for (const char of line) cells += char.codePointAt(0) > 0x2e80 ? 2 : 1
+        visualLines += Math.max(1, Math.ceil(cells / CHANNEL_LINE_CELLS))
+      }
+      return visualLines > 3
+    }
+
+    /** @returns the normalized `run.usage` block (docs/19 §6), or null. */
+    function normalizeUsage(raw) {
+      if (!isRecord(raw)) return null
+      const bucket = (value) =>
+        isRecord(value)
+          ? {
+              input: num(value.uncachedInputTokens, 0),
+              output: num(value.outputTokens, 0),
+              cacheRead: num(value.cacheReadTokens, 0),
+              cacheWrite: num(value.cacheWriteTokens, 0),
+            }
+          : null
+      const members = []
+      if (isRecord(raw.members)) {
+        for (const name of Object.keys(raw.members)) {
+          const entry = bucket(raw.members[name])
+          if (entry !== null) members.push({ name: name, input: entry.input, output: entry.output, cacheRead: entry.cacheRead, cacheWrite: entry.cacheWrite })
+        }
+      }
+      members.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+      const totals = bucket(raw.totals)
+      if (totals === null && members.length === 0) return null
+      return { capturedAt: parseTime(raw.capturedAt), members, totals }
+    }
+
+    /** @returns a grouping-separated integer (1234567 -> "1,234,567"). */
+    function formatCount(value) {
+      return String(Math.round(num(value, 0))).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+    }
+
+    /** @returns local HH:mm:ss for one timestamp, or ''. */
+    function clockTime(atMs) {
+      if (!Number.isFinite(atMs) || atMs <= 0) return ''
+      try {
+        const date = new Date(atMs)
+        const pad = (value) => (value < 10 ? '0' + value : String(value))
+        return pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds())
+      } catch (ignored) {
+        return ''
+      }
+    }
+
+    /** @returns the token usage panel (docs/19 §6): numbers only, never faked. */
+    function renderUsagePanel(view, run) {
+      const tr = view.tr
+      const usage = normalizeUsage(run === null || run === undefined ? null : run.usage)
+      const captured = usage !== null ? clockTime(usage.capturedAt) : ''
+      const head = panelHead(tr('board.usage'), captured === '' ? null : tr('board.usageCapturedAt', { time: captured }))
+      if (usage === null) {
+        return h(
+          'section',
+          { className: 'atw-panel atw-usage' },
+          head,
+          h('div', { className: 'atw-panel-body' }, h('div', { className: 'atw-muted' }, tr('board.usageEmpty'))),
+        )
+      }
+      const columns = ['input', 'output', 'cacheRead', 'cacheWrite']
+      const row = (key, className, name, values, raw) =>
+        h(
+          'div',
+          { key: key, className: className },
+          h('span', { key: 'name', className: 'atw-usage-name', title: name }, name),
+          columns.map((column) => h('span', { key: column, className: 'atw-usage-cell' }, raw === true ? values[column] : formatCount(values[column]))),
+        )
+      const lines = [
+        row('usage-head', 'atw-usage-line atw-usage-head', '', { input: tr('board.usageInput'), output: tr('board.usageOutput'), cacheRead: tr('board.usageCacheRead'), cacheWrite: tr('board.usageCacheWrite') }, true),
+      ]
+      for (const member of usage.members) lines.push(row('usage-' + member.name, 'atw-usage-line', member.name, member))
+      if (usage.totals !== null) lines.push(row('usage-totals', 'atw-usage-line atw-usage-totals', tr('board.usageTotals'), usage.totals))
+      return h('section', { className: 'atw-panel atw-usage' }, head, h('div', { className: 'atw-panel-body' }, h('div', { className: 'atw-usage-table' }, lines)))
+    }
+
     /** @returns the composer status line: sending / sent / error / empty. */
     function memberStatusLine(view) {
       const tr = view.tr
@@ -3504,19 +3627,41 @@ window.__ModuleLoader__.load({
           transcriptBody = h(
             'div',
             { key: 'member-transcript-list', className: 'atw-member-transcript-list' },
-            transcript.messages.map((message, index) =>
-              h(
+            transcript.messages.map((message, index) => {
+              const messageKey = transcriptMessageKey(message, index)
+              const expanded = toArray(view.expandedTranscript).indexOf(messageKey) !== -1
+              const expandable = transcriptNeedsToggle(message.text)
+              return h(
                 'div',
-                { key: 'member-transcript-' + index, className: 'atw-member-transcript-item' },
+                {
+                  key: 'member-transcript-' + index,
+                  className: 'atw-member-transcript-item atw-member-transcript-item--button' + (expanded ? ' atw-member-transcript-item--expanded' : ''),
+                  role: 'button',
+                  tabIndex: 0,
+                  onClick: () => view.actions.toggleTranscript(messageKey),
+                  onKeyDown: (event) => {
+                    if (event && (event.key === 'Enter' || event.key === ' ')) {
+                      event.preventDefault()
+                      view.actions.toggleTranscript(messageKey)
+                    }
+                  },
+                },
                 h(
                   'div',
                   { className: 'atw-member-transcript-head' },
                   badge(transcriptRoleLabel(tr, message.role), TRANSCRIPT_ROLE_TONES[message.role] || 'idle'),
                   Number.isFinite(message.seq) ? h('span', { className: 'atw-muted' }, '#' + message.seq) : null,
+                  expandable
+                    ? h(
+                        'span',
+                        { key: 'toggle', className: 'atw-member-transcript-toggle' },
+                        expanded ? tr('member.transcriptCollapse') : tr('member.transcriptExpand'),
+                      )
+                    : null,
                 ),
-                h('div', { className: 'atw-member-transcript-text' }, message.text),
-              ),
-            ),
+                h('div', { className: 'atw-member-transcript-text' + (expanded ? ' atw-member-transcript-text--expanded' : '') }, message.text),
+              )
+            }),
           )
         }
         sections.push(
@@ -3611,6 +3756,7 @@ window.__ModuleLoader__.load({
       const collaboration = normalizeCollaboration(run)
       content.push(h('div', { className: 'atw-main' }, renderFlowPanel(view, run), renderTopologyPanel(view, team, run)))
       content.push(h('div', { className: 'atw-collab' }, renderChannelPanel(view, run), renderProposalsPanel(view, run)))
+      content.push(h('div', { className: 'atw-usage-wrap' }, renderUsagePanel(view, run)))
       content.push(
         h(
           'div',
@@ -3678,6 +3824,7 @@ window.__ModuleLoader__.load({
       const [filter, setFilter] = React.useState('all')
       const [channelFilter, setChannelFilter] = React.useState('all')
       const [expandedMessages, setExpandedMessages] = React.useState([])
+      const [expandedTranscript, setExpandedTranscript] = React.useState([])
       const [memberName, setMemberName] = React.useState(null)
       const [memberView, setMemberView] = React.useState(null)
       const [memberError, setMemberError] = React.useState(null)
@@ -3838,6 +3985,7 @@ window.__ModuleLoader__.load({
           setMemberLoading(false)
           setMemberMessage('')
           setMemberSendState(null)
+          setExpandedTranscript([])
         }
         if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
           window.addEventListener('keydown', onKeyDown)
@@ -3881,6 +4029,7 @@ window.__ModuleLoader__.load({
           setMemberLoading(true)
           setMemberMessage('')
           setMemberSendState(null)
+          setExpandedTranscript([])
         },
         closeMember: () => {
           setMemberName(null)
@@ -3889,6 +4038,7 @@ window.__ModuleLoader__.load({
           setMemberLoading(false)
           setMemberMessage('')
           setMemberSendState(null)
+          setExpandedTranscript([])
         },
         setMemberMessage: (value) => setMemberMessage(str(value)),
         sendMemberMessage: () => {
@@ -3945,6 +4095,8 @@ window.__ModuleLoader__.load({
         setChannelFilter: (value) => setChannelFilter(value),
         toggleMessage: (key) =>
           setExpandedMessages((value) => (value.indexOf(key) === -1 ? value.concat([key]) : value.filter((entry) => entry !== key))),
+        toggleTranscript: (key) =>
+          setExpandedTranscript((value) => (value.indexOf(key) === -1 ? value.concat([key]) : value.filter((entry) => entry !== key))),
         copy: (text, key) => {
           const value = str(text)
           if (value === '') return
@@ -3975,6 +4127,7 @@ window.__ModuleLoader__.load({
         filter,
         channelFilter,
         expandedMessages,
+        expandedTranscript,
         memberName,
         memberView,
         memberError,

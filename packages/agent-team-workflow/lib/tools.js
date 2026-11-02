@@ -7,6 +7,9 @@
  * this layer adds the workflow state machine, review ledger, and gates.
  */
 
+import fs from 'node:fs'
+import path from 'node:path'
+
 import { runSettings } from './config.js'
 import * as G from './git.js'
 import { fireHooks } from './hooks.js'
@@ -221,6 +224,13 @@ async function runHook(event, payload, { agent, settings, store }) {
  * session's real permissions. A member with no configured role is never
  * restricted.
  */
+/** Workflow tools that change the run; a read-only role may not call them. */
+const MUTATING_TOOLS = new Set([
+  'team_flow_plan', 'team_flow_report', 'team_flow_work', 'team_flow_item', 'team_flow_git',
+  'team_flow_gate', 'team_flow_repair', 'team_flow_staff', 'team_flow_stop', 'team_flow_decide',
+  'team_flow_plan_approval', 'team_flow_review_respond', 'team_flow_escalate', 'team_flow_talk',
+])
+
 function assertRoleAllowed(settings, state, memberName, toolName, action) {
   if (state === null || state === undefined) return
   const roles = settings.roles ?? {}
@@ -235,9 +245,19 @@ function assertRoleAllowed(settings, state, memberName, toolName, action) {
     if (ownedRoles.size === 1) role = [...ownedRoles][0]
   }
   if (role === undefined) return
-  const deny = Array.isArray(roles[role].deny) ? roles[role].deny : []
+  const policy = roles[role]
+  const describe = `${toolName}${typeof action === 'string' ? ` ${action}` : ''}`
+  if (policy.readOnly === true && MUTATING_TOOLS.has(toolName)) {
+    throw new Error(`role "${role}" is read-only and may not use ${describe} (see roles.${role}.readOnly in the plugin config)`)
+  }
+  const deny = Array.isArray(policy.deny) ? policy.deny : []
   const denied = deny.includes(toolName) || (typeof action === 'string' && deny.includes(`${toolName}:${action}`))
-  if (denied) throw new Error(`role "${role}" may not use ${toolName}${typeof action === 'string' ? ` ${action}` : ''} (see roles.${role}.deny in the plugin config)`)
+  if (denied) throw new Error(`role "${role}" may not use ${describe} (see roles.${role}.deny in the plugin config)`)
+  const allow = Array.isArray(policy.allow) ? policy.allow : []
+  if (allow.length > 0) {
+    const allowed = allow.includes(toolName) || (typeof action === 'string' && allow.includes(`${toolName}:${action}`))
+    if (!allowed) throw new Error(`role "${role}" may only use ${allow.join(', ')}; ${describe} is outside its allow list (see roles.${role}.allow)`)
+  }
 }
 
 /** @returns whether one member name is currently in the roster. */
@@ -1249,6 +1269,30 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           }
           current.usage = usage
           gate = W.evaluateGates(current, { settings: current.settings, members, nativeTasks, overrides, now })
+          // Worktree isolation is only real if reported artifacts actually live
+          // in the item's worktree; a report pointing at the shared checkout is
+          // a scope violation, not a parallel result.
+          if ((current.settings.worktreeIsolation ?? 'off') !== 'off') {
+            for (const item of current.items) {
+              const worktree = item.git?.worktreePath
+              if (typeof worktree !== 'string' || worktree.length === 0 || item.report === null || item.report === undefined) continue
+              const files = Array.isArray(item.report.files) ? item.report.files : []
+              const missing = files.filter((file) => {
+                try {
+                  return !fs.existsSync(path.resolve(worktree, W.normalizePath(file)))
+                } catch {
+                  return true
+                }
+              })
+              if (missing.length === 0) continue
+              const itemGate = gate.itemGates.find((entry) => entry.id === item.id)
+              if (itemGate !== undefined) {
+                itemGate.pass = false
+                itemGate.failures.push(`reported files missing from the item worktree: ${missing.join(', ')}`)
+                gate.pass = false
+              }
+            }
+          }
           const tokenTotal = (totals) => ['uncachedInputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'].reduce((sum, key) => sum + (Number.isFinite(totals?.[key]) ? totals[key] : 0), 0)
           const budget = { perMember: current.settings.tokenBudgetPerMember, perRun: current.settings.tokenBudgetPerRun }
           if (budget.perMember > 0) {
@@ -1698,32 +1742,53 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
         if (action === 'worktree_list') {
           const result = await G.gitWorktreeList({ cwd })
           if (result.ok !== true) throw new Error(`worktree list failed: ${result.error}`)
-          return { action, detail: result, warnings }
+          return {
+            action,
+            mode: state.settings.worktreeIsolation ?? 'off',
+            worktrees: result.worktrees,
+            item_worktrees: state.items
+              .filter((item) => item.git?.worktreeBranch !== undefined)
+              .map((item) => ({ item_id: item.id, owner: item.owner ?? null, worktree: item.git.worktree ?? null, path: item.git.worktreePath ?? null, branch: item.git.worktreeBranch, mergedAt: item.git.worktreeMergedAt ?? null })),
+            warnings,
+          }
         }
         if (action === 'worktree_add' || action === 'worktree_remove') {
           requireLead(membership, `team_flow_git ${action}`)
           const target = requireItem()
           const vs = state.settings
-          if (vs.worktreeIsolation !== true) throw new Error('worktree isolation is disabled; set worktreeIsolation: true in the plugin config')
-          const path = `.agentteam/worktrees/${target.id}`.replace(/[^A-Za-z0-9._/-]+/g, '-')
+          const mode = vs.worktreeIsolation ?? 'off'
+          if (mode === 'off') throw new Error('worktree isolation is disabled; set worktreeIsolation: "serial" or "parallel" in the plugin config')
+          const slug = (value) => String(value).replace(/[^A-Za-z0-9._/-]+/g, '-')
           if (action === 'worktree_add') {
-            const result = await G.gitWorktreeAdd({ cwd, path, branch: `agentteam-wt/${state.runId}/${target.id}`.replace(/[^A-Za-z0-9._/-]+/g, '-') })
+            if (mode === 'serial') {
+              const other = state.items.find((item) => item.id !== target.id && item.git?.worktreeBranch !== undefined && item.git?.worktreeMergedAt == null)
+              if (other !== undefined) throw new Error(`serial worktree isolation allows one active worktree at a time; item "${other.id}" still owns one (merge or remove it first)`)
+            }
+            const relative = `.agentteam/worktrees/${state.runId}/${target.id}`.replace(/[^A-Za-z0-9._/-]+/g, '-')
+            const branch = slug(`agentteam-wt/${state.runId}/${target.id}`)
+            const startPoint = typeof state.git?.branch === 'string' ? state.git.branch : undefined
+            const result = await G.gitWorktreeAdd({ cwd, path: relative, branch, ...(startPoint === undefined ? {} : { startPoint }) })
             if (result.ok !== true) throw new Error(`worktree add failed: ${result.error}`)
+            const absolute = path.resolve(cwd, relative)
+            let next = null
             await store.mutateState(agent, (current) => {
               W.ensureCollaboration(current)
               const item = W.findItem(current, target.id)
-              item.git = { ...(item.git ?? {}), worktree: result.path, worktreeBranch: result.branch }
-              W.appendEvent(current, { at: new Date().toISOString(), type: 'git/worktree', actor: membership.name, detail: `${item.id} ${result.path}` })
+              item.git = { ...(item.git ?? {}), worktree: relative, worktreePath: absolute, worktreeBranch: branch, worktreeBase: startPoint ?? null, worktreeCreatedAt: new Date().toISOString() }
+              W.appendEvent(current, { at: new Date().toISOString(), type: 'git/worktree', actor: membership.name, detail: `${item.id} ${relative}` })
+              next = current
               return current
             })
-            return { action, item_id: target.id, detail: result, warnings }
+            return { action, item_id: target.id, mode, worktree: { relative, absolute, branch, startPoint: startPoint ?? null }, detail: result, warnings }
           }
-          const result = await G.gitWorktreeRemove({ cwd, path })
-          if (result.ok !== true) throw new Error(`worktree remove failed: ${result.error}`)
+          const absolute = target.git?.worktreePath ?? path.resolve(cwd, target.git?.worktree ?? `.agentteam/worktrees/${state.runId}/${target.id}`)
+          const result = await G.gitWorktreeRemove({ cwd, path: target.git?.worktree ?? `.agentteam/worktrees/${state.runId}/${target.id}` })
+          if (result.ok !== true) throw new Error(`worktree remove failed: ${result.error}${absolute ? ` (${absolute})` : ''}`)
           await store.mutateState(agent, (current) => {
             W.ensureCollaboration(current)
             const item = W.findItem(current, target.id)
-            item.git = { ...(item.git ?? {}), worktree: null, worktreeBranch: null }
+            item.git = { ...(item.git ?? {}), worktree: null, worktreePath: null, worktreeBranch: null, worktreeBase: null }
+            W.appendEvent(current, { at: new Date().toISOString(), type: 'git/worktree-removed', actor: membership.name, detail: item.id })
             return current
           })
           return { action, item_id: target.id, detail: result, warnings }
@@ -1754,17 +1819,22 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           })
           return { action, repo: await G.gitStatus({ cwd }), run_git: next.git, warnings }
         }
-        const item = action === 'merge' ? null : requireItem()
+        const item = action === 'merge' && typeof args.item_id !== 'string' ? null : requireItem()
         if (action === 'commit') {
           requireOwner(item)
           if (state.git === null || typeof state.git.branch !== 'string') throw new Error('no run branch yet; the Lead must run team_flow_git {action:"prepare"} first')
-          const repo = await G.gitStatus({ cwd })
+          // Parallel worktrees: commit inside the item worktree (its branch) so
+          // concurrent items never race on one checkout.
+          const isolated = typeof item.git?.worktreePath === 'string' && item.git.worktreePath.length > 0
+          const workCwd = isolated ? item.git.worktreePath : cwd
+          const expectedBranch = isolated ? item.git.worktreeBranch : state.git.branch
+          const repo = await G.gitStatus({ cwd: workCwd })
           if (repo.ok !== true) throw new Error(`not a git repository: ${repo.error}`)
-          if (repo.branch !== state.git.branch) throw new Error(`the repository is on "${repo.branch}", not the run branch "${state.git.branch}"; check it out before committing`)
+          if (repo.branch !== expectedBranch) throw new Error(`the ${isolated ? 'item worktree' : 'repository'} is on "${repo.branch}", not "${expectedBranch}"; check it out before committing`)
           const files = Array.isArray(args.files) && args.files.length > 0 ? args.files.map((file) => W.normalizePath(file)) : (item.report?.files ?? [])
           if (files.length === 0) throw new Error('nothing to commit: pass files or report the item first')
           const message = String(args.message ?? `agentteam(${item.id}): ${item.subject}`).slice(0, 200)
-          const result = await G.gitCommit({ cwd, files, message })
+          const result = await G.gitCommit({ cwd: workCwd, files, message, ...(isolated ? { base: state.git.base } : {}) })
           if (result.ok !== true) throw new Error(`commit failed: ${result.error}`)
           let next = null
           await store.mutateState(agent, (current) => {
@@ -1786,7 +1856,9 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           requireOwner(item)
           const commands = Array.isArray(args.commands) && args.commands.length > 0 ? args.commands.map((command) => String(command)) : (state.settings.gitVerifyCommands ?? [])
           if (commands.length === 0) throw new Error('no verification commands configured; pass commands or set gitVerifyCommands')
-          const result = await G.gitVerify({ cwd, commands })
+          // Isolated items verify their own worktree copy, not the shared checkout.
+          const verifyCwd = typeof item.git?.worktreePath === 'string' && item.git.worktreePath.length > 0 ? item.git.worktreePath : cwd
+          const result = await G.gitVerify({ cwd: verifyCwd, commands })
           let next = null
           await store.mutateState(agent, (current) => {
             W.ensureCollaboration(current)
@@ -1854,6 +1926,33 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             return current
           })
           return { action, item_id: item.id, item_git: next.git, detail: result, warnings }
+        }
+        if (action === 'merge' && typeof args.item_id === 'string') {
+          requireLead(membership, 'team_flow_git merge (item worktree)')
+          const target = requireItem()
+          if (typeof target.git?.worktreeBranch !== 'string') throw new Error(`item "${target.id}" has no worktree branch; run worktree_add first`)
+          if (target.status !== W.ITEM_STATUS.APPROVED) throw new Error(`item "${target.id}" is "${target.status}"; merge its worktree branch only after it is approved`)
+          if (state.git === null || typeof state.git.branch !== 'string') throw new Error('no run branch recorded; run prepare first')
+          if (target.git.worktreeMergedAt != null) throw new Error(`item "${target.id}" worktree branch is already merged`)
+          const method = args.method === 'squash' ? 'squash' : 'no-ff'
+          const result = await G.gitMerge({
+            cwd,
+            branch: target.git.worktreeBranch,
+            into: state.git.branch,
+            method,
+            message: String(args.message ?? `agentteam(${target.id}): merge worktree ${target.git.worktreeBranch}`),
+          })
+          if (result.ok !== true) throw new Error(`worktree merge failed: ${result.error}`)
+          let nextItem = null
+          await store.mutateState(agent, (current) => {
+            W.ensureCollaboration(current)
+            const item = W.findItem(current, target.id)
+            item.git = { ...(item.git ?? {}), worktreeMergedAt: new Date().toISOString(), worktreeMergeSha: result.sha ?? null }
+            W.appendEvent(current, { at: new Date().toISOString(), type: 'git/worktree-merged', actor: membership.name, detail: `${item.id} ${item.git?.worktreeBranch ?? ''} → ${current.git?.branch ?? ''}` })
+            nextItem = item
+            return current
+          })
+          return { action, item_id: target.id, item_git: nextItem.git, run_git: state.git, detail: result, warnings }
         }
         if (action === 'merge') {
           requireLead(membership, 'team_flow_git merge')

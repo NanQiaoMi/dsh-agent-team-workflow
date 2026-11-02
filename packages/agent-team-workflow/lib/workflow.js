@@ -355,7 +355,10 @@ export function validatePlan(plan, settings) {
   const conflicts = findScopeConflicts(items, waves)
   if (conflicts.length > 0) {
     const detail = conflicts.map((conflict) => `wave ${conflict.wave}: ${conflict.left} vs ${conflict.right} (${conflict.scopes.join(', ')})`).join('; ')
-    if (settings.allowScopeOverlap) warnings.push(`overlapping write scopes in one wave are allowed by configuration: ${detail}`)
+    if (settings.worktreeIsolation === 'parallel') {
+      // Each item owns a separate checkout, so overlapping scopes cannot race.
+      warnings.push(`overlapping write scopes in one wave are isolated by parallel worktrees: ${detail}`)
+    } else if (settings.allowScopeOverlap) warnings.push(`overlapping write scopes in one wave are allowed by configuration: ${detail}`)
     else errors.push(`overlapping write scopes inside one execution wave would race: ${detail}`)
   }
 
