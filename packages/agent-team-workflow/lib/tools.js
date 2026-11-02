@@ -147,6 +147,40 @@ ${entry.prompt ?? ''}`, signal)
   return outcome
 }
 
+
+/**
+ * Members that actually take part in the current run.
+ *
+ * Channel broadcasts used to fan out to every roster member, which woke idle
+ * members that then answered stale messages (run-20261102052850-il6f). The
+ * board still records team messages for everyone; only participants get a
+ * direct notification.
+ * @returns deduplicated participant names without the Lead and the caller.
+ */
+function audienceFor(state, callerName) {
+  const names = new Set()
+  for (const item of Array.isArray(state?.items) ? state.items : []) {
+    if (typeof item.owner === 'string' && item.owner.length > 0) names.add(item.owner)
+    for (const reviewer of Array.isArray(item.reviewers) ? item.reviewers : []) names.add(reviewer)
+    if (item.claim !== null && typeof item.claim === 'object' && typeof item.claim.by === 'string') names.add(item.claim.by)
+    if (typeof item.pendingReviewer === 'string' && item.pendingReviewer.length > 0) names.add(item.pendingReviewer)
+    for (const request of Array.isArray(item.reviewRequests) ? item.reviewRequests : []) {
+      if (typeof request?.reviewer === 'string' && request.reviewer.length > 0) names.add(request.reviewer)
+    }
+    for (const handoff of Array.isArray(item.handoffs) ? item.handoffs : []) {
+      if (typeof handoff?.to === 'string' && handoff.to.length > 0) names.add(handoff.to)
+      if (typeof handoff?.by === 'string' && handoff.by.length > 0) names.add(handoff.by)
+    }
+  }
+  for (const proposal of Array.isArray(state?.proposals) ? state.proposals : []) {
+    if (typeof proposal?.by === 'string' && proposal.by.length > 0) names.add(proposal.by)
+  }
+  for (const name of Array.isArray(state?.staffPool) ? state.staffPool : []) names.add(name)
+  names.delete('lead')
+  if (typeof callerName === 'string') names.delete(callerName)
+  return [...names]
+}
+
 /** @returns whether one member name is currently in the roster. */
 function isLiveMember(ctx, agent, name) {
   try {
@@ -1713,7 +1747,7 @@ export function buildTools({ ctx, settings, store, version }) {
           if (failure === null) notifications.push(item.owner)
           else warnings.push(failure)
         } else if (item.owner === '' || item.owner === null || item.owner === undefined) {
-          const targets = ctx.agentTeams.listMembers(agent).map((member) => member.name).filter((name) => name !== membership.name)
+          const targets = audienceFor(await store.readState(agent), membership.name)
           for (const target of targets) {
             const failure = await sendPeer(ctx, agent, target, `[ITEM] open queue item ${item.id} "${item.subject}" published by ${membership.name}: claim it with team_flow_work {action:"claim", item_id:"${item.id}"}.`, exec.signal)
             if (failure === null) notifications.push(target)
@@ -1796,7 +1830,7 @@ export function buildTools({ ctx, settings, store, version }) {
         const warnings = []
         const delivered = []
         const roster = ctx.agentTeams.listMembers(agent).map((member) => member.name).filter((name) => name !== membership.name)
-        const targets = to === 'team' ? roster : [to]
+        const targets = to === 'team' ? audienceFor(await store.readState(agent), membership.name) : [to]
         const prefix = `[CHANNEL ${message.id}] ${membership.name}${to === 'team' ? ' (to team)' : ''}${args.item_id ? ` [item ${args.item_id}]` : ''}: `
         for (const name of targets) {
           const failure = await sendPeer(ctx, agent, name, `${prefix}${text}`, exec.signal)
@@ -1904,7 +1938,7 @@ export function buildTools({ ctx, settings, store, version }) {
         } else if (action === 'request_review') {
           const request = outcome.request
           const targets = request.reviewer === null
-            ? ctx.agentTeams.listMembers(agent).map((member) => member.name).filter((name) => name !== membership.name && name !== 'lead')
+            ? audienceFor(await store.readState(agent), membership.name)
             : [request.reviewer]
           const text = `[REVIEW] ${membership.name} requests a peer review of ${item.id} "${item.subject}".${request.reviewer === null ? ' This is an open invitation: take it with team_flow_work {action:"take_review", item_id:"' + item.id + '"}.' : ' It is addressed to you; accept with team_flow_work {action:"take_review", item_id:"' + item.id + '"}, or decline in the channel.'}`
           for (const target of targets) {

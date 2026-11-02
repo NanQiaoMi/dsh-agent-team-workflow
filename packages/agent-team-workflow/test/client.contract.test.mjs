@@ -1338,3 +1338,144 @@ test('docs/16: card badges stay within budget and Git/PR badges render (and vani
     legacy.dispose()
   }
 })
+
+// ---------------------------------------------------------------------------
+// v1.3 live-run polish (docs/17): channel clamp, overdue chip, density fixes
+// ---------------------------------------------------------------------------
+
+test('docs/17 channel: long bodies clamp to four lines and expand per message', async () => {
+  const longText = '这是一条很长的协作消息，需要折叠起来，避免把频道撑爆。'.repeat(8)
+  const channel = [
+    ...V2_CHANNEL,
+    { id: 'm-long', at: '2026-11-02T00:00:09.000Z', from: 'impl-a', to: 'team', kind: 'note', text: longText, itemId: null },
+  ]
+  const board = await mountBoard(withSnapshot({ run: { collaboration: { ...V2_SNAPSHOT.run.collaboration, channel } } }))
+  try {
+    let tree = await board.render()
+    assert.match(source, /\.atw-channel-text\{[^}]*-webkit-line-clamp:4/, 'channel bodies clamp at four lines')
+    const items = findByClass(tree, 'atw-channel-item')
+    assert.equal(items.length, channel.length, 'clamp does not change the row count')
+    assert.equal(findByClass(tree, 'atw-channel-head').length, channel.length, 'headers stay intact')
+    const toggles = findByClass(tree, 'atw-channel-toggle')
+    assert.equal(toggles.length, 1, 'only the overflowing body gets a toggle')
+    assert.equal(textOf(toggles[0]), 'k:channel.expand', 'collapsed label is the expand copy')
+
+    const longRow = () => findByClass(tree, 'atw-channel-item').find((row) => textOf(row).includes('避免把频道撑爆'))
+    assert.ok(!String(findByClass(longRow(), 'atw-channel-text')[0].props.className).includes('--expanded'), 'starts clamped')
+
+    findButtonByText(tree, 'k:channel.expand').props.onClick()
+    tree = await board.render()
+    assert.ok(String(findByClass(longRow(), 'atw-channel-text')[0].props.className).includes('atw-channel-text--expanded'), 'expands just that message')
+    assert.equal(textOf(findButtonByText(tree, 'k:channel.collapse')), 'k:channel.collapse', 'the toggle flips to collapse')
+
+    findButtonByText(tree, 'k:channel.collapse').props.onClick()
+    tree = await board.render()
+    assert.ok(!String(findByClass(longRow(), 'atw-channel-text')[0].props.className).includes('--expanded'), 'collapses back')
+    assert.equal(textOf(findButtonByText(tree, 'k:channel.expand')), 'k:channel.expand')
+  } finally {
+    board.dispose()
+  }
+})
+
+test('docs/17 proposals: an expired, not-yet-resolved proposal shows the overdue chip', async () => {
+  const now = Date.now()
+  const past = new Date(now - 5 * 60000).toISOString()
+  const future = new Date(now + 15 * 60000).toISOString()
+  const base = {
+    by: 'impl-a',
+    kind: 'dod',
+    itemId: 'W1',
+    status: 'open',
+    votes: [],
+    tally: { yes: 0, no: 0, abstain: 0, affected: 2, total: 4 },
+    resolvedAt: null,
+    resolution: null,
+    quorum: 2,
+  }
+  const proposals = [
+    { ...base, id: 'p-overdue', at: past, text: '过期未裁决的提案', deadline: past, autoResolved: false },
+    { ...base, id: 'p-auto', at: past, text: '超时已裁决的提案', status: 'accepted', deadline: past, autoResolved: true },
+    { ...base, id: 'p-future', at: past, text: '未来才截止的提案', deadline: future, autoResolved: false },
+  ]
+  const board = await mountBoard(withSnapshot({ run: { collaboration: { ...V2_SNAPSHOT.run.collaboration, proposals } } }))
+  try {
+    const tree = await board.render()
+    const cards = findByClass(tree, 'atw-proposal')
+    const cardFor = (needle) => cards.find((card) => textOf(card).includes(needle))
+    const overdueCard = cardFor('过期未裁决的提案')
+    assert.ok(textOf(overdueCard).includes('k:proposal.overdue'), 'expired + not auto-resolved gets the warn chip')
+    const chips = findByClass(overdueCard, 'atw-badge--warn')
+    assert.ok(chips.length >= 1, 'the chip uses the warn tone')
+    assert.ok(textOf(chips[0]).includes('k:proposal.overdue'))
+    const autoCard = cardFor('超时已裁决的提案')
+    assert.ok(textOf(autoCard).includes('k:proposal.autoResolved'), 'auto-resolved keeps its own badge')
+    assert.ok(!textOf(autoCard).includes('k:proposal.overdue'), 'auto-resolved proposals are not marked overdue')
+    assert.ok(!textOf(cardFor('未来才截止的提案')).includes('k:proposal.overdue'), 'a future deadline is not overdue')
+  } finally {
+    board.dispose()
+  }
+})
+
+test('docs/17 density: idle excludes the Lead, the flow panel is 420px, cards clamp their title', async () => {
+  assert.match(source, /\.atw-panel--flow\{max-height:420px\}/, 'the flow panel opts into the 420px box')
+  assert.match(source, /\.atw-panel\{[^}]*max-height:320px/, 'other panels keep the 320px box')
+  assert.match(source, /\.atw-card-subject\{[^}]*-webkit-line-clamp:2/, 'card titles clamp at two lines')
+  assert.match(source, /\.atw-card-flags\{[^}]*margin-top:auto/, 'the flags row is pinned to the card bottom')
+
+  // Roster that only contains the Lead must not produce an idle node.
+  const lead = { name: 'lead', role: 'lead', status: 'inactive', context: 'fresh' }
+  const leadOnly = await mountBoard(withSnapshot({ team: { members: [lead] } }))
+  try {
+    const tree = await leadOnly.render()
+    assert.equal(findByClass(tree, 'atw-node--idle').length, 0, 'the Lead is never folded into the idle node')
+    assert.ok(!textOf(tree).includes('k:topology.idle'), 'no idle hint when nothing is idle')
+    assert.equal(findByClass(tree, 'atw-node--lead').length, 1, 'the Lead keeps its own node')
+    assert.equal(findByClass(tree, 'atw-panel--flow').length, 1, 'exactly the flow panel uses the taller modifier')
+  } finally {
+    leadOnly.dispose()
+  }
+
+  const mixed = await mountBoard(
+    withSnapshot({
+      team: {
+        members: [
+          lead,
+          { name: 'idle-1', role: 'teammate', status: 'inactive', context: 'fresh' },
+          { name: 'idle-2', role: 'teammate', status: 'inactive', context: 'fresh' },
+          { name: 'idle-3', role: 'teammate', status: 'inactive', context: 'fresh' },
+        ],
+      },
+    }),
+  )
+  try {
+    const tree = await mixed.render()
+    const idleNodes = findByClass(tree, 'atw-node--idle')
+    assert.equal(idleNodes.length, 1, 'the folded node still renders when members are idle')
+    assert.ok(textOf(idleNodes[0]).includes('"n":3'), 'the idle count excludes the Lead')
+  } finally {
+    mixed.dispose()
+  }
+
+  // A card without a Git row is shorter, so its bottom-anchored flags leave no gap.
+  const items = V2_SNAPSHOT.run.items.map((item, index) =>
+    index === 0
+      ? { ...item, git: { branch: 'agentteam/x', sha: 'abc1234', verify: { ok: true }, pr: null, mergedAt: null } }
+      : item,
+  )
+  const dense = await mountBoard(withSnapshot({ run: { items } }))
+  try {
+    const tree = await dense.render()
+    const cards = findByClass(tree, 'atw-card').filter((element) => element.props?.role === 'button')
+    const cardFor = (id) => cards.find((element) => textOf(element).includes(id))
+    const heightOf = (card) => Number(String(card.props.style.height).replace('px', ''))
+    const withGit = cardFor('W1')
+    const noGit = cardFor('W2')
+    assert.equal(heightOf(withGit), 126, 'cards with a Git row keep the full height')
+    assert.equal(heightOf(noGit), 112, 'cards without a Git row are shorter')
+    const flags = findByClass(noGit, 'atw-card-flags')[0]
+    const children = (noGit.children ?? []).filter((child) => child !== null && child !== undefined)
+    assert.equal(children[children.length - 1], flags, 'the flags row is the last card row (bottom-anchored)')
+  } finally {
+    dense.dispose()
+  }
+})

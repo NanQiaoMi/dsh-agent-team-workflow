@@ -1215,3 +1215,56 @@ test('git workflow end to end: prepare, commit, verify, push, PR, gate, merge', 
     assert.equal(mergedText.trim(), 'feature')
   })
 })
+
+test('team-wide notices only reach run participants, not the idle roster', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test' })
+    const impl = harness.addTeammate('impl')
+    const rev = harness.addTeammate('rev')
+    const idle = harness.addTeammate('idle-one')
+    const idle2 = harness.addTeammate('idle-two')
+    await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'Ship a module',
+        acceptance_criteria: ['module works'],
+        items: [{ id: 'W1', subject: 'Implement it', owner: 'impl', write_scopes: ['src/'], definition_of_done: ['works'], reviewers: ['rev'] }],
+        auto_spawn: false,
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    await byName(tools, 'team_flow_report').execute(
+      {
+        item_id: 'W1',
+        summary: 'implemented',
+        files: ['src/core/run.js'],
+        commands: [{ command: 'true', exit_code: 0 }],
+        evidence: ['file exists'],
+        open_questions: [],
+        risks: [],
+      },
+      { agent: impl, signal: EXEC_SIGNAL },
+    )
+    // A team broadcast from the channel tool follows the participant rule.
+    const beforeTalk = harness.messages.length
+    await byName(tools, 'team_flow_talk').execute(
+      { target: 'team', kind: 'note', text: 'standup in five' },
+      { agent: impl, signal: EXEC_SIGNAL },
+    )
+    const talked = harness.messages.slice(beforeTalk).map((message) => message.to).sort()
+    assert.deepEqual(talked, ['rev'], 'channel team messages are delivered to participants')
+
+    // Publishing an open-queue item pings the pool, not the whole roster.
+    const beforeItem = harness.messages.length
+    await byName(tools, 'team_flow_item').execute(
+      { action: 'create', subject: 'Write the guide', write_scopes: ['docs/'], definition_of_done: ['guide works'], owner: 'open' },
+      { agent: impl, signal: EXEC_SIGNAL },
+    )
+    const posted = harness.messages.slice(beforeItem).map((message) => message.to)
+    assert.ok(posted.includes('rev'), 'participants hear about a new open item')
+    assert.ok(!posted.includes('idle-one') && !posted.includes('idle-two'), 'idle roster members are not woken')
+    assert.equal(typeof idle.id, 'string')
+    assert.equal(typeof idle2.id, 'string')
+  })
+})

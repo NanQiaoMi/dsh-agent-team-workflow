@@ -8,6 +8,7 @@
  */
 
 import { SNAPSHOT_VERSION, buildSnapshot } from './dashboard.js'
+import { settleExpiredProposals } from './workflow.js'
 
 /** Exact Fetch path the Web view polls. Connection requires the `/api/` channel. */
 export const SNAPSHOT_PATH = '/api/agent-team-workflow.snapshot'
@@ -82,6 +83,17 @@ async function handleSnapshotRequest({ request, ctx, store, settings }) {
     let state = null
     try {
       state = await store.readState(agent)
+      if (state !== null) {
+        // Proposals settle lazily; the board must show the decision without
+        // waiting for the next tool call, so settle while snapshotting and
+        // persist only when something changed.
+        try {
+          const settled = settleExpiredProposals(state, { now: new Date().toISOString(), settings: state.settings, members })
+          if (settled.length > 0) await store.writeState(agent, state)
+        } catch (error) {
+          diagnostics.warnings.push(`proposal settlement failed: ${messageOf(error)}`)
+        }
+      }
     } catch (error) {
       diagnostics.warnings.push(`workflow board unreadable: ${messageOf(error)}`)
     }

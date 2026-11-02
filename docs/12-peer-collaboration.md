@@ -173,3 +173,18 @@ peer 之间的问答不经过 Lead；Lead 也能收到广播。
 - 指名邀请会立即开一轮 pending review（只有被邀请者可提交）；开放邀请在 `take_review` 后才开轮；
 - 开放队列 item 报告时若还没有 reviewer，则不自动开轮，而是写一条"需要评审邀请"的频道消息；
 - 未裁决的阻断提案（dod/scope/replan，含 escalated）拒绝 approve 并让 gate 失败；Lead 用 `team_flow_decide {action:"resolve"}` 仲裁并同步解决关联 escalation。
+
+## 9. v1.3.1：协作噪音收敛（live 观察后修复）
+
+`run-20261102052850-il6f` 暴露了三类噪音，已在 v1.3.1 修复：
+
+1. **报告提醒不再进频道**：`applyReport` 对"未指定评审人"的项不再发 `is reported and needs a peer reviewer` 频道消息（该提醒在 `next_actions` 与 `status` 里已有）；此前的频道版会与 owner 几秒后的 `request_review` 撞车，引发大段"过期提醒"回复。
+2. **team 广播只投参与者**：`team_flow_talk target:"team"`、开放队列发布、开放评审邀请的直投对象收敛为**本 run 参与者**（item owner/reviewer/claim/pendingReviewer/reviewRequests/handoffs、proposal 作者、staffPool），Lead 与 caller 除外；黑板仍记录 team 消息，看板全员可见，但不再唤醒空闲 roster 成员。
+3. **看板快照惰性裁决**：`dashboard-route` 在构建快照前跑 `settleExpiredProposals` 并持久化，避免"提案已截止但界面仍显示进行中"。
+
+live 验证：v1.3 那轮 8 名 roster 全部被唤醒并互相澄清过期消息；v1.3.1 起同一场景只通知参与者（`test/tools.integration.test.mjs` 的 `team-wide notices only reach run participants` 断言覆盖）。
+
+## 10. 已知限制
+
+- `handoff_accept` 转移 workflow owner/claim，但 native backing task 的 owner 不会自动转移（引擎只允许 Lead `reassign`）；门禁会给出 `backing Team task in_progress` 警告，不阻塞通过。
+- 频道与黑板是文件级共享，没有防篡改；`team_flow_talk` 只保证"投递到参与者"，不保证对方已读。

@@ -1,6 +1,6 @@
 # 16 · 团队自建 / PR 标准流程 / 看板降噪（v1.3）
 
-> **状态：已实现（2026-11-02，插件 1.3.0）**：`autoStaff` + `team_flow_staff`（团队自建/补员）、
+> **状态：已实现（2026-11-02，插件 1.3.0 / UI 与噪音修复 1.3.1）**：`autoStaff` + `team_flow_staff`（团队自建/补员）、
 > `lib/git.js`（真实 git/gh 封装）+ `team_flow_git`（分支/提交/验证/推送/PR/合并）、看板拓扑降噪与
 > Git/PR 徽章；离线测试 **162/162**（含真实临时 git 仓库 + bare remote 的端到端）。live run #3 见 `docs/17`。
 

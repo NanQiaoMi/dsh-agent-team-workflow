@@ -532,17 +532,12 @@ export function applyReport(state, input) {
     const prospective = outstandingReviewers(item)[0] ?? item.reviewers[0]
     if (prospective === undefined) {
       // Open-queue item without a declared reviewer: the author must invite a
-      // peer, so the item waits in review with no pending review yet.
+      // peer, so the item waits in review with no pending review yet. The nudge
+      // stays in next_actions instead of the channel: a channel post here used
+      // to trigger a storm of "already handled" replies once the owner invited
+      // a reviewer seconds later (observed in run-20261102052850-il6f).
       item.status = ITEM_STATUS.IN_REVIEW
       item.pendingReviewer = null
-      postChannelMessage(state, {
-        from: input.caller,
-        to: 'team',
-        kind: 'question',
-        text: `${item.id} is reported and needs a peer reviewer: invite one with team_flow_work {action:"request_review", item_id:"${item.id}"}`,
-        itemId: item.id,
-        now,
-      })
     } else {
       nextReviewer = prospective
       review = openReview(item, nextReviewer, { now, actor: input.caller })

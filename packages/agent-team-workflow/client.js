@@ -21,6 +21,10 @@ window.__ModuleLoader__.load({
     const PROPOSAL_LIMIT = 32
     /** Peer↔peer links drawn by the topology (docs/16 §3 noise budget). */
     const PEER_EDGE_LIMIT = 8
+    /** Channel bodies clamp to four lines; longer ones get an expand toggle. */
+    const CHANNEL_CLAMP_LINES = 4
+    /** Visual cells per channel line (CJK counts double), used without layout. */
+    const CHANNEL_LINE_CELLS = 84
 
     // ---------------------------------------------------------------------
     // Copy (zh is the key-set source of truth; the contract test enforces parity)
@@ -178,6 +182,8 @@ window.__ModuleLoader__.load({
       'channel.title': '协作频道',
       'channel.count': '最近 {n} 条',
       'channel.empty': '暂无协作消息',
+      'channel.expand': '展开',
+      'channel.collapse': '收起',
       'channel.replyTo': '回复 {id}',
       'channel.filter.all': '全部',
       'channel.filter.question': '提问',
@@ -205,6 +211,7 @@ window.__ModuleLoader__.load({
       'proposal.deadline': '截止 {when}',
       'proposal.deadlineExpired': '已截止（{when}）',
       'proposal.autoResolved': '超时自动裁决',
+      'proposal.overdue': '已截止·待裁决',
       'proposal.quorum': '法定 {n}',
       'proposal.vote.yes': '同意',
       'proposal.vote.no': '反对',
@@ -425,6 +432,8 @@ window.__ModuleLoader__.load({
       'channel.title': 'Collaboration channel',
       'channel.count': 'latest {n}',
       'channel.empty': 'No collaboration messages yet',
+      'channel.expand': 'expand',
+      'channel.collapse': 'collapse',
       'channel.replyTo': 'reply to {id}',
       'channel.filter.all': 'all',
       'channel.filter.question': 'question',
@@ -452,6 +461,7 @@ window.__ModuleLoader__.load({
       'proposal.deadline': 'due {when}',
       'proposal.deadlineExpired': 'expired ({when})',
       'proposal.autoResolved': 'auto-resolved',
+      'proposal.overdue': 'overdue · awaiting decision',
       'proposal.quorum': 'quorum {n}',
       'proposal.vote.yes': 'yes',
       'proposal.vote.no': 'no',
@@ -540,6 +550,8 @@ window.__ModuleLoader__.load({
     const FLOW = {
       cardWidth: 180,
       cardHeight: 126,
+      /** Shorter cards for items without a Git row: no dead space in the middle. */
+      cardHeightNoGit: 112,
       columnGap: 64,
       rowGap: 28,
       padX: 12,
@@ -1221,8 +1233,11 @@ window.__ModuleLoader__.load({
         column.items.forEach((item, rowIndex) => {
           const x = FLOW.padX + columnIndex * (FLOW.cardWidth + FLOW.columnGap)
           const y = FLOW.padTop + rowIndex * (FLOW.cardHeight + FLOW.rowGap)
-          if (!positions.has(item.id)) positions.set(item.id, { x, y })
-          cards.push({ key: 'card-' + item.id, item, x, y })
+          // Rows keep the full card height; a card without a Git row is simply
+          // shorter, which removes the dead space above its bottom-anchored flags.
+          const height = item.git === null ? FLOW.cardHeightNoGit : FLOW.cardHeight
+          if (!positions.has(item.id)) positions.set(item.id, { x, y, height })
+          cards.push({ key: 'card-' + item.id, item, x, y, height })
         })
       })
       const width = columns.length === 0 ? 0 : FLOW.padX * 2 + columns.length * FLOW.cardWidth + (columns.length - 1) * FLOW.columnGap + FLOW.loopWidth
@@ -1235,7 +1250,12 @@ window.__ModuleLoader__.load({
           edges.push({
             key: 'dep-' + card.item.id + '-' + dependencyId,
             className: 'atw-edge--dep',
-            d: linkPath(from.x + FLOW.cardWidth / 2, from.y + FLOW.cardHeight + 1, card.x + FLOW.cardWidth / 2, card.y - 5),
+            d: linkPath(
+              from.x + FLOW.cardWidth / 2,
+              from.y + (Number.isFinite(from.height) ? from.height : FLOW.cardHeight) + 1,
+              card.x + FLOW.cardWidth / 2,
+              card.y - 5,
+            ),
           })
         }
       }
@@ -1245,7 +1265,8 @@ window.__ModuleLoader__.load({
         const reviewed = reviews.submittedRounds > 0 || reviews.reworkRounds > 0 || reviews.pendingReviewer !== ''
         if (!reviewed) continue
         const startX = card.x + FLOW.cardWidth
-        const midY = card.y + FLOW.cardHeight / 2
+        const cardHeight = Number.isFinite(card.height) ? card.height : FLOW.cardHeight
+        const midY = card.y + cardHeight / 2
         loops.push({
           key: 'loop-' + card.item.id,
           d: 'M' + round1(startX) + ',' + round1(midY - 15) + ' C' + round1(startX + 26) + ',' + round1(midY - 15) + ' ' + round1(startX + 26) + ',' + round1(midY + 15) + ' ' + round1(startX) + ',' + round1(midY + 15),
@@ -1299,6 +1320,7 @@ window.__ModuleLoader__.load({
      * @returns `{ participants, idle }` member records.
      */
     function splitParticipants(team, items, collaboration) {
+      const leadName = team.me && team.me.name ? team.me.name : ''
       const active = new Set()
       const mark = (name) => {
         const value = str(name)
@@ -1335,6 +1357,9 @@ window.__ModuleLoader__.load({
       const participants = []
       const idle = []
       for (const member of team.members) {
+        // The Lead already owns its own node; folding it into 「空闲 N 人」
+        // would double-count the Lead and inflate the idle number.
+        if (member.name === '' || (leadName !== '' && member.name === leadName)) continue
         const busy = member.status !== 'inactive' || active.has(member.name)
         if (busy) participants.push(member)
         else idle.push(member)
@@ -1495,6 +1520,7 @@ window.__ModuleLoader__.load({
 .atw-lower{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:start;min-width:0}
 @media (max-width:1180px){.atw-main,.atw-collab,.atw-lower{grid-template-columns:minmax(0,1fr)}}
 .atw-panel{display:flex;flex-direction:column;box-sizing:border-box;min-width:0;min-height:240px;max-height:320px;border:0.5px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1);overflow:hidden}
+.atw-panel--flow{max-height:420px}
 .atw-panel-head{display:flex;flex:none;align-items:center;justify-content:space-between;gap:8px;min-width:0;height:32px;box-sizing:border-box;padding:0 12px;border-bottom:0.5px solid var(--dsw-alias-border-l1)}
 .atw-panel-title{font-size:12px;font-weight:600;line-height:18px;white-space:nowrap}
 .atw-panel-hint{min-width:0;color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:400;line-height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1523,8 +1549,9 @@ window.__ModuleLoader__.load({
 .atw-card--pending-review{outline:1px dashed var(--dsw-alias-state-warn-primary);outline-offset:1px}
 .atw-card--selected{outline:1px solid var(--dsw-alias-brand-primary);outline-offset:1px}
 .atw-card-head{display:flex;align-items:center;gap:4px;min-width:0;overflow:hidden}
+.atw-card-head,.atw-card-subject,.atw-card-meta,.atw-card-git{flex:none}
 .atw-card-id{flex:none;font-size:12px;font-weight:600}
-.atw-card-subject{max-height:30px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;font-size:12px;line-height:15px}
+.atw-card-subject{max-height:30px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical;font-size:12px;line-height:15px}
 .atw-card-meta{overflow:hidden;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:15px;white-space:nowrap;text-overflow:ellipsis}
 .atw-card-flags{display:flex;align-items:center;gap:5px;flex-wrap:wrap;max-height:32px;margin-top:auto;overflow:hidden;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:15px}
 .atw-card-pending{overflow:hidden;color:var(--dsw-alias-state-warn-primary);white-space:nowrap;text-overflow:ellipsis}
@@ -1634,7 +1661,10 @@ window.__ModuleLoader__.load({
 .atw-channel-ref{box-sizing:border-box;border:0.5px solid var(--dsw-alias-border-l2);border-radius:999px;background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;font-size:11px;line-height:16px;padding:0 7px;cursor:pointer}
 .atw-channel-ref:hover{background:var(--dsw-alias-bg-overlay)}
 .atw-channel-ref:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
-.atw-channel-text{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;font-size:12px;line-height:17px;overflow-wrap:anywhere}
+.atw-channel-text{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;font-size:12px;line-height:17px;overflow-wrap:anywhere}
+.atw-channel-text--expanded{display:block;overflow:visible}
+.atw-channel-toggle{align-self:flex-start;margin-top:1px;padding:0;border:0;background:none;color:var(--dsw-alias-brand-primary);font:inherit;font-size:11px;line-height:16px;cursor:pointer}
+.atw-channel-toggle:hover{text-decoration:underline}
 .atw-proposal-list{display:flex;flex-direction:column;gap:8px}
 .atw-proposal{display:flex;flex-direction:column;gap:4px;box-sizing:border-box;min-width:0;padding:7px 8px;border:0.5px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}
 .atw-proposal--blocking{border-color:var(--dsw-alias-state-warn-primary)}
@@ -1896,7 +1926,12 @@ window.__ModuleLoader__.load({
           tabIndex: 0,
           'aria-pressed': selected,
           title: item.subject,
-          style: { left: card.x + 'px', top: card.y + 'px', width: FLOW.cardWidth + 'px', height: FLOW.cardHeight + 'px' },
+          style: {
+            left: card.x + 'px',
+            top: card.y + 'px',
+            width: FLOW.cardWidth + 'px',
+            height: (Number.isFinite(card.height) ? card.height : FLOW.cardHeight) + 'px',
+          },
           onClick: () => view.actions.toggleItem(item.id),
           onKeyDown: (event) => {
             if (event && (event.key === 'Enter' || event.key === ' ')) {
@@ -2044,7 +2079,7 @@ window.__ModuleLoader__.load({
             )
       return h(
         'section',
-        { className: 'atw-panel' },
+        { className: 'atw-panel atw-panel--flow' },
         panelHead(tr('flow.title'), tr('flow.hint')),
         h('div', { className: 'atw-panel-body' }, h('div', { className: 'atw-flow-stack' }, lane, body)),
       )
@@ -2392,11 +2427,38 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * @returns true when a channel body would exceed the four-line clamp.
+     *   A visual-cell estimate keeps the board layout-free: CJK glyphs take two
+     *   cells, and the toggle only needs to be roughly right for long bodies.
+     */
+    function channelNeedsToggle(text) {
+      if (text === '') return false
+      let visualLines = 0
+      for (const line of text.split('\n')) {
+        let cells = 0
+        for (const char of line) cells += char.codePointAt(0) > 0x2e80 ? 2 : 1
+        visualLines += Math.max(1, Math.ceil(cells / CHANNEL_LINE_CELLS))
+      }
+      return visualLines > CHANNEL_CLAMP_LINES
+    }
+
+    /** @returns a stable expand/collapse key for one channel entry. */
+    function channelEntryKey(entry, index) {
+      if (entry.id !== '') return 'id:' + entry.id
+      if (Number.isFinite(entry.at)) return 'at:' + entry.at + ':' + entry.from
+      return 'idx:' + index
+    }
+
     function renderChannelRow(view, entry, index, options) {
       const tr = view.tr
       const to = entry.to === 'team' || entry.to === '' ? tr('collab.team') : entry.to
       const reply = entry.replyTo === '' ? undefined : tr('channel.replyTo', { id: entry.replyTo })
       const showRef = !(options !== undefined && options.hideRef === true)
+      const text = str(entry.text)
+      const messageKey = channelEntryKey(entry, index)
+      const expandable = channelNeedsToggle(text)
+      const expanded = toArray(view.expandedMessages).indexOf(messageKey) !== -1
       return h(
         'div',
         { key: 'channel-' + index + '-' + entry.id, className: 'atw-channel-item', title: reply },
@@ -2414,7 +2476,14 @@ window.__ModuleLoader__.load({
             : null,
           h('span', { className: 'atw-channel-time' }, relativeTime(entry.at, view.now, tr)),
         ),
-        h('div', { className: 'atw-channel-text' }, entry.text),
+        h('div', { className: 'atw-channel-text' + (expanded ? ' atw-channel-text--expanded' : '') }, text),
+        expandable
+          ? h(
+              'button',
+              { key: 'toggle', type: 'button', className: 'atw-channel-toggle', onClick: () => view.actions.toggleMessage(messageKey) },
+              expanded ? tr('channel.collapse') : tr('channel.expand'),
+            )
+          : null,
       )
     }
 
@@ -2473,6 +2542,8 @@ window.__ModuleLoader__.load({
       const blocking = proposal.status === 'open' && PROPOSAL_BLOCKING_KINDS.indexOf(proposal.kind) !== -1
       const deadline = deadlineLabel(proposal.deadline, view.now, tr)
       const quorumShown = Number.isFinite(proposal.quorum) && proposal.quorum > 0
+      const overdue =
+        Number.isFinite(proposal.deadline) && proposal.deadline > 0 && proposal.deadline < view.now && proposal.autoResolved !== true
       return h(
         'div',
         { key: 'proposal-' + index + '-' + proposal.id, className: 'atw-proposal' + (blocking ? ' atw-proposal--blocking' : '') },
@@ -2482,6 +2553,7 @@ window.__ModuleLoader__.load({
           badge(proposalKindLabel(tr, proposal.kind), 'idle', 'kind'),
           badge(proposalStatusLabel(tr, proposal.status), PROPOSAL_STATUS_TONES[proposal.status] || 'idle', 'status'),
           proposal.autoResolved ? h('span', { key: 'auto', className: 'atw-badge atw-badge--auto' }, tr('proposal.autoResolved')) : null,
+          overdue ? h('span', { key: 'overdue', className: 'atw-badge atw-badge--warn' }, tr('proposal.overdue')) : null,
           blocking ? badge(tr('proposal.blocking'), 'warn', 'blocking') : null,
           proposal.itemId !== ''
             ? h(
@@ -3012,6 +3084,7 @@ window.__ModuleLoader__.load({
       const [selectedItemId, setSelectedItemId] = React.useState(null)
       const [filter, setFilter] = React.useState('all')
       const [channelFilter, setChannelFilter] = React.useState('all')
+      const [expandedMessages, setExpandedMessages] = React.useState([])
       const [copiedPath, setCopiedPath] = React.useState(null)
 
       /** Newest snapshot, so event handlers never read a stale closure. */
@@ -3152,6 +3225,8 @@ window.__ModuleLoader__.load({
         closeItem: () => setSelectedItemId(null),
         setFilter: (value) => setFilter(value),
         setChannelFilter: (value) => setChannelFilter(value),
+        toggleMessage: (key) =>
+          setExpandedMessages((value) => (value.indexOf(key) === -1 ? value.concat([key]) : value.filter((entry) => entry !== key))),
         copy: (text, key) => {
           const value = str(text)
           if (value === '') return
@@ -3181,6 +3256,7 @@ window.__ModuleLoader__.load({
         paused,
         filter,
         channelFilter,
+        expandedMessages,
         selectedItemId,
         copiedPath,
         lastUpdated,

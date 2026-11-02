@@ -520,3 +520,17 @@ test('a proposal without quorum at its deadline escalates and keeps blocking', (
   const approved = W.applyReviewSubmit(state, { itemId: 'W1', reviewer: 'rev', verdict: 'approve', summary: 'ok', findings: [], evidenceChecked: ['read'], now: NOW })
   assert.equal(approved.item.status, W.ITEM_STATUS.APPROVED)
 })
+
+test('reporting an unreviewed item keeps its nudge out of the channel', () => {
+  const state = run([item({ reviewers: [] })])
+  const before = state.channel.length
+  const outcome = W.applyReport(state, {
+    itemId: 'W1',
+    caller: 'impl',
+    report: { summary: 'done', files: ['src/core/run.js'], commands: [{ command: 'true', exitCode: 0 }], evidence: ['ran it'], openQuestions: [], risks: [] },
+    now: NOW,
+    settings: SETTINGS,
+  })
+  assert.equal(outcome.item.pendingReviewer, null)
+  assert.equal(state.channel.length, before, 'no channel nudge is posted; the reminder lives in next_actions')
+})

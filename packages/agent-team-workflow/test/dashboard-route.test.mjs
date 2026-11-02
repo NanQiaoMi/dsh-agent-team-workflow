@@ -226,3 +226,37 @@ test('a corrupt board degrades to a warning instead of a 500', () => {
     assert.ok(payload.diagnostics.warnings.some((warning) => /unreadable/.test(warning)), payload.diagnostics.warnings.join('; '))
   })
 })
+
+test('the snapshot settles expired proposals and persists the decision', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings: SETTINGS })
+    await seedRun(harness, store)
+    const state = await store.readState(harness.lead)
+    const proposal = W.proposeDecision(state, {
+      by: 'impl',
+      kind: 'dod',
+      itemId: 'W1',
+      text: 'also cover the empty case',
+      settings: { proposalTimeoutMinutes: 15 },
+      members: [{ name: 'lead', role: 'lead' }, { name: 'impl', role: 'teammate' }, { name: 'rev', role: 'teammate' }],
+      now: NOW,
+    })
+    // The window has already closed and one affected member voted yes.
+    W.voteDecision(state, { proposalId: proposal.id, by: 'impl', vote: 'yes', settings: { proposalTimeoutMinutes: 15 }, members: [{ name: 'lead', role: 'lead' }, { name: 'impl', role: 'teammate' }, { name: 'rev', role: 'teammate' }], now: NOW })
+    state.proposals[0].deadline = new Date(Date.parse(NOW) - 60_000).toISOString()
+    await store.writeState(harness.lead, state)
+
+    const connection = createConnectionDouble()
+    registerDashboardRoute({ connection, ctx: harness.ctx, store, settings: SETTINGS })
+    const response = await connection.registered[0].fetch(new Request(`http://dashboard.invalid${SNAPSHOT_PATH}?session=session-lead`))
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    const shown = payload.run.collaboration.proposals.find((candidate) => candidate.id === proposal.id)
+    assert.equal(shown.status, 'accepted', 'the board shows the settled decision without waiting for a tool call')
+    assert.equal(shown.autoResolved, true)
+    assert.equal(payload.run.items[0].openProposals, 0, 'the settled blocking proposal no longer blocks the item')
+    const persisted = await store.readState(harness.lead)
+    assert.equal(persisted.proposals[0].status, 'accepted', 'settlement is persisted so other members agree')
+  })
+})

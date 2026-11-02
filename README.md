@@ -45,6 +45,7 @@
 | [`docs/12-peer-collaboration.md`](docs/12-peer-collaboration.md) | **对等协作层设计**：channel / 开放队列 / 评审邀请 / 提案投票 / 交接、state v2、快照 v2、UI 契约 |
 | [`docs/14-member-autonomy.md`](docs/14-member-autonomy.md) | **成员自治 + 提案活性**：`team_flow_item` 自建项、deadline/quorum/惰性自动裁决、快照与看板增量 |
 | [`docs/16-team-autonomy-pr.md`](docs/16-team-autonomy-pr.md) | **团队自建 + PR 标准流程 + 看板降噪**：`autoStaff`/`team_flow_staff`、`team_flow_git`、拓扑与 Git 徽章 |
+| [`docs/17-autonomy-pr-live-run.md`](docs/17-autonomy-pr-live-run.md) | **自治团队 live run**：自动唤醒组队、成员自建 S1、真实 handoff、p1 超时自动裁决、协作噪音观察与修复 |
 | [`docs/13-collaboration-live-run.md`](docs/13-collaboration-live-run.md) | **对等协作 live run**：3 成员 / 3 开放项 / 8 分钟，抢单、直连问答、提案投票、互邀评审、gate 全记录 + 看板截图 |
 | [`packages/agent-team-workflow/`](packages/agent-team-workflow/) | 可安装插件包（零外部依赖，纯 ESM） |
 
@@ -135,7 +136,7 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 "$NODE" --test test/engine.test.mjs test/tools.integration.test.mjs test/plugin.test.mjs
 ```
 
-162 个用例覆盖：计划校验（自审/环/写范围竞争/成员名/规模）、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类（含空证据、空命令、依赖未批准、评审无证据）、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。详见 [`docs/05-verification.md`](docs/05-verification.md)。
+168 个用例覆盖：计划校验（自审/环/写范围竞争/成员名/规模）、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类（含空证据、空命令、依赖未批准、评审无证据）、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。详见 [`docs/05-verification.md`](docs/05-verification.md)。
 
 **已通过真实 live run 验证**（2026-11-01，重启后）：4 个成员、2 个并行工作项、一次升级仲裁、两轮独立评审、门禁收敛并生成报告——记录与原始证据见 [`docs/08-live-run.md`](docs/08-live-run.md)。
 
