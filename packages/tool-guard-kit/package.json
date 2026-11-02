@@ -1,0 +1,22 @@
+{
+  "name": "@local/dsh-tool-guard-kit",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Reusable per-agent native-tool sandbox for DeepSeek Harness Cordis plugins (ctx.tools.guard).",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

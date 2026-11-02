@@ -51,6 +51,7 @@
 | [`docs/21-member-transcript.md`](docs/21-member-transcript.md) | **v1.5 成员对话视图**：`member.transcript` 投影（session log → user/assistant/system/tool 消息）、降级策略、安全边界 |
 | [`docs/23-v16-parallel-and-sandbox.md`](docs/23-v16-parallel-and-sandbox.md) | **v1.6 并行 worktree 隔离 + 工作流能力沙箱**：off/serial/parallel、item 级 commit/verify/merge、产物门禁；roles allow/readOnly；平台边界说明 |
 | [`docs/25-native-tool-sandbox.md`](docs/25-native-tool-sandbox.md) | **v1.7 原生工具沙箱**：`ctx.tools.guard()` 在工具调用前拒绝 write/edit/bash/terminal；readOnly/allow/deny 判定表、fail-open 边界 |
+| [`docs/27-tool-guard-kit.md`](docs/27-tool-guard-kit.md) | **v1.8 可复用沙箱库 `@local/dsh-tool-guard-kit`**：三步抽象成零依赖库（判定/审计/生命周期/Teams 适配器），本插件改为消费该库 |
 | [`docs/13-collaboration-live-run.md`](docs/13-collaboration-live-run.md) | **对等协作 live run**：3 成员 / 3 开放项 / 8 分钟，抢单、直连问答、提案投票、互邀评审、gate 全记录 + 看板截图 |
 | [`packages/agent-team-workflow/`](packages/agent-team-workflow/) | 可安装插件包（零外部依赖，纯 ESM） |
 
@@ -141,7 +142,7 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 "$NODE" --test test/engine.test.mjs test/tools.integration.test.mjs test/plugin.test.mjs
 ```
 
-214 个用例覆盖：计划校验（自审/环/写范围竞争/成员名/规模）、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类（含空证据、空命令、依赖未批准、评审无证据）、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。详见 [`docs/05-verification.md`](docs/05-verification.md)。
+223 个用例覆盖：计划校验（自审/环/写范围竞争/成员名/规模）、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类（含空证据、空命令、依赖未批准、评审无证据）、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。详见 [`docs/05-verification.md`](docs/05-verification.md)。
 
 **已通过真实 live run 验证**（2026-11-01，重启后）：4 个成员、2 个并行工作项、一次升级仲裁、两轮独立评审、门禁收敛并生成报告——记录与原始证据见 [`docs/08-live-run.md`](docs/08-live-run.md)。
 
