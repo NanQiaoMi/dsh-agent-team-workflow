@@ -1416,8 +1416,8 @@ test('docs/17 proposals: an expired, not-yet-resolved proposal shows the overdue
   }
 })
 
-test('docs/17 density: idle excludes the Lead, the flow panel is 420px, cards clamp their title', async () => {
-  assert.match(source, /\.atw-panel--flow\{max-height:420px\}/, 'the flow panel opts into the 420px box')
+test('docs/17 density: idle excludes the Lead, the flow panel is 520px, cards clamp their title', async () => {
+  assert.match(source, /\.atw-panel--flow\{max-height:520px\}/, 'the flow panel opts into the 520px box')
   assert.match(source, /\.atw-panel\{[^}]*max-height:320px/, 'other panels keep the 320px box')
   assert.match(source, /\.atw-card-subject\{[^}]*-webkit-line-clamp:2/, 'card titles clamp at two lines')
   assert.match(source, /\.atw-card-flags\{[^}]*margin-top:auto/, 'the flags row is pinned to the card bottom')

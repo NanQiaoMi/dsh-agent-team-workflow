@@ -38,12 +38,17 @@ impl-docs 对 K1 发起 **p1**（`dod`，`timeout_minutes:1`），按剧本**全
 
 ## 5. 看板实测与协作噪音
 
-看板（v1.3，降噪前）实测截图：`docs/evidence/dashboard/v13-board-pending.png`。观察到并已修复的问题：
+看板实测截图：
+- 降噪前（v1.3）：`docs/evidence/dashboard/v13-board-pending.png`
+- 降噪后（v1.3.1 最终面板）：`docs/evidence/dashboard/v131-board-final.png`、`docs/evidence/dashboard/v131-board-collab.png`
+  （频道正文 4 行 +「展开」、提案「超时自动裁决 + 已截止 + 法定 1」、事件流 `proposal/auto-resolved`、门禁 4 项通过 + K2 的 `backing Team task in_progress` 警告、流程图 520px 内滚动）
+
+观察到并已修复的问题：
 
 1. **协作频道消息太长**：一条问答占满面板 → v1.3.1 改为正文默认 4 行、可展开/收起；
 2. **提案「已截止」但状态仍「进行中」**：route 不做惰性裁决 → v1.3.1 在快照时结算并持久化；
 3. **拓扑把 Lead 算进「空闲 N 人」**（fixture 只剩 Lead 时出现「空闲 1 人」）→ v1.3.1 排除 Lead、0 不渲染；
-4. **流程图面板 320px 切卡** → 第一行提高到 420px；
+4. **流程图面板 320px 切卡** → 第一行提高到 **520px**（v1.3.1 复测后从 420 再放大，4 张卡可整卡显示）；
 5. **报告时自动发"needs a peer reviewer"提醒引发回复风暴**：本 run 中 owner 几秒后自行点名评审，导致 m5/m12/m15/m31 等过期提醒 + 10 余条互相澄清 → v1.3.1 移除该频道提醒（保留在 next_actions）；
 6. **team 广播唤醒全部 8 名 roster 成员**：research-teams / dsh-api-recon / code-reviewer / client-board / host-snapshot 都被唤醒并答复过期消息 → v1.3.1 把 team 通知收敛到**本 run 参与者**（item owner/reviewer/claim/handoff/proposal 作者 + staffPool）。
 

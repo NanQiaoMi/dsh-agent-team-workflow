@@ -41,7 +41,7 @@ window.__ModuleLoader__.load({
       'header.refresh': '刷新',
       'header.pause': '暂停',
       'header.resume': '继续',
-      'header.members': '成员 {n}',
+      'header.members': '参与者 {n}',
       'header.offline': '离线，显示上一次成功的数据',
       'header.paused': '轮询已暂停',
       'phase.planned': '已计划',
@@ -1520,7 +1520,7 @@ window.__ModuleLoader__.load({
 .atw-lower{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:start;min-width:0}
 @media (max-width:1180px){.atw-main,.atw-collab,.atw-lower{grid-template-columns:minmax(0,1fr)}}
 .atw-panel{display:flex;flex-direction:column;box-sizing:border-box;min-width:0;min-height:240px;max-height:320px;border:0.5px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1);overflow:hidden}
-.atw-panel--flow{max-height:420px}
+.atw-panel--flow{max-height:520px}
 .atw-panel-head{display:flex;flex:none;align-items:center;justify-content:space-between;gap:8px;min-width:0;height:32px;box-sizing:border-box;padding:0 12px;border-bottom:0.5px solid var(--dsw-alias-border-l1)}
 .atw-panel-title{font-size:12px;font-weight:600;line-height:18px;white-space:nowrap}
 .atw-panel-hint{min-width:0;color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:400;line-height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
