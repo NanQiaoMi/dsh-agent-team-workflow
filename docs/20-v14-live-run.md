@@ -1,5 +1,33 @@
-# 20 · v1.4 live run（待执行）
+# 20 · v1.4 live run
 
-> 状态：等待安装 1.4.0 + 重启。
+> Run 目标：验证 v1.4 的 Wave1/Wave2 能力在真实 Host 中可用：
+> roles/provider、plan-first、hooks、优雅关闭、成员面板、token 预算、worktree 隔离。
+>
+> 状态：**v1.4.0 已安装；Host 侧已在独立 Web Host 验证加载**，桌面会话等待重启后跑完整 live run。
 
-计划验证：roles/provider 生效、plan-first 审批、hooks 阻断、优雅关闭、成员面板直聊、token 预算（真实 tokenUsage 或"未采集"）、worktree 隔离（scratch git 仓库）；并更新看板截图。
+## 1. 已完成的加载验证（独立 Host，profile 121，端口 4399）
+
+- 独立 Host 启动后插件为 **1.4.0**（`index.js VERSION` 由 profile link 加载；桌面进程仍停留在 1.3.1，见 §3）；
+- **新 Host 路由可用**：页面内 `GET /api/agent-team-workflow.member?session=…&name=lead` → **200**
+  （该路由 v1.4 才存在，证明 Host 侧新版已生效）；
+- **新客户端 UI 可用**：同一 Host 的「团队看板」渲染出 v1.4 新增的
+  **「计划待批」/「计划已批」** 卡片徽章（`docs/evidence/dashboard/v14-plan-badges.png`）；
+- 快照 v1.4 新字段按契约出现：`items[].plan`（pending/approved）、`run.collaboration.stops[]`、`run.usage`。
+
+## 2. 待执行的完整 live run（重启桌面后）
+
+1. 配置临时开启 `roles`、`planFirst`、`hooks`、`gitEnabled+worktreeIsolation`（或单独轮次）；
+2. Lead 发 mission → `team_flow_plan` 自动组队（provider 按 role 选择）；
+3. 成员 `team_flow_plan_approval` 提交计划 → Lead 批准（autoApprovePlan=false 分支）；
+4. 一次 hooks 阻断演示（taskCreated exit 2 → 计划被拒绝、无状态写入）；
+5. `team_flow_stop` 优雅关闭：request → 成员 reject（附理由）→ Lead interrupt；
+6. 成员面板：GET 视图 + POST 直发消息（真实投递到成员 inbox）；
+7. scratch git 仓库：worktree_add/commit/verify/push → gate → merge；
+8. gate 捕获 token 使用（真实 tokenUsage 或"未采集"）；
+9. 截图：计划徽章、成员抽屉、停止记录、token 面板/字段。
+
+## 3. 环境事实
+
+- 桌面 App 进程启动于 17:10，日志显示仍为 **1.3.1**（插件管理器在 21:14 触发了一次 reconcile，但没有重启进程，故模块代未变）；
+- 独立 Host（21:18 启动）已加载 1.4.0 并验证新路由/新 UI；
+- 因此：**需要重启 DSH Desktop** 才能让当前会话获得 17 个工具与 v1.4 行为。
