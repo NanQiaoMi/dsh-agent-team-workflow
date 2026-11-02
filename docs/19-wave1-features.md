@@ -108,7 +108,7 @@ worktreeIsolation: true
 
 `GET …member` 响应新增 `member.transcript = {available, messages[{seq,role,text}], truncated, totalEvents, error}`：
 Host 通过可选 seam `ctx.sessionQuery.readSession` 读取成员会话日志，`lib/transcript.js` 投影成尾部 40 条可读消息；
-不可用时返回 `available:false` 并降级为工作流视图。客户端成员抽屉新增「对话」区（角色标签 + clamp），刷新随轮询。
+不可用时返回 `available:false` 并降级为工作流视图。客户端成员抽屉新增「对话」区（角色标签 + clamp），刷新随轮询；live 已验（docs/22）。
 
 ## 7. 版本与验收
 
