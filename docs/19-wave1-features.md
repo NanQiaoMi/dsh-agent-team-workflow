@@ -104,6 +104,12 @@ worktreeIsolation: true
 - 用户可在任意 session 内让 Lead 转发内容（人工跨 session 桥）；
 - 若后续 DSH 增加 session 消息 seam，插件按 `team_flow_talk {target:"session:<id>"}` 扩展。
 
+### 5.3 成员对话视图（v1.5，docs/21）
+
+`GET …member` 响应新增 `member.transcript = {available, messages[{seq,role,text}], truncated, totalEvents, error}`：
+Host 通过可选 seam `ctx.sessionQuery.readSession` 读取成员会话日志，`lib/transcript.js` 投影成尾部 40 条可读消息；
+不可用时返回 `available:false` 并降级为工作流视图。客户端成员抽屉新增「对话」区（角色标签 + clamp），刷新随轮询。
+
 ## 7. 版本与验收
 
 - 插件版本 **1.4.0**；**17 个工具**（新增 `team_flow_stop`、`team_flow_plan_approval`；`team_flow_git` 增加 worktree 动作）；

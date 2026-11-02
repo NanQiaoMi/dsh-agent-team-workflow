@@ -323,6 +323,14 @@ window.__ModuleLoader__.load({
       'plan.risks': '风险',
       'plan.decidedBy': '决定人',
       'plan.reason': '理由',
+      'member.transcript': '对话',
+      'member.transcriptEmpty': '暂无对话记录',
+      'member.transcriptUnavailable': '该 Host 未暴露会话日志',
+      'member.transcriptTruncated': '仅显示最近 {n} 条',
+      'member.role.user': '用户',
+      'member.role.assistant': '助手',
+      'member.role.system': '系统',
+      'member.role.tool': '工具',
     }
 
     const en = {
@@ -616,6 +624,14 @@ window.__ModuleLoader__.load({
       'plan.risks': 'risks',
       'plan.decidedBy': 'decided by',
       'plan.reason': 'reason',
+      'member.transcript': 'Transcript',
+      'member.transcriptEmpty': 'No transcript yet',
+      'member.transcriptUnavailable': 'this Host does not expose the session log',
+      'member.transcriptTruncated': 'showing the latest {n} messages',
+      'member.role.user': 'user',
+      'member.role.assistant': 'assistant',
+      'member.role.system': 'system',
+      'member.role.tool': 'tool',
     }
 
     // ---------------------------------------------------------------------
@@ -635,6 +651,7 @@ window.__ModuleLoader__.load({
     const HANDOFF_TONES = { offered: 'warn', accepted: 'success', declined: 'idle' }
     const PLAN_STATUS_TONES = { pending: 'warn', approved: 'success', rejected: 'error' }
     const STOP_STATUS_TONES = { pending: 'warn', accepted: 'success', rejected: 'error', interrupted: 'idle' }
+    const TRANSCRIPT_ROLE_TONES = { user: 'brand', assistant: 'success', system: 'idle', tool: 'warn' }
     const CHANNEL_FILTERS = ['all', 'question', 'answer', 'proposal', 'handoff', 'status']
     const PROPOSAL_BLOCKING_KINDS = ['dod', 'scope', 'replan']
     const FLOW = {
@@ -888,6 +905,14 @@ window.__ModuleLoader__.load({
       return tr('plan.pending')
     }
 
+    /** @returns the transcript role label (docs/21). */
+    function transcriptRoleLabel(tr, role) {
+      if (role === 'user') return tr('member.role.user')
+      if (role === 'assistant') return tr('member.role.assistant')
+      if (role === 'tool') return tr('member.role.tool')
+      return tr('member.role.system')
+    }
+
     /** @returns the stop status label (docs/19 §2). */
     function stopStatusLabel(tr, status) {
       if (status === 'accepted') return tr('member.stop.accepted')
@@ -1069,6 +1094,33 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /**
+     * @returns the normalized transcript block (docs/21). The Host projects the
+     *   session log best-effort, so a missing/blocked block degrades to
+     *   "unavailable" instead of hiding the whole member view.
+     */
+    function normalizeTranscript(raw) {
+      if (!isRecord(raw)) return { available: false, messages: [], truncated: false, totalEvents: 0, error: '' }
+      const messages = toArray(raw.messages)
+        .filter(isRecord)
+        .map((message) => {
+          const seq = num(message.seq, Number.NaN)
+          return {
+            seq: Number.isFinite(seq) ? seq : null,
+            role: str(message.role) === 'user' || str(message.role) === 'assistant' || str(message.role) === 'tool' ? str(message.role) : 'system',
+            text: str(message.text),
+          }
+        })
+        .filter((message) => message.text !== '')
+      return {
+        available: raw.available === true,
+        messages,
+        truncated: raw.truncated === true,
+        totalEvents: num(raw.totalEvents, 0),
+        error: str(raw.error),
+      }
+    }
+
     /** @returns the normalized payload of the member route (docs/19 §5). */
     function normalizeMemberView(raw) {
       const member = isRecord(raw) ? raw : {}
@@ -1108,6 +1160,7 @@ window.__ModuleLoader__.load({
                 mode: str(stop.mode),
               },
         plan: plan === null ? null : { itemId: str(plan.itemId), status: str(plan.status) },
+        transcript: normalizeTranscript(member.transcript),
         roleDefinition:
           roleDefinition === null
             ? null
@@ -1831,6 +1884,12 @@ window.__ModuleLoader__.load({
 .atw-member-message:last-child{border-bottom:none;padding-bottom:0}
 .atw-member-channel-text{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;font-size:12px;line-height:16px;overflow-wrap:anywhere}
 .atw-member-role{display:flex;flex-direction:column;gap:4px;min-width:0}
+.atw-member-transcript{display:flex;flex-direction:column;gap:4px;min-width:0}
+.atw-member-transcript-list{display:flex;flex-direction:column;gap:6px;min-width:0}
+.atw-member-transcript-item{display:flex;flex-direction:column;gap:2px;min-width:0;padding-bottom:6px;border-bottom:0.5px solid var(--dsw-alias-border-l1)}
+.atw-member-transcript-item:last-child{border-bottom:none;padding-bottom:0}
+.atw-member-transcript-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
+.atw-member-transcript-text{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:16px;overflow-wrap:anywhere}
 .atw-member-prompt{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;overflow-wrap:anywhere}
 .atw-member-composer{display:flex;flex-direction:column;gap:6px;padding-top:8px;border-top:0.5px solid var(--dsw-alias-border-l1)}
 .atw-member-input{box-sizing:border-box;width:100%;padding:4px 8px;border:0.5px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:16px}
@@ -3426,6 +3485,42 @@ window.__ModuleLoader__.load({
                   ),
                 ),
           ),
+        )
+        const transcript = detail.transcript
+        const transcriptTitle =
+          transcript.truncated && transcript.messages.length > 0
+            ? tr('member.transcript') + ' · ' + tr('member.transcriptTruncated', { n: transcript.messages.length })
+            : tr('member.transcript')
+        let transcriptBody
+        if (!transcript.available) {
+          transcriptBody = h(
+            'div',
+            { key: 'member-transcript-unavailable', className: 'atw-muted', title: transcript.error !== '' ? transcript.error : undefined },
+            tr('member.transcriptUnavailable'),
+          )
+        } else if (transcript.messages.length === 0) {
+          transcriptBody = h('div', { key: 'member-transcript-empty', className: 'atw-muted' }, tr('member.transcriptEmpty'))
+        } else {
+          transcriptBody = h(
+            'div',
+            { key: 'member-transcript-list', className: 'atw-member-transcript-list' },
+            transcript.messages.map((message, index) =>
+              h(
+                'div',
+                { key: 'member-transcript-' + index, className: 'atw-member-transcript-item' },
+                h(
+                  'div',
+                  { className: 'atw-member-transcript-head' },
+                  badge(transcriptRoleLabel(tr, message.role), TRANSCRIPT_ROLE_TONES[message.role] || 'idle'),
+                  Number.isFinite(message.seq) ? h('span', { className: 'atw-muted' }, '#' + message.seq) : null,
+                ),
+                h('div', { className: 'atw-member-transcript-text' }, message.text),
+              ),
+            ),
+          )
+        }
+        sections.push(
+          h('div', { key: 'member-transcript', className: 'atw-section atw-member-transcript' }, h('div', { className: 'atw-section-title' }, transcriptTitle), transcriptBody),
         )
         sections.push(
           h(

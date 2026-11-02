@@ -1767,3 +1767,130 @@ test('docs/19 graceful stop: drawer shows every stop status and only pending pai
     board.dispose()
   }
 })
+
+// ---------------------------------------------------------------------------
+// v1.5 member transcript section (docs/21)
+// ---------------------------------------------------------------------------
+
+test('docs/21 member transcript: renders roles, bodies and the truncation hint', async () => {
+  let getCount = 0
+  const firstTranscript = {
+    available: true,
+    messages: [
+      { seq: 1, role: 'user', text: 'please implement quoteName' },
+      { seq: 2, role: 'assistant', text: 'I will read quote.mjs first' },
+      { seq: 3, role: 'system', text: 'system note: plan approved' },
+      { seq: null, role: 'tool', text: '[tool] bash {"command":"node --test"}' },
+    ],
+    truncated: true,
+    totalEvents: 120,
+    error: null,
+  }
+  const refreshedTranscript = {
+    ...firstTranscript,
+    messages: [...firstTranscript.messages, { seq: 4, role: 'assistant', text: 'refreshed transcript line' }],
+    truncated: false,
+  }
+  const board = await mountBoard(withSnapshot({}), {
+    member: ({ method }) => {
+      if (method === 'POST') return { status: 200, body: { ok: true, delivered: true } }
+      getCount += 1
+      return { status: 200, body: memberPayload({ transcript: getCount > 1 ? refreshedTranscript : firstTranscript }) }
+    },
+  })
+  try {
+    let tree = await board.render()
+    findMemberNode(tree, 'impl-a').props.onClick()
+    tree = await board.render()
+    const drawer = findByClass(tree, 'atw-member')[0]
+    assert.equal(findByClass(drawer, 'atw-member-transcript').length, 1, 'the transcript section renders')
+    const text = textOf(drawer)
+    for (const needle of [
+      'k:member.transcript',
+      'k:member.role.user',
+      'k:member.role.assistant',
+      'k:member.role.system',
+      'k:member.role.tool',
+      'please implement quoteName',
+      'I will read quote.mjs first',
+      'system note: plan approved',
+      '[tool] bash',
+      'k:member.transcriptTruncated',
+      '"n":4',
+    ]) {
+      assert.ok(text.includes(needle), 'transcript is missing ' + needle)
+    }
+    const roleTones = {
+      'k:member.role.user': 'atw-badge--brand',
+      'k:member.role.assistant': 'atw-badge--success',
+      'k:member.role.system': 'atw-badge--idle',
+      'k:member.role.tool': 'atw-badge--warn',
+    }
+    for (const [label, tone] of Object.entries(roleTones)) {
+      const matches = collectElements(drawer, (element) => textOf(element).includes(label) && String(element.props?.className ?? '').includes(tone))
+      assert.ok(matches.length > 0, label + ' should use ' + tone)
+    }
+    const items = findByClass(drawer, 'atw-member-transcript-item')
+    assert.equal(items.length, 4, 'one row per transcript message')
+    assert.ok(textOf(items[0]).includes('please implement quoteName'), 'messages keep their order')
+    assert.ok(textOf(items[3]).includes('[tool] bash'), 'the tool summary stays last')
+    assert.match(source, /\.atw-member-transcript-text\{[^}]*-webkit-line-clamp:3/, 'transcript bodies clamp at three lines')
+
+    // The transcript travels with the member payload, so the next poll updates it.
+    findButtonByText(tree, 'k:header.refresh').props.onClick()
+    tree = await board.render()
+    assert.ok(textOf(findByClass(tree, 'atw-member')[0]).includes('refreshed transcript line'), 'polling refreshes the transcript')
+  } finally {
+    board.dispose()
+  }
+})
+
+test('docs/21 member transcript: unavailable, empty and legacy payloads degrade gracefully', async () => {
+  const unavailableBoard = await mountBoard(withSnapshot({}), {
+    member: () => ({
+      status: 200,
+      body: memberPayload({ transcript: { available: false, messages: [], truncated: false, totalEvents: 0, error: 'session query service is not available' } }),
+    }),
+  })
+  try {
+    let tree = await unavailableBoard.render()
+    findMemberNode(tree, 'impl-a').props.onClick()
+    tree = await unavailableBoard.render()
+    const drawer = findByClass(tree, 'atw-member')[0]
+    assert.ok(textOf(drawer).includes('k:member.transcriptUnavailable'), 'the unavailable copy renders')
+    assert.ok(textOf(drawer).includes('k:member.items'), 'the rest of the member view still renders')
+    const titled = collectElements(drawer, (element) => String(element.props?.title ?? '').includes('session query service is not available'))
+    assert.ok(titled.length > 0, 'the route error is kept as a tooltip')
+    assert.ok(!textOf(drawer).includes('k:error.title'), 'an unavailable transcript does not crash the board')
+  } finally {
+    unavailableBoard.dispose()
+  }
+
+  const emptyBoard = await mountBoard(withSnapshot({}), {
+    member: () => ({ status: 200, body: memberPayload({ transcript: { available: true, messages: [], truncated: false, totalEvents: 0, error: null } }) }),
+  })
+  try {
+    let tree = await emptyBoard.render()
+    findMemberNode(tree, 'impl-a').props.onClick()
+    tree = await emptyBoard.render()
+    const drawer = findByClass(tree, 'atw-member')[0]
+    assert.ok(textOf(drawer).includes('k:member.transcriptEmpty'), 'an available but empty transcript says so')
+    assert.ok(!textOf(drawer).includes('k:member.transcriptUnavailable'), 'empty is not reported as unavailable')
+  } finally {
+    emptyBoard.dispose()
+  }
+
+  // Older route payload without `transcript` at all: degrade, never throw.
+  const legacyBoard = await mountBoard(withSnapshot({}), { member: () => ({ status: 200, body: memberPayload() }) })
+  try {
+    let tree = await legacyBoard.render()
+    findMemberNode(tree, 'impl-a').props.onClick()
+    tree = await legacyBoard.render()
+    const drawer = findByClass(tree, 'atw-member')[0]
+    assert.ok(textOf(drawer).includes('k:member.transcriptUnavailable'), 'a missing transcript block degrades to unavailable')
+    assert.ok(textOf(drawer).includes('k:member.stopState'), 'the drawer keeps its other sections')
+    assert.ok(!textOf(drawer).includes('k:error.title'), 'a legacy payload does not crash the board')
+  } finally {
+    legacyBoard.dispose()
+  }
+})

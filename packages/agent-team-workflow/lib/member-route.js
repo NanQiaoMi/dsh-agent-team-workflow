@@ -28,12 +28,12 @@ function textOf(value, limit = 4000) {
 }
 
 /** Register the member route on one Connection service. */
-export function registerMemberRoute({ connection, ctx, store, settings }) {
+export function registerMemberRoute({ connection, ctx, store, settings, transcript }) {
   return connection.fetch.register({
     path: MEMBER_PATH,
     methods: ['GET', 'POST'],
     requestBody: 'buffered',
-    fetch: (request) => handleMemberRequest({ request, ctx, store, settings }),
+    fetch: (request) => handleMemberRequest({ request, ctx, store, settings, transcript }),
   })
 }
 
@@ -46,7 +46,7 @@ function parseTarget(url, body) {
   return { sessionId, name }
 }
 
-async function handleMemberRequest({ request, ctx, store, settings }) {
+async function handleMemberRequest({ request, ctx, store, settings, transcript }) {
   try {
     const url = new URL(request.url, 'http://dashboard.invalid')
     let body = null
@@ -121,6 +121,17 @@ async function handleMemberRequest({ request, ctx, store, settings }) {
     const planItem = owned.filter((item) => item.plan !== null && item.plan !== undefined).at(-1) ?? null
     const roleName = state?.roleAssignments?.[target.name]
     const roleDefinition = roleName !== undefined && settings.roles?.[roleName] !== undefined ? { role: roleName, ...settings.roles[roleName] } : null
+    // The transcript is best-effort: a Host without the session-query service
+    // (or a session that cannot be read) shows the workflow view only.
+    let transcriptView = { available: false, messages: [], truncated: false, totalEvents: 0, error: null }
+    if (typeof transcript === 'function') {
+      try {
+        const result = await transcript(member.id ?? member.sessionId ?? null, { limit: 40 })
+        if (result !== null && result !== undefined) transcriptView = { available: true, ...result }
+      } catch (error) {
+        transcriptView = { available: false, messages: [], truncated: false, totalEvents: 0, error: error instanceof Error ? error.message : String(error) }
+      }
+    }
     void SNAPSHOT_VERSION
     return jsonResponse(200, {
       ok: true,
@@ -136,6 +147,7 @@ async function handleMemberRequest({ request, ctx, store, settings }) {
         stop: stop === null ? null : { id: textOf(stop.id, 64), status: textOf(stop.status, 32), at: textOf(stop.at, 64) },
         plan: planItem === null ? null : { itemId: textOf(planItem.id, 64), status: textOf(planItem.plan.status, 32) },
         roleDefinition,
+        transcript: transcriptView,
       },
     })
   } catch (error) {

@@ -22,13 +22,14 @@ import { buildPolicy } from './lib/protocol.js'
 import { buildTools } from './lib/tools.js'
 import { registerDashboardRoute } from './lib/dashboard-route.js'
 import { registerMemberRoute } from './lib/member-route.js'
+import { summarizeTranscript } from './lib/transcript.js'
 
 export const name = 'agent-team-workflow'
 
 /** Services this plugin needs; the plugin stays inactive without Agent Teams. */
 export const inject = ['agents', 'agentTeams', 'tools', 'systemPrompt', 'workingDirectory']
 
-const VERSION = '1.4.1'
+const VERSION = '1.5.0'
 
 /** Shared tool list, built once per plugin instance. */
 export function apply(ctx, config = {}) {
@@ -85,13 +86,36 @@ export function apply(ctx, config = {}) {
     }, 'agent-team-workflow: token usage seam')
   })
 
+  // Optional seam: read a teammate's session log for the transcript panel.
+  let readSessionEvents = () => null
+  ctx.inject(['sessionQuery'], (scope) => {
+    readSessionEvents = async (sessionId) => {
+      if (typeof sessionId !== 'string' || sessionId.length === 0) return null
+      const record = await scope.sessionQuery.readSession(sessionId)
+      return record === null || record === undefined ? null : record.events ?? null
+    }
+    scope.effect(() => () => {
+      readSessionEvents = () => null
+    }, 'agent-team-workflow: session transcript seam')
+  })
+
   ctx.inject(['connection'], (scope) => {
     scope.effect(
       () => registerDashboardRoute({ connection: scope.connection, ctx, store, settings }),
       'agent-team-workflow: live board route',
     )
     scope.effect(
-      () => registerMemberRoute({ connection: scope.connection, ctx, store, settings }),
+      () => registerMemberRoute({
+        connection: scope.connection,
+        ctx,
+        store,
+        settings,
+        transcript: async (sessionId, options) => {
+          const events = await readSessionEvents(sessionId)
+          if (events === null) return null
+          return summarizeTranscript(events, options)
+        },
+      }),
       'agent-team-workflow: member view route',
     )
   })

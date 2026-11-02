@@ -163,3 +163,39 @@ test('the member route validates its inputs', () => {
     assert.equal(badJson.status, 400)
   })
 })
+
+test('GET includes the teammate transcript when the Host exposes the session log', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings: SETTINGS })
+    await seedRun(harness, store)
+    const connection = createConnectionDouble()
+    const transcript = async (sessionId) => {
+      assert.equal(sessionId, 'session-impl')
+      return { messages: [{ seq: 2, role: 'user', text: 'please verify' }], truncated: false, totalEvents: 3 }
+    }
+    registerMemberRoute({ connection, ctx: harness.ctx, store, settings: SETTINGS, transcript })
+    const response = await connection.registered[0].fetch(new Request(`http://x${MEMBER_PATH}?session=session-lead&name=impl`))
+    const payload = await response.json()
+    assert.equal(payload.member.transcript.available, true)
+    assert.equal(payload.member.transcript.messages[0].text, 'please verify')
+  })
+})
+
+test('GET keeps the workflow view when the transcript cannot be read', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings: SETTINGS })
+    await seedRun(harness, store)
+    const connection = createConnectionDouble()
+    const transcript = async () => {
+      throw new Error('session log unavailable')
+    }
+    registerMemberRoute({ connection, ctx: harness.ctx, store, settings: SETTINGS, transcript })
+    const response = await connection.registered[0].fetch(new Request(`http://x${MEMBER_PATH}?session=session-lead&name=impl`))
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.member.transcript.available, false)
+    assert.match(payload.member.transcript.error, /session log unavailable/)
+  })
+})
