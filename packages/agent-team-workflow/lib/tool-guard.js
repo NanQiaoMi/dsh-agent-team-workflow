@@ -1,51 +1,75 @@
 /**
- * Native-tool sandbox for Team members (docs/23 §2, docs/25).
+ * Native-tool sandbox adapter (docs/25).
  *
- * DSH exposes `tools.guard()`: a synchronous, monotonic denial that runs after
- * the `tools/pre-execute` waterfall. The plugin registers one global guard;
- * when the calling Agent is a teammate whose role names a tool policy, the
- * guard rejects calls to tools the role may not use. This is enforcement at the
- * tool-call boundary (not an OS sandbox): a blocked tool never runs.
+ * The reusable decision table and lifecycle live in `@local/dsh-tool-guard-kit`
+ * (../../tool-guard-kit); this module only binds the kit to Agent Team
+ * Workflow's state shape:
+ *   - the caller's role comes from the run board (roleAssignments / item role);
+ *   - the synchronous state snapshot comes from the run store's cache;
+ *   - workflow's own `team_flow_*` tools keep their own role policy, so the
+ *     native guard skips them and lets tools.js decide.
  */
 
-/** Native tools that can change the workspace or run arbitrary commands. */
-export const NATIVE_MUTATING_TOOLS = Object.freeze(['write', 'edit', 'bash', 'terminal'])
+import {
+  createTeamSubjectResolver,
+  createToolSandbox,
+  DEFAULT_MUTATING_TOOLS,
+  isMutatingTool,
+  roleFromTeamState,
+} from '../../tool-guard-kit/index.js'
 
-/** Tool-name prefixes that are mutating even when the suffix varies (terminal_open, terminal_send, ...). */
-const NATIVE_MUTATING_PREFIXES = Object.freeze(['terminal', 'str_replace'])
+/** Native tools that can change the workspace or run arbitrary commands. */
+export const NATIVE_MUTATING_TOOLS = DEFAULT_MUTATING_TOOLS
+
+/** Workflow tools enforce their own role policy in `tools.js`. */
+const WORKFLOW_TOOL_PREFIX = 'team_flow_'
 
 /**
  * @param toolName - model-facing tool name.
  * @returns whether the tool can modify the workspace or run commands.
  */
 export function isNativeMutatingTool(toolName) {
-  if (NATIVE_MUTATING_TOOLS.includes(toolName)) return true
-  return NATIVE_MUTATING_PREFIXES.some((prefix) => toolName.startsWith(`${prefix}_`) || toolName === prefix)
+  return isMutatingTool(toolName)
 }
 
-/** Workflow tools enforce their own role policy in `tools.js`. */
-const WORKFLOW_TOOL_PREFIX = 'team_flow_'
-
 /**
- * Resolve one member's role name from the board: explicit assignment first,
- * then the unique role of the items it owns.
+ * Resolve one member's role name from the board.
  * @param state - cached run state.
  * @param memberName - member name from the Team roster.
  * @returns role name or null.
  */
 export function memberRoleOf(state, memberName) {
-  if (state === null || state === undefined) return null
-  const explicit = state.roleAssignments?.[memberName]
-  if (typeof explicit === 'string' && explicit.length > 0) return explicit
-  const roles = new Set()
-  for (const item of Array.isArray(state.items) ? state.items : []) {
-    if (item.owner === memberName && typeof item.role === 'string' && item.role.length > 0) roles.add(item.role)
+  return roleFromTeamState(state, memberName)
+}
+
+/** @returns a synchronous state getter bound to the run store for one exec. */
+export function teamStateGetter(ctx, store) {
+  return (exec) => {
+    try {
+      const membership = ctx.agentTeams.tryMembership(exec.agent)
+      return membership === undefined ? null : store.cachedState(membership.root)
+    } catch {
+      return null
+    }
   }
-  return roles.size === 1 ? [...roles][0] : null
 }
 
 /**
- * Decide whether one tool call from one teammate is allowed.
+ * Build the reusable subject resolver for Agent Team Workflow.
+ * @param ctx - plugin context.
+ * @param store - run store with `cachedState`.
+ * @returns synchronous subject resolver.
+ */
+export function teamSubjectResolver(ctx, store) {
+  return createTeamSubjectResolver({ ctx, stateFor: teamStateGetter(ctx, store) })
+}
+
+/**
+ * Decide whether one tool call from one teammate is allowed (test/helper path).
+ *
+ * Production registers a single sandbox via `installToolSandbox`; this wrapper
+ * builds an equivalent instance per call and is what the unit tests pin.
+ *
  * @param exec - DSH tool execution: `{ name, agent, arguments }`.
  * @param ctx - plugin context (Agent Teams service).
  * @param store - run store with the synchronous `cachedState`.
@@ -54,30 +78,13 @@ export function memberRoleOf(state, memberName) {
  */
 export function toolGuardReason(exec, ctx, store, settings) {
   try {
-    const agent = exec?.agent
     const toolName = typeof exec?.name === 'string' ? exec.name : ''
-    if (agent === undefined || toolName.length === 0) return undefined
     if (toolName.startsWith(WORKFLOW_TOOL_PREFIX)) return undefined
-    const membership = ctx.agentTeams.tryMembership(agent)
-    if (membership === undefined || membership.role !== 'teammate') return undefined
-    const state = store.cachedState(membership.root)
-    const role = memberRoleOf(state, membership.name)
-    if (role === null) return undefined
-    const policy = settings.roles?.[role]
-    if (policy === undefined || policy === null) return undefined
-    const describe = `role "${role}"`
-    if (policy.readOnly === true && isNativeMutatingTool(toolName)) {
-      return `tool "${toolName}" is blocked by the Agent Team tool sandbox: ${describe} is read-only (roles.${role}.readOnly)`
-    }
-    const deny = Array.isArray(policy.deny) ? policy.deny : []
-    if (deny.includes(toolName)) {
-      return `tool "${toolName}" is blocked by the Agent Team tool sandbox: ${describe} denies it (roles.${role}.deny)`
-    }
-    const allow = Array.isArray(policy.allow) ? policy.allow : []
-    if (allow.length > 0 && !allow.includes(toolName)) {
-      return `tool "${toolName}" is blocked by the Agent Team tool sandbox: ${describe} may only use ${allow.join(', ')} (roles.${role}.allow)`
-    }
-    return undefined
+    const sandbox = createToolSandbox({
+      policies: settings.roles,
+      resolveSubject: teamSubjectResolver(ctx, store),
+    })
+    return sandbox.check(exec)
   } catch {
     // Never let a sandbox bug break normal tool execution.
     return undefined
