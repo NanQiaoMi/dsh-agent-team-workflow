@@ -11,6 +11,18 @@
 /** Native tools that can change the workspace or run arbitrary commands. */
 export const NATIVE_MUTATING_TOOLS = Object.freeze(['write', 'edit', 'bash', 'terminal'])
 
+/** Tool-name prefixes that are mutating even when the suffix varies (terminal_open, terminal_send, ...). */
+const NATIVE_MUTATING_PREFIXES = Object.freeze(['terminal', 'str_replace'])
+
+/**
+ * @param toolName - model-facing tool name.
+ * @returns whether the tool can modify the workspace or run commands.
+ */
+export function isNativeMutatingTool(toolName) {
+  if (NATIVE_MUTATING_TOOLS.includes(toolName)) return true
+  return NATIVE_MUTATING_PREFIXES.some((prefix) => toolName.startsWith(`${prefix}_`) || toolName === prefix)
+}
+
 /** Workflow tools enforce their own role policy in `tools.js`. */
 const WORKFLOW_TOOL_PREFIX = 'team_flow_'
 
@@ -54,7 +66,7 @@ export function toolGuardReason(exec, ctx, store, settings) {
     const policy = settings.roles?.[role]
     if (policy === undefined || policy === null) return undefined
     const describe = `role "${role}"`
-    if (policy.readOnly === true && NATIVE_MUTATING_TOOLS.includes(toolName)) {
+    if (policy.readOnly === true && isNativeMutatingTool(toolName)) {
       return `tool "${toolName}" is blocked by the Agent Team tool sandbox: ${describe} is read-only (roles.${role}.readOnly)`
     }
     const deny = Array.isArray(policy.deny) ? policy.deny : []

@@ -44,8 +44,18 @@ roles:
 - 与 workflow 层 `assertRoleAllowed`、`strictScopes`、worktree 产物门禁共同构成四层约束：
   **原生工具 → workflow 工具 → 写范围 → 产物位置**。
 
-## 4. 验收
+## 4. live 发现的问题与修正（1.7.1）
+
+第一轮 live（1.7.0）跑出两个真实缺陷，已修并加测试：
+
+1. **readOnly 把 `team_flow_report` 也禁了**：工作流要求 owner 用 report 交付，导致 owner 链路断裂。
+   修正：readOnly 只禁真正的变更型 workflow 工具（plan/work/item/git/gate/repair/staff/stop/decide/plan_approval），
+   **report / review_submit / review_respond / talk / escalate 放行**（协作而非工作区变更）；
+2. **`terminal_*` 系列工具没被拦**：guard 只精确匹配了 `terminal`。修正：`isNativeMutatingTool` 对
+   `terminal_*` / `str_replace_*` 前缀一并视为 mutating。
+
+## 5. 验收
 
 - 单元：`test/tool-guard.test.mjs`（5 例覆盖判定表、fail-open、workflow 前缀放行）；
 - 插件：`test/plugin.test.mjs` 断言恰好注册一个全局 guard 且非成员放行；
-- live：见 [`26`](26-v17-live.md)。
+- live：见 [`26`](26-v17-live.md)（含上面两个缺陷的现场证据）。

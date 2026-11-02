@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { memberRoleOf, NATIVE_MUTATING_TOOLS, toolGuardReason } from '../lib/tool-guard.js'
+import { isNativeMutatingTool, memberRoleOf, NATIVE_MUTATING_TOOLS, toolGuardReason } from '../lib/tool-guard.js'
 
 const LEAD = { id: 'session-lead' }
 const WORKER = { id: 'session-worker' }
@@ -42,6 +42,14 @@ test('readOnly denies mutating native tools and allows read-only ones', () => {
   const { ctx, store, settings } = harness({ roles: { worker: { readOnly: true } } })
   assert.equal(toolGuardReason({ name: 'read', agent: WORKER }, ctx, store, settings), undefined)
   assert.equal(toolGuardReason({ name: 'grep', agent: WORKER }, ctx, store, settings), undefined)
+})
+
+test('prefixed shell tools are treated as mutating too', () => {
+  for (const tool of ['terminal_open', 'terminal_send', 'terminal_signal', 'str_replace_editor']) {
+    assert.equal(isNativeMutatingTool(tool), true, `${tool} must be mutating`)
+  }
+  assert.equal(isNativeMutatingTool('read'), false)
+  assert.equal(isNativeMutatingTool('grep'), false)
 })
 
 test('deny lists match exact native names and allow lists are exhaustive', () => {
