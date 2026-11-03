@@ -15,6 +15,7 @@
 | V6 | 最终组合配置进入 profile 121 | `dsh --profile 121 --dump-config` 输出含本行与配置 | ✅ 已验证 |
 | V7 | **最终代码代**在运行中的 Desktop 里 live 跑一次完整团队流程 | 重启 DSH 后真实 run（4 成员 / 2 项 / 约 5 分钟） | ✅ **已验证**，见 [`08-live-run.md`](08-live-run.md) 与 [`evidence/live-run/`](evidence/live-run/) |
 | V10 | 对等协作层（workflow v2） | 离线测试 39 例（collaboration 14 + tools 19 + 相关 engine/plugin）：认领/释放、评审邀请与接受、交接、提案投票/平票/Lead 仲裁、阻断提案拦截、频道与摘要、v1 板自动升级；快照 v2 与客户端面板 26+17 例 | ✅ 全绿（113/113） |
+| V21 | v1.9：看板视觉重构（参考 refero 设计规范） | 单色 shadcn 风格：24px 卡片/18px 胶囊/发丝线/轻投影/统计块/状态 hero；深浅色由宿主 token 派生；客户端契约 35/35 | ✅ 全绿（35/35 client，全量见 test-run）；截图见 [`29`](29-board-design-v19.md) |
 | V20 | v1.8：可复用工具沙箱库 | 抽出 `@local/dsh-tool-guard-kit`（零依赖、9 例）：判定表/审计/生命周期/Teams 适配器/动态策略/fail-open 语义；插件改为消费该库（适配层保持导出兼容） | ✅ 全绿（223/223：插件 214 + 库 9） |
 | V19 | v1.7：原生工具沙箱（工具调用边界） | `ctx.tools.guard()` 全局守卫生效：readOnly 拒绝 write/edit/bash/terminal，allow/deny 精确匹配；工作流层策略保留；新增 tool-guard 单测 6 + plugin guard 断言；live 发现 readOnly 误禁 report、terminal_* 漏拦 → 1.7.1 修复 | ✅ 全绿（214/214）；**live 两轮验证**：write/edit/bash/terminal_* 在工具执行前被拒、read 放行、report 修复后成功、gate finalized，见 [`26`](26-v17-live.md)；live 见 [`26`](26-v17-live.md) |
 | V18 | v1.6：真并行 worktree 隔离 + 工作流能力沙箱 | `worktreeIsolation: off/serial/parallel`（item 级 worktree、commit/verify 就地执行、逐项 merge、gate 校验产物在 worktree）；roles `allow`/`readOnly`；并在同一 wave 下允许重叠 scope（并行模式下由隔离保证） | ✅ 全绿（207/207）；**live 已通过**：两个并行 worktree 各自 commit/verify、逐项 merge 进 run 分支、最终合入 main，用量面板/对话展开实拍，见 [`24`](24-v16-live.md) |

@@ -52,6 +52,7 @@
 | [`docs/23-v16-parallel-and-sandbox.md`](docs/23-v16-parallel-and-sandbox.md) | **v1.6 并行 worktree 隔离 + 工作流能力沙箱**：off/serial/parallel、item 级 commit/verify/merge、产物门禁；roles allow/readOnly；平台边界说明 |
 | [`docs/25-native-tool-sandbox.md`](docs/25-native-tool-sandbox.md) | **v1.7 原生工具沙箱**：`ctx.tools.guard()` 在工具调用前拒绝 write/edit/bash/terminal；readOnly/allow/deny 判定表、fail-open 边界 |
 | [`docs/27-tool-guard-kit.md`](docs/27-tool-guard-kit.md) | **v1.8 可复用沙箱库 `@local/dsh-tool-guard-kit`**：三步抽象成零依赖库（判定/审计/生命周期/Teams 适配器），本插件改为消费该库 |
+| [`docs/29-board-design-v19.md`](docs/29-board-design-v19.md) | **v1.9 看板视觉重构**：参考 refero shadcn 风格（单色/24px 卡片/18px 胶囊/发丝线/统计块），新旧截图与设计映射 |
 | [`docs/13-collaboration-live-run.md`](docs/13-collaboration-live-run.md) | **对等协作 live run**：3 成员 / 3 开放项 / 8 分钟，抢单、直连问答、提案投票、互邀评审、gate 全记录 + 看板截图 |
 | [`packages/agent-team-workflow/`](packages/agent-team-workflow/) | 可安装插件包（零外部依赖，纯 ESM） |
 

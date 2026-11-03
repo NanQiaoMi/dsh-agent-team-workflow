@@ -1488,8 +1488,8 @@ test('docs/17 density: idle excludes the Lead, the flow panel is 520px, cards cl
     const heightOf = (card) => Number(String(card.props.style.height).replace('px', ''))
     const withGit = cardFor('W1')
     const noGit = cardFor('W2')
-    assert.equal(heightOf(withGit), 126, 'cards with a Git row keep the full height')
-    assert.equal(heightOf(noGit), 112, 'cards without a Git row are shorter')
+    assert.equal(heightOf(withGit), 152, 'cards with a Git row keep the full height')
+    assert.equal(heightOf(noGit), 132, 'cards without a Git row are shorter')
     const flags = findByClass(noGit, 'atw-card-flags')[0]
     const children = (noGit.children ?? []).filter((child) => child !== null && child !== undefined)
     assert.equal(children[children.length - 1], flags, 'the flags row is the last card row (bottom-anchored)')
