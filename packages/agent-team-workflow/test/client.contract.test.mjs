@@ -2059,7 +2059,43 @@ test('topology: work items align under their owner column and stay inside the ca
     }
     for (const node of itemNodes) {
       const width = Number.parseFloat(String(node.props?.style?.maxWidth ?? 'NaN'))
-      assert.ok(width >= 10 && width <= 18, 'item ids keep at least 10% of the canvas width (' + width + ')')
+      assert.ok(width >= 14 && width <= 20, 'item ids keep at least 14% of the canvas width (' + width + ')')
+    }
+  } finally {
+    board.dispose()
+  }
+})
+
+test('topology: owners sharing a column never stack two items on one slot', async () => {
+  const members = Array.from({ length: 9 }, (_, index) => ({
+    name: 'm' + (index + 1),
+    role: 'teammate',
+    status: 'running',
+    context: 'fresh',
+  }))
+  const items = members.map((member, index) => ({
+    ...V2_SNAPSHOT.run.items[0],
+    id: 'I' + (index + 1),
+    wave: 1,
+    owner: member.name,
+    subject: 's',
+    status: 'running',
+    reviewers: [],
+    reviewRequests: [],
+    handoffs: [],
+    thread: [],
+    claim: null,
+  }))
+  const board = await mountBoard(withSnapshot({ team: { members }, run: { items } }))
+  try {
+    const tree = await board.render()
+    const itemNodes = findByClass(tree, 'atw-node--item')
+    assert.equal(itemNodes.length, 9)
+    const places = itemNodes.map((node) => String(node.props.style.left) + '|' + String(node.props.style.top))
+    assert.equal(new Set(places).size, 9, 'two owners sharing an x column do not stack their items')
+    for (const node of itemNodes) {
+      const left = Number.parseFloat(String(node.props.style.left))
+      assert.ok(left >= 3 && left <= 97, 'dense items stay inside the canvas')
     }
   } finally {
     board.dispose()
