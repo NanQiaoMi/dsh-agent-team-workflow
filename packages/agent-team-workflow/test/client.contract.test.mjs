@@ -663,6 +663,13 @@ function findButtonByText(node, text) {
   return collectElements(node, (element) => element.type === 'button' && textOf(element).includes(text))[0]
 }
 
+/** Exact card lookup by its id cell: relation chips make substring matching ambiguous. */
+function cardById(tree, id) {
+  return findByClass(tree, 'atw-card')
+    .filter((element) => element.props?.role === 'button')
+    .find((card) => findByClass(card, 'atw-card-id').some((cell) => textOf(cell) === id))
+}
+
 const V1_ITEM = {
   subject: 'v1 item',
   owner: 'impl-a',
@@ -882,7 +889,7 @@ test('v2 snapshot renders the channel stream, proposals, open queue, and peer ed
     assert.ok(textOf(openCards[0]).includes('W2'), 'open lane shows the item id')
 
     const cards = findByClass(tree, 'atw-card').filter((element) => element.props?.role === 'button')
-    const cardText = (id) => textOf(cards.find((element) => textOf(element).includes(id)))
+    const cardText = (id) => textOf(cardById(tree, id))
     assert.ok(cardText('W1').includes('k:flow.proposalsOpen'), 'open proposals badge on the item card')
     assert.ok(cardText('W3').includes('k:flow.claimed'), 'claim badge on the item card')
     assert.ok(cardText('W2').includes('k:flow.openAssignment'), 'unclaimed badge on an open-queue item')
@@ -900,7 +907,7 @@ test('v2 drawer shows the collaboration record; filters and Escape work', async 
   const board = await mountBoard(V2_SNAPSHOT)
   try {
     let tree = await board.render()
-    const card = findByClass(tree, 'atw-card').find((element) => element.props?.role === 'button' && textOf(element).includes('W1'))
+    const card = cardById(tree, 'W1')
     card.props.onClick()
     tree = await board.render()
     const drawer = findByClass(tree, 'atw-drawer')[0]
@@ -1045,7 +1052,7 @@ test('docs/14: member-created item and live proposals render their badges', asyn
     assert.ok(board.copyKeys.includes('flow.createdBy{"name":"impl-b"}'), 'createdBy flows through t()')
 
     const cards = findByClass(tree, 'atw-card').filter((element) => element.props?.role === 'button')
-    const cardText = (id) => textOf(cards.find((element) => textOf(element).includes(id)))
+    const cardText = (id) => textOf(cardById(tree, id))
     assert.ok(!cardText('W1').includes('k:flow.memberItem'), 'planned items do not claim to be member-created')
 
     // Proposals render newest first: [0] is the auto-resolved (expired) one,
@@ -1242,7 +1249,7 @@ test('docs/16: card badges stay within budget and Git/PR badges render (and vani
   try {
     let tree = await board.render()
     const cards = findByClass(tree, 'atw-card').filter((element) => element.props?.role === 'button')
-    const cardFor = (id) => cards.find((element) => textOf(element).includes(id))
+    const cardFor = (id) => cardById(tree, id)
     // Noise budget: status lives in the head, so at most two children remain in the flags row.
     for (const card of cards) {
       const flags = findByClass(card, 'atw-card-flags')
@@ -1313,7 +1320,7 @@ test('docs/16: card badges stay within budget and Git/PR badges render (and vani
   try {
     let tree = await hostShape.render()
     const cards = findByClass(tree, 'atw-card').filter((element) => element.props?.role === 'button')
-    const cardFor = (id) => cards.find((element) => textOf(element).includes(id))
+    const cardFor = (id) => cardById(tree, id)
     const w1 = textOf(cardFor('W1'))
     assert.ok(w1.includes('k:git.branch') && w1.includes('agentteam/run-2'), 'the run branch enriches the item badges')
     assert.ok(w1.includes('k:git.pushed'), 'run.git.pushedAt marks the branch as pushed')
@@ -1475,7 +1482,7 @@ test('docs/17 density: idle excludes the Lead, the flow panel is 520px, cards cl
   try {
     const tree = await dense.render()
     const cards = findByClass(tree, 'atw-card').filter((element) => element.props?.role === 'button')
-    const cardFor = (id) => cards.find((element) => textOf(element).includes(id))
+    const cardFor = (id) => cardById(tree, id)
     const heightOf = (card) => Number(String(card.props.style.height).replace('px', ''))
     const withGit = cardFor('W1')
     const noGit = cardFor('W2')
@@ -1680,7 +1687,7 @@ test('docs/19 plan-first: card badges and the item drawer plan block', async () 
   try {
     let tree = await board.render()
     const cards = findByClass(tree, 'atw-card').filter((element) => element.props?.role === 'button')
-    const cardFor = (id) => cards.find((element) => textOf(element).includes(id))
+    const cardFor = (id) => cardById(tree, id)
     const pendingCard = cardFor('W1')
     assert.ok(textOf(pendingCard).includes('k:plan.pending'), 'pending plan badge')
     assert.ok(
@@ -2120,6 +2127,48 @@ test('flow map: zoom controls, fit-to-width hook and no rework loop arrows', asy
     // Rework rounds are already text inside each card; loop arcs were removed.
     assert.equal(findByClass(tree, 'atw-edge--loop').length, 0, 'no rework loop arrows on the map')
     assert.ok(!textOf(tree).includes('R1/2'), 'no loop labels either')
+  } finally {
+    board.dispose()
+  }
+})
+
+test('flow relations: dependency and review chips replace crossing arrows', async () => {
+  const base = V2_SNAPSHOT.run.items[0]
+  const members = [
+    { name: 'impl-a', role: 'teammate', status: 'running', context: 'fresh' },
+    { name: 'rev-b', role: 'teammate', status: 'running', context: 'fresh' },
+  ]
+  const item = (id, owner, overrides) => ({
+    ...base,
+    id,
+    wave: 1,
+    owner,
+    subject: 'item ' + id,
+    status: 'running',
+    reviewers: [],
+    reviewRequests: [],
+    handoffs: [],
+    thread: [],
+    claim: null,
+    blockedBy: [],
+    ...overrides,
+  })
+  const board = await mountBoard(
+    withSnapshot({
+      team: { members },
+      run: { items: [item('M1', 'impl-a', { reviewers: ['rev-b'] }), item('M2', 'impl-a', { blockedBy: ['M1'] })] },
+    }),
+  )
+  try {
+    const tree = await board.render()
+    assert.equal(findByClass(tree, 'atw-edge--dep').length, 0, 'dependency arrows are gone')
+    const m1 = cardById(tree, 'M1')
+    const m2 = cardById(tree, 'M2')
+    assert.ok(textOf(m1).includes('k:flow.unlocks M2'), 'the upstream card lists what it unlocks')
+    assert.ok(textOf(m2).includes('k:flow.dependsOn M1'), 'the downstream card lists what it depends on')
+    const strip = findByClass(tree, 'atw-rel-strip')[0]
+    assert.ok(textOf(strip).includes('M1 → M2'), 'the relation strip spells out the dependency edge')
+    assert.ok(textOf(strip).includes('rev-b → M1'), 'the relation strip spells out the review edge')
   } finally {
     board.dispose()
   }
