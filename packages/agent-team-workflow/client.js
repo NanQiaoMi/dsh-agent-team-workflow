@@ -86,6 +86,9 @@ window.__ModuleLoader__.load({
       'topology.zoneMembers': '成员',
       'topology.zoneItems': '工作项 · 按负责人对齐',
       'topology.groupedHint': '同一负责人的工作项同列，连线不会乱穿',
+      'topology.peerStrip': '同伴消息',
+      'topology.reviewNote': '工作项角标 = 评审人',
+      'topology.reviewedBy': '评 {names}',
       'events.title': '事件流',
       'events.count': '最近 {n} 条',
       'events.empty': '还没有事件',
@@ -403,6 +406,9 @@ window.__ModuleLoader__.load({
       'topology.zoneMembers': 'Members',
       'topology.zoneItems': 'Items · aligned by owner',
       'topology.groupedHint': 'Items owned by one member share a column',
+      'topology.peerStrip': 'Peer messages',
+      'topology.reviewNote': 'item badge = reviewer',
+      'topology.reviewedBy': 'review {names}',
       'events.title': 'Event stream',
       'events.count': 'latest {n}',
       'events.empty': 'No events yet',
@@ -773,12 +779,14 @@ window.__ModuleLoader__.load({
       return 'M' + round1(x1) + ',' + round1(y1) + ' C' + round1(c1x) + ',' + round1(c1y) + ' ' + round1(c2x) + ',' + round1(c2y) + ' ' + round1(x2) + ',' + round1(y2)
     }
 
-    /** @returns a bowing path for review edges so they read apart from owner links. */
-    function reviewPath(x1, y1, x2, y2) {
-      const bulge = x2 >= x1 ? 7 : -7
-      const mx = (x1 + x2) / 2 + bulge
-      const my = (y1 + y2) / 2
-      return 'M' + round1(x1) + ',' + round1(y1) + ' Q' + round1(mx) + ',' + round1(my) + ' ' + round1(x2) + ',' + round1(y2)
+    /**
+     * @returns an orthogonal routed review link: drop to a shared lane, run
+     *   horizontally, then drop into the item. Long diagonals read as noise.
+     */
+    function reviewPath(x1, y1, x2, y2, laneY) {
+      const lane = Number.isFinite(laneY) ? laneY : (y1 + y2) / 2
+      return 'M' + round1(x1) + ',' + round1(y1) + ' L' + round1(x1) + ',' + round1(lane) +
+        ' L' + round1(x2) + ',' + round1(lane) + ' L' + round1(x2) + ',' + round1(y2)
     }
 
     /** @returns a human message for a thrown value. */
@@ -1654,7 +1662,7 @@ window.__ModuleLoader__.load({
 
     function computeTopology(team, items, collaboration) {
       const leadName = team.me && team.me.name ? team.me.name : ''
-      const lead = { x: 50, y: 10, name: leadName }
+      const lead = { x: 50, y: 8, name: leadName }
       const split = splitParticipants(team, items, collaboration)
       // Defensive cap: the layout supports two rows, so keep the drawn set bounded.
       const participants = split.participants.slice(0, 12)
@@ -1687,21 +1695,31 @@ window.__ModuleLoader__.load({
       const ownerOf = new Map()
       for (const node of memberNodes) ownerOf.set(node.member.name, node)
       const placements = new Map()
-      const usedPerOwner = new Map()
+      const occupied = new Set()
       const unassigned = []
+      // Two member rows can share an x column; items are placed on the first
+      // free band instead of stacking two ids on top of each other.
       for (const item of items) {
         const ownerNode = ownerOf.get(item.owner)
         if (ownerNode === undefined) {
           unassigned.push(item)
           continue
         }
-        const used = usedPerOwner.get(item.owner) ?? 0
-        usedPerOwner.set(item.owner, used + 1)
-        const row = used % 2
-        const overflow = Math.floor(used / 2)
-        const direction = ownerNode.x <= 50 ? 1 : -1
-        const x = Math.max(6, Math.min(94, ownerNode.x + overflow * 4 * direction))
-        placements.set(item.id, { x, y: 72 + row * 13 })
+        let chosen = null
+        for (const rowY of [72, 85]) {
+          const slot = ownerNode.x.toFixed(1) + '|' + rowY
+          if (!occupied.has(slot)) {
+            chosen = { x: ownerNode.x, y: rowY, slot }
+            break
+          }
+        }
+        if (chosen === null) {
+          const direction = ownerNode.x <= 50 ? 1 : -1
+          const x = Math.max(6, Math.min(94, ownerNode.x + 4 * direction))
+          chosen = { x, y: 85, slot: x.toFixed(1) + '|85' }
+        }
+        occupied.add(chosen.slot)
+        placements.set(item.id, { x: chosen.x, y: chosen.y })
       }
       const unassignedSpread = spreadNodes(unassigned.length, 91, 86, 96)
       unassigned.forEach((item, index) => {
@@ -1714,7 +1732,7 @@ window.__ModuleLoader__.load({
         y: placements.get(item.id)?.y ?? 90,
       }))
       const itemSpread = { perRow: Math.max(1, Math.min(items.length, 10)) }
-      const itemWidth = Math.max(10, Math.min(18, Math.floor(86 / Math.max(1, items.length))))
+      const itemWidth = Math.max(14, Math.min(20, Math.floor(86 / Math.max(1, items.length))))
       const edges = []
       // Lead → members uses an org-chart bus: one spine, one bus per row and
       // short drops. Nine individual curves turn into a readable fan otherwise.
@@ -1724,7 +1742,7 @@ window.__ModuleLoader__.load({
         const rowNodes = memberNodes.filter((node) => node.y === rowY)
         const minX = Math.min(...rowNodes.map((node) => node.x)) - 4
         const maxX = Math.max(...rowNodes.map((node) => node.x)) + 4
-        const busY = rowY - 9
+        const busY = rowY - 13
         edges.push({
           key: 'lead-spine-' + rowIndex,
           className: 'atw-edge--lead atw-edge--lead-bus',
@@ -1756,16 +1774,6 @@ window.__ModuleLoader__.load({
             key: 'owns-' + node.key,
             className: 'atw-edge--owns',
             d: linkPath(owner.x, owner.y + 4.5, node.x, node.y - 4.5),
-            arrow: true,
-          })
-        }
-        for (const reviewer of node.item.reviewers) {
-          const reviewNode = byName.get(reviewer)
-          if (reviewNode === undefined) continue
-          edges.push({
-            key: 'reviews-' + node.key + '-' + reviewer,
-            className: 'atw-edge--review',
-            d: reviewPath(reviewNode.x, reviewNode.y + 4.5, node.x, node.y - 4.5),
             arrow: true,
           })
         }
@@ -1815,6 +1823,7 @@ window.__ModuleLoader__.load({
         itemNodes,
         edges,
         peerEdges,
+        peerSummary: ranked.slice(0, 3),
         hasPeerEdges,
         memberRows,
         participantCount: memberNodes.length,
@@ -1940,7 +1949,7 @@ window.__ModuleLoader__.load({
 .atw-node--tone-idle{color:var(--atw-muted)}
 .atw-topo-zone{position:absolute;z-index:2;left:12px;color:var(--atw-muted);font-size:10px;line-height:1.33;letter-spacing:.06em;text-transform:uppercase;pointer-events:none}
 .atw-topo-zone--members{top:20%}
-.atw-topo-zone--items{top:60%}
+.atw-topo-zone--items{top:56%}
 .atw-topo-empty{display:flex;align-items:center;justify-content:center;height:100%;color:var(--atw-muted);font-size:12px}
 .atw-legend{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:12px;color:var(--atw-muted);font-size:11px;line-height:1.33}
 .atw-legend-item{display:inline-flex;align-items:center;gap:6px}
@@ -2095,7 +2104,11 @@ window.__ModuleLoader__.load({
 .atw-proposal-voters{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .atw-proposal-resolution{color:var(--atw-muted);font-size:13px;line-height:1.43;overflow-wrap:anywhere}
 .atw-collab-list{display:flex;flex-direction:column;gap:8px;min-width:0}
-.atw-edge--peer{color:var(--atw-warn);opacity:.6}
+.atw-topo-note{margin-top:8px;color:var(--atw-muted);font-size:11px;line-height:1.33}
+.atw-badge--review{background:color-mix(in oklab,var(--atw-brand) 10%,var(--atw-paper));color:var(--atw-brand);font-size:10px;padding:1px 7px}
+.atw-peer-strip{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;color:var(--atw-muted);font-size:12px;line-height:1.33}
+.atw-peer-strip-label{font-weight:500;letter-spacing:.05em;text-transform:uppercase;font-size:11px}
+.atw-peer-chip{border-radius:var(--atw-radius-pill);background:var(--atw-fill);padding:2px 10px;color:var(--atw-ink);font-weight:500}
 .atw-edge--topo{stroke-width:1.2}
 .atw-edge--topo.atw-edge--owns{opacity:.5}
 .atw-edge--topo.atw-edge--lead{opacity:.45}
@@ -2568,10 +2581,10 @@ window.__ModuleLoader__.load({
           { className: 'atw-panel-body' },
           h(
             'div',
-            { className: 'atw-topo-canvas' },
+            { className: 'atw-topo-canvas', style: { height: topology.memberRows === 2 ? '310px' : '250px' } },
             h('div', { className: 'atw-topo-zone atw-topo-zone--members' }, tr('topology.zoneMembers')),
             h('div', { className: 'atw-topo-zone atw-topo-zone--items', title: tr('topology.groupedHint') }, tr('topology.zoneItems')),
-            topology.edges.length > 0 || topology.peerEdges.length > 0
+            topology.edges.length > 0
               ? h(
                   'svg',
                   { className: 'atw-topo-svg', viewBox: '0 0 100 100', preserveAspectRatio: 'none', 'aria-hidden': true },
@@ -2590,19 +2603,6 @@ window.__ModuleLoader__.load({
                         orient: 'auto-start-reverse',
                       },
                       h('polygon', { className: 'atw-arrow', points: '0,0 8,4 0,8' }),
-                    ),
-                  ),
-                  topology.peerEdges.map((edge) =>
-                    h(
-                      'path',
-                      {
-                        key: edge.key,
-                        className: 'atw-edge atw-edge--peer',
-                        d: edge.d,
-                        style: { strokeWidth: edge.width, opacity: edge.opacity },
-                        vectorEffect: 'non-scaling-stroke',
-                      },
-                      h('title', null, edge.from + ' ↔ ' + edge.to + ' · ' + edge.count),
                     ),
                   ),
                   topology.edges.map((edge) =>
@@ -2667,10 +2667,22 @@ window.__ModuleLoader__.load({
                   key: node.key,
                   className: 'atw-node atw-node--item atw-node--tone-' + statusTone(node.item.status),
                   style: { left: node.x + '%', top: node.y + '%', maxWidth: topology.itemWidth + '%' },
-                  title: node.item.id + ' · ' + statusLabel(tr, node.item.status) + (node.item.subject ? ' · ' + node.item.subject : ''),
+                  title:
+                    node.item.id +
+                    ' · ' +
+                    statusLabel(tr, node.item.status) +
+                    (node.item.subject ? ' · ' + node.item.subject : '') +
+                    (node.item.reviewers.length > 0 ? ' · ' + tr('topology.reviewedBy', { names: node.item.reviewers.join(', ') }) : ''),
                 },
                 h('span', { className: 'atw-dot' }),
                 h('span', null, node.item.id),
+                node.item.reviewers.length === 0
+                  ? null
+                  : h(
+                      'span',
+                      { key: 'review', className: 'atw-badge atw-badge--review' },
+                      tr('topology.reviewedBy', { names: node.item.reviewers.length > 1 ? '×' + node.item.reviewers.length : node.item.reviewers[0] }),
+                    ),
               ),
             ),
             empty ? h('div', { className: 'atw-topo-empty' }, tr('topology.empty')) : null,
@@ -2680,9 +2692,22 @@ window.__ModuleLoader__.load({
             { className: 'atw-legend' },
             legendLine('legend-lead', tr('topology.leadEdge')),
             legendLine('legend-owns', tr('topology.ownsEdge'), 'atw-legend-line--owns'),
-            legendLine('legend-reviews', tr('topology.reviewsEdge'), 'atw-legend-line--review'),
-            topology.hasPeerEdges ? legendLine('legend-peer', tr('topology.peerEdge'), 'atw-legend-line--peer') : null,
           ),
+          h('div', { className: 'atw-topo-note' }, tr('topology.reviewNote')),
+          topology.peerSummary.length === 0
+            ? null
+            : h(
+                'div',
+                { className: 'atw-peer-strip' },
+                h('span', { className: 'atw-peer-strip-label' }, tr('topology.peerStrip')),
+                topology.peerSummary.map((entry) =>
+                  h(
+                    'span',
+                    { key: entry.edge.from + '-' + entry.edge.to, className: 'atw-peer-chip', title: entry.edge.kinds.join(', ') },
+                    entry.edge.from + ' ↔ ' + entry.edge.to + ' · ' + entry.edge.count,
+                  ),
+                ),
+              ),
         ),
       )
     }

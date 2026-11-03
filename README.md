@@ -143,7 +143,7 @@ NODE=~/.dsh/dsh-runtimes/dsh-plugin-desktop-primary-runtime/dependencies/node/bi
 "$NODE" --test test/engine.test.mjs test/tools.integration.test.mjs test/plugin.test.mjs
 ```
 
-224 个用例覆盖：计划校验（自审/环/写范围竞争/成员名/规模）、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类（含空证据、空命令、依赖未批准、评审无证据）、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。详见 [`docs/05-verification.md`](docs/05-verification.md)。
+225 个用例覆盖：计划校验（自审/环/写范围竞争/成员名/规模）、批准绑定报告版本、累计返修预算与 nits 早停、多 reviewer、门禁六类（含空证据、空命令、依赖未批准、评审无证据）、override/waived 与 finalize 参数回显、卡点修复、双重角色只 spawn 一次、Team 隔离、内存模式、工具权限、提示注入与拆除、真实 JSON Schema 校验。详见 [`docs/05-verification.md`](docs/05-verification.md)。
 
 **已通过真实 live run 验证**（2026-11-01，重启后）：4 个成员、2 个并行工作项、一次升级仲裁、两轮独立评审、门禁收敛并生成报告——记录与原始证据见 [`docs/08-live-run.md`](docs/08-live-run.md)。
 

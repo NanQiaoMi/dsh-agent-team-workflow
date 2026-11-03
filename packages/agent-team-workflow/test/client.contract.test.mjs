@@ -432,7 +432,7 @@ test('collaboration contract: the board reads every docs/12 §5 field', () => {
 })
 
 test('collaboration panels use dedicated `atw-` class prefixes, styled in the component sheet', () => {
-  for (const token of ['atw-channel', 'atw-proposal', 'atw-open-queue', 'atw-collab', 'atw-open-card', 'atw-edge--peer']) {
+  for (const token of ['atw-channel', 'atw-proposal', 'atw-open-queue', 'atw-collab', 'atw-open-card', 'atw-peer-strip']) {
     assert.ok(source.includes(token), `client.js must use the ${token} class family`)
     assert.ok(source.includes('.' + token), `the component stylesheet must style .${token}`)
   }
@@ -843,7 +843,7 @@ test('v1 snapshot (no collaboration) renders the legacy board plus empty collabo
     assert.ok(text.includes('k:channel.empty'), 'channel panel shows its empty state')
     assert.ok(text.includes('k:proposal.empty'), 'proposal panel shows its empty state')
     assert.ok(!tokens.includes('atw-open-queue'), 'no open queue without collaboration')
-    assert.ok(!tokens.includes('atw-edge--peer'), 'no peer edges without collaboration')
+    assert.ok(!tokens.includes('atw-peer-strip'), 'no peer strip without collaboration')
     for (const key of ['channel.title', 'proposal.title']) assert.ok(board.copyKeys.includes(key), `the ${key} panel must render`)
   } finally {
     board.dispose()
@@ -887,11 +887,11 @@ test('v2 snapshot renders the channel stream, proposals, open queue, and peer ed
     assert.ok(cardText('W3').includes('k:flow.claimed'), 'claim badge on the item card')
     assert.ok(cardText('W2').includes('k:flow.openAssignment'), 'unclaimed badge on an open-queue item')
 
-    const peerEdges = findByClass(tree, 'atw-edge--peer')
-    assert.equal(peerEdges.length, 2, 'only resolvable peer edges are drawn')
-    assert.ok(peerEdges[0].props.style.strokeWidth > peerEdges[1].props.style.strokeWidth, 'message count weights the stroke')
+    const peerChips = findByClass(tree, 'atw-peer-chip')
+    assert.equal(peerChips.length, 2, 'only resolvable peer messages are listed')
+    assert.ok(/·\s*\d+/.test(textOf(peerChips[0])), 'peer chips carry the message count')
     assert.ok(findByClass(tree, 'atw-edge--lead-muted').length > 0, 'Lead spokes are de-emphasized once peers talk')
-    assert.equal(findByClass(tree, 'atw-legend-line--peer').length, 1, 'the topology legend gains a peer entry')
+    assert.ok(textOf(tree).includes('k:topology.peerStrip'), 'the topology gains a peer summary strip')
   } finally {
     board.dispose()
   }
@@ -1189,23 +1189,15 @@ test('docs/16 topology: peer edges are capped at the 8 busiest and weighted', as
   )
   try {
     const tree = await board.render()
-    const peers = findByClass(tree, 'atw-edge--peer')
-    assert.equal(peers.length, 8, 'at most eight peer links are drawn')
-    const svg = findByClass(tree, 'atw-topo-svg')[0]
-    const paths = collectElements(svg, (element) => element.type === 'path')
-    assert.ok(String(paths[0].props?.className ?? '').includes('atw-edge--peer'), 'peer arcs are painted under the Lead spokes')
-    const counts = peers.map((path) => {
-      const match = /·\s*(\d+)/.exec(textOf(path))
+    assert.equal(findByClass(tree, 'atw-edge--peer').length, 0, 'peer links are a summary strip, not crossing arcs')
+    const chips = findByClass(tree, 'atw-peer-chip')
+    assert.equal(chips.length, 3, 'the strip lists the three busiest pairs')
+    const counts = chips.map((chip) => {
+      const match = /·\s*(\d+)/.exec(textOf(chip))
       return match === null ? 0 : Number(match[1])
     })
-    assert.deepEqual(counts, [10, 9, 8, 7, 6, 5, 4, 3].slice(0, counts.length), 'the busiest links win')
-    for (const count of counts) assert.ok(count >= 2, 'count >= 2 keeps the map readable')
-    const widths = peers.map((path) => Number(path.props.style.strokeWidth))
-    assert.ok(widths[0] > widths[widths.length - 1], 'message count weights the stroke')
-    for (const width of widths) assert.ok(width >= 0.8 && width <= 2.4, `stroke width stays in 0.8..2.4 (${width})`)
-    for (const opacity of peers.map((path) => Number(path.props.style.opacity))) {
-      assert.ok(opacity >= 0.25 && opacity <= 0.55, `opacity stays in 0.25..0.55 (${opacity})`)
-    }
+    assert.deepEqual(counts, [10, 9, 8], 'the busiest links win')
+    for (const count of counts) assert.ok(count >= 2, 'count >= 2 keeps the strip readable')
   } finally {
     board.dispose()
   }
@@ -1219,7 +1211,7 @@ test('docs/16 topology: peer edges are capped at the 8 busiest and weighted', as
   )
   try {
     const tree = await smallBoard.render()
-    assert.equal(findByClass(tree, 'atw-edge--peer').length, 1, 'a small participant set may draw single-message links')
+    assert.equal(findByClass(tree, 'atw-peer-chip').length, 1, 'a small participant set may list single-message links')
   } finally {
     smallBoard.dispose()
   }
@@ -2067,7 +2059,43 @@ test('topology: work items align under their owner column and stay inside the ca
     }
     for (const node of itemNodes) {
       const width = Number.parseFloat(String(node.props?.style?.maxWidth ?? 'NaN'))
-      assert.ok(width >= 10 && width <= 18, 'item ids keep at least 10% of the canvas width (' + width + ')')
+      assert.ok(width >= 14 && width <= 20, 'item ids keep at least 14% of the canvas width (' + width + ')')
+    }
+  } finally {
+    board.dispose()
+  }
+})
+
+test('topology: owners sharing a column never stack two items on one slot', async () => {
+  const members = Array.from({ length: 9 }, (_, index) => ({
+    name: 'm' + (index + 1),
+    role: 'teammate',
+    status: 'running',
+    context: 'fresh',
+  }))
+  const items = members.map((member, index) => ({
+    ...V2_SNAPSHOT.run.items[0],
+    id: 'I' + (index + 1),
+    wave: 1,
+    owner: member.name,
+    subject: 's',
+    status: 'running',
+    reviewers: [],
+    reviewRequests: [],
+    handoffs: [],
+    thread: [],
+    claim: null,
+  }))
+  const board = await mountBoard(withSnapshot({ team: { members }, run: { items } }))
+  try {
+    const tree = await board.render()
+    const itemNodes = findByClass(tree, 'atw-node--item')
+    assert.equal(itemNodes.length, 9)
+    const places = itemNodes.map((node) => String(node.props.style.left) + '|' + String(node.props.style.top))
+    assert.equal(new Set(places).size, 9, 'two owners sharing an x column do not stack their items')
+    for (const node of itemNodes) {
+      const left = Number.parseFloat(String(node.props.style.left))
+      assert.ok(left >= 3 && left <= 97, 'dense items stay inside the canvas')
     }
   } finally {
     board.dispose()
