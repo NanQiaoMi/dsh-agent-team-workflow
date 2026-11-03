@@ -75,6 +75,10 @@ window.__ModuleLoader__.load({
       'flow.zoomOut': '缩小',
       'flow.zoomFit': '适应宽度',
       'flow.zoomReset': '重置为 100%',
+      'flow.dependencies': '依赖链',
+      'flow.reviews': '评审关系',
+      'flow.dependsOn': '依赖',
+      'flow.unlocks': '解锁',
       'flow.wave': '第 {n} 波',
       'flow.waveUnknown': '未分层',
       'flow.owner': '执行者 {name}',
@@ -93,6 +97,7 @@ window.__ModuleLoader__.load({
       'topology.groupedHint': '同一负责人的工作项同列，连线不会乱穿',
       'topology.peerStrip': '同伴消息',
       'topology.reviewNote': '工作项角标 = 评审人',
+      'topology.reviewRelations': '评审关系',
       'topology.reviewedBy': '评 {names}',
       'topology.noItems': '暂无负责项',
       'events.title': '事件流',
@@ -401,6 +406,10 @@ window.__ModuleLoader__.load({
       'flow.zoomOut': 'Zoom out',
       'flow.zoomFit': 'Fit width',
       'flow.zoomReset': 'Reset to 100%',
+      'flow.dependencies': 'Dependencies',
+      'flow.reviews': 'Reviews',
+      'flow.dependsOn': 'dep',
+      'flow.unlocks': 'unlocks',
       'flow.wave': 'Wave {n}',
       'flow.waveUnknown': 'unscheduled',
       'flow.owner': 'owner {name}',
@@ -419,6 +428,7 @@ window.__ModuleLoader__.load({
       'topology.groupedHint': 'Items owned by one member share a column',
       'topology.peerStrip': 'Peer messages',
       'topology.reviewNote': 'item badge = reviewer',
+      'topology.reviewRelations': 'Reviews',
       'topology.reviewedBy': 'review {names}',
       'topology.noItems': 'no items',
       'events.title': 'Event stream',
@@ -1547,23 +1557,20 @@ window.__ModuleLoader__.load({
       })
       const width = columns.length === 0 ? 0 : FLOW.padX * 2 + columns.length * FLOW.cardWidth + (columns.length - 1) * FLOW.columnGap + FLOW.loopWidth
       const height = columns.length === 0 ? 0 : FLOW.padTop + maxRows * FLOW.cardHeight + Math.max(0, maxRows - 1) * FLOW.rowGap + FLOW.padBottom
+      // Dependencies are a relation list plus per-card chips now: long curved
+      // arrows crossed cards as soon as a run had more than a few items.
       const edges = []
+      const relations = []
+      const children = new Map()
       for (const card of cards) {
         for (const dependencyId of card.item.blockedBy) {
-          const from = positions.get(dependencyId)
-          if (from === undefined) continue
-          edges.push({
-            key: 'dep-' + card.item.id + '-' + dependencyId,
-            className: 'atw-edge--dep',
-            d: linkPath(
-              from.x + FLOW.cardWidth / 2,
-              from.y + (Number.isFinite(from.height) ? from.height : FLOW.cardHeight) + 1,
-              card.x + FLOW.cardWidth / 2,
-              card.y - 5,
-            ),
-          })
+          if (!positions.has(dependencyId)) continue
+          relations.push({ key: 'dep-' + dependencyId + '-' + card.item.id, from: dependencyId, to: card.item.id })
+          if (!children.has(dependencyId)) children.set(dependencyId, [])
+          children.get(dependencyId).push(card.item.id)
         }
       }
+      for (const card of cards) card.unlocks = children.get(card.item.id) || []
       const loops = []
       for (const card of cards) {
         const reviews = card.item.reviews
@@ -1580,7 +1587,7 @@ window.__ModuleLoader__.load({
           label: 'R' + reviews.submittedRounds + '/' + reviews.maxRounds,
         })
       }
-      return { columns, cards, edges, loops, width, height }
+      return { columns, cards, edges, relations, loops, width, height }
     }
 
     /**
@@ -1958,6 +1965,9 @@ window.__ModuleLoader__.load({
 .atw-card-id{flex:none;font-size:12px;font-weight:600;letter-spacing:.02em}
 .atw-card-subject{max-height:38px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical;font-size:13px;line-height:1.43}
 .atw-card-meta{overflow:hidden;color:var(--atw-muted);font-size:12px;line-height:1.33;white-space:nowrap;text-overflow:ellipsis}
+.atw-card-rel{display:flex;align-items:center;gap:6px;flex:none;max-height:18px;overflow:hidden;color:var(--atw-muted);font-size:10px;line-height:1.33;white-space:nowrap}
+.atw-card-rel .atw-rel-chip{overflow:hidden;text-overflow:ellipsis;padding:1px 7px;font-size:10px;background:color-mix(in oklab,var(--atw-brand) 9%,var(--atw-paper));color:var(--atw-brand)}
+.atw-card-rel .atw-rel-chip--out{background:var(--atw-fill);color:var(--atw-muted)}
 .atw-card-flags{display:flex;align-items:center;gap:6px;flex-wrap:wrap;max-height:34px;margin-top:auto;overflow:hidden;color:var(--atw-muted);font-size:12px;line-height:1.33}
 .atw-card-pending{overflow:hidden;color:var(--atw-warn);white-space:nowrap;text-overflow:ellipsis}
 .atw-card-git{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;font-size:11px;line-height:1.33;white-space:nowrap}
@@ -2139,6 +2149,12 @@ window.__ModuleLoader__.load({
 .atw-collab-list{display:flex;flex-direction:column;gap:8px;min-width:0}
 .atw-topo-note{margin-top:8px;color:var(--atw-muted);font-size:11px;line-height:1.33}
 .atw-badge--review{background:color-mix(in oklab,var(--atw-brand) 10%,var(--atw-paper));color:var(--atw-brand);font-size:10px;padding:1px 7px}
+.atw-rel-strip{display:flex;flex-direction:column;gap:6px;margin-top:12px;padding:10px 2px 0;border-top:1px dashed var(--atw-hairline)}
+.atw-rel-group{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.atw-rel-label{color:var(--atw-muted);font-size:11px;font-weight:500;line-height:1.33;letter-spacing:.04em;text-transform:uppercase;min-width:64px}
+.atw-rel-chip{display:inline-flex;align-items:center;gap:4px;box-sizing:border-box;max-width:100%;padding:2px 10px;border-radius:999px;background:var(--atw-fill);color:var(--atw-ink);font-size:11px;font-weight:500;line-height:1.33;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.atw-rel-chip--out{background:color-mix(in oklab,var(--atw-brand) 10%,var(--atw-paper));color:var(--atw-brand)}
+.atw-topo-reviews{margin-top:10px}
 .atw-peer-strip{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;color:var(--atw-muted);font-size:12px;line-height:1.33}
 .atw-peer-strip-label{font-weight:500;letter-spacing:.05em;text-transform:uppercase;font-size:11px}
 .atw-peer-chip{border-radius:var(--atw-radius-pill);background:var(--atw-fill);padding:2px 10px;color:var(--atw-ink);font-weight:500}
@@ -2472,6 +2488,18 @@ window.__ModuleLoader__.load({
         h('div', { className: 'atw-card-subject' }, str(item.subject, tr('drawer.none'))),
         h('div', { className: 'atw-card-meta' }, tr('flow.owner', { name: str(item.owner, tr('common.unknown')) })),
         renderGitBadges(view, item.git),
+        item.blockedBy.length === 0 && card.unlocks.length === 0
+          ? null
+          : h(
+              'div',
+              { className: 'atw-card-rel' },
+              item.blockedBy.length === 0
+                ? null
+                : h('span', { key: 'deps', className: 'atw-rel-chip', title: item.blockedBy.join(', ') }, tr('flow.dependsOn') + ' ' + item.blockedBy.join(' · ')),
+              card.unlocks.length === 0
+                ? null
+                : h('span', { key: 'unlocks', className: 'atw-rel-chip atw-rel-chip--out', title: card.unlocks.join(', ') }, tr('flow.unlocks') + ' ' + card.unlocks.join(' · ')),
+            ),
         h(
           'div',
           { className: 'atw-card-flags' },
@@ -2662,11 +2690,49 @@ window.__ModuleLoader__.load({
               h('div', { className: 'atw-open-queue-label' }, tr('flow.openQueue')),
               h('div', { className: 'atw-open-queue-cards' }, queue.map((entry) => renderOpenQueueCard(view, entry))),
             )
+      const reviewGroups = new Map()
+      for (const card of layout.cards) {
+        for (const reviewer of card.item.reviewers) {
+          if (!reviewGroups.has(reviewer)) reviewGroups.set(reviewer, [])
+          reviewGroups.get(reviewer).push(card.item.id)
+        }
+      }
+      const relationStrip =
+        layout.relations.length === 0 && reviewGroups.size === 0
+          ? null
+          : h(
+              'div',
+              { className: 'atw-rel-strip' },
+              layout.relations.length === 0
+                ? null
+                : h(
+                    'div',
+                    { className: 'atw-rel-group' },
+                    h('span', { className: 'atw-rel-label' }, tr('flow.dependencies')),
+                    layout.relations.map((relation) =>
+                      h('span', { key: relation.key, className: 'atw-rel-chip', title: relation.from + ' → ' + relation.to }, relation.from + ' → ' + relation.to),
+                    ),
+                  ),
+              reviewGroups.size === 0
+                ? null
+                : h(
+                    'div',
+                    { className: 'atw-rel-group' },
+                    h('span', { className: 'atw-rel-label' }, tr('flow.reviews')),
+                    Array.from(reviewGroups.entries()).map(([reviewer, ids]) =>
+                      h(
+                        'span',
+                        { key: 'review-' + reviewer, className: 'atw-rel-chip atw-rel-chip--out', title: reviewer + ' → ' + ids.join(', ') },
+                        reviewer + ' → ' + ids.join(' · '),
+                      ),
+                    ),
+                  ),
+            )
       return h(
         'section',
         { className: 'atw-panel atw-panel--flow' },
         zoomHead,
-        h('div', { className: 'atw-panel-body' }, h('div', { className: 'atw-flow-stack' }, lane, body)),
+        h('div', { className: 'atw-panel-body' }, h('div', { className: 'atw-flow-stack' }, lane, body, relationStrip)),
       )
     }
 
@@ -2798,6 +2864,28 @@ window.__ModuleLoader__.load({
             legendLine('legend-owns', tr('topology.ownsEdge'), 'atw-legend-line--owns'),
           ),
           h('div', { className: 'atw-topo-note' }, tr('topology.reviewNote')),
+          (() => {
+            const reviewGroups = new Map()
+            for (const item of items) {
+              for (const reviewer of item.reviewers) {
+                if (!reviewGroups.has(reviewer)) reviewGroups.set(reviewer, [])
+                reviewGroups.get(reviewer).push(item.id)
+              }
+            }
+            if (reviewGroups.size === 0) return null
+            return h(
+              'div',
+              { className: 'atw-rel-group atw-topo-reviews' },
+              h('span', { className: 'atw-rel-label' }, tr('topology.reviewRelations')),
+              Array.from(reviewGroups.entries()).map(([reviewer, ids]) =>
+                h(
+                  'span',
+                  { key: 'review-' + reviewer, className: 'atw-rel-chip atw-rel-chip--out', title: reviewer + ' → ' + ids.join(', ') },
+                  reviewer + ' → ' + ids.join(' · '),
+                ),
+              ),
+            )
+          })(),
           topology.peerSummary.length === 0
             ? null
             : h(
