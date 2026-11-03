@@ -2095,3 +2095,32 @@ test('topology: every owned item lands once in its owner column at nine-owner sc
     board.dispose()
   }
 })
+
+test('flow map: zoom controls, fit-to-width hook and no rework loop arrows', async () => {
+  const board = await mountBoard(V2_SNAPSHOT)
+  try {
+    let tree = await board.render()
+    assert.equal(findByClass(tree, 'atw-flow-scroll').length, 1, 'the flow canvas owns its scroll surface')
+    assert.equal(findByClass(tree, 'atw-zoom').length, 1, 'the flow panel renders a zoom control group')
+    const valueOf = () => textOf(findByClass(tree, 'atw-zoom-value')[0])
+    assert.ok(valueOf().includes('100'), 'zoom starts at 100%')
+    const zoomIn = findByClass(tree, 'atw-zoom-btn').find((node) => String(node.props?.title ?? '') === 'k:flow.zoomIn')
+    assert.ok(zoomIn !== undefined, 'zoom-in button exists')
+    zoomIn.props.onClick()
+    tree = await board.render()
+    assert.ok(textOf(findByClass(tree, 'atw-zoom-value')[0]).includes('110'), 'zoom-in raises to 110%')
+    const zoomOut = findByClass(tree, 'atw-zoom-btn').find((node) => String(node.props?.title ?? '') === 'k:flow.zoomOut')
+    zoomOut.props.onClick()
+    tree = await board.render()
+    assert.ok(textOf(findByClass(tree, 'atw-zoom-value')[0]).includes('100'), 'zoom-out returns to 100%')
+    const fit = findByClass(tree, 'atw-zoom-btn').find((node) => String(node.props?.title ?? '') === 'k:flow.zoomFit')
+    assert.ok(fit !== undefined && typeof fit.props.onClick === 'function', 'fit-to-width action is wired')
+    assert.equal(findByClass(tree, 'atw-flow-canvas').length, 1, 'the canvas node renders')
+    assert.ok(findByClass(tree, 'atw-flow-canvas')[0].props?.ref !== undefined, 'the canvas exposes its ref for fit/zoom')
+    // Rework rounds are already text inside each card; loop arcs were removed.
+    assert.equal(findByClass(tree, 'atw-edge--loop').length, 0, 'no rework loop arrows on the map')
+    assert.ok(!textOf(tree).includes('R1/2'), 'no loop labels either')
+  } finally {
+    board.dispose()
+  }
+})
