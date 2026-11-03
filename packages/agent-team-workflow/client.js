@@ -70,6 +70,11 @@ window.__ModuleLoader__.load({
       'member.context.fork': 'fork',
       'flow.title': '执行流程图',
       'flow.hint': '点击卡片查看 DoD、报告与评审记录',
+      'flow.zoomGroup': '流程图缩放',
+      'flow.zoomIn': '放大',
+      'flow.zoomOut': '缩小',
+      'flow.zoomFit': '适应宽度',
+      'flow.zoomReset': '重置为 100%',
       'flow.wave': '第 {n} 波',
       'flow.waveUnknown': '未分层',
       'flow.owner': '执行者 {name}',
@@ -391,6 +396,11 @@ window.__ModuleLoader__.load({
       'member.context.fork': 'fork',
       'flow.title': 'Execution flow',
       'flow.hint': 'Click a card for its DoD, report, and review records',
+      'flow.zoomGroup': 'Flow map zoom',
+      'flow.zoomIn': 'Zoom in',
+      'flow.zoomOut': 'Zoom out',
+      'flow.zoomFit': 'Fit width',
+      'flow.zoomReset': 'Reset to 100%',
       'flow.wave': 'Wave {n}',
       'flow.waveUnknown': 'unscheduled',
       'flow.owner': 'owner {name}',
@@ -1914,8 +1924,15 @@ window.__ModuleLoader__.load({
 .atw-panel-body--flush{padding:0}
 .atw-panel-body>.atw-muted:only-child{display:flex;align-items:center;justify-content:center;box-sizing:border-box;min-height:120px;margin:0;border:1px dashed var(--atw-hairline);border-radius:var(--atw-radius-nested);background:color-mix(in oklab,var(--atw-surface) 50%,var(--atw-paper));text-align:center;padding:20px}
 .atw-panel-body>.atw-muted:only-child:before{content:''}
-.atw-flow{overflow:auto}
-.atw-flow-canvas{position:relative}
+.atw-flow-scroll{position:relative;overflow:auto;cursor:grab;user-select:none;scrollbar-width:thin;overscroll-behavior:contain}
+.atw-flow-scroll:active{cursor:grabbing}
+.atw-flow-canvas{position:relative;transform-origin:top left}
+.atw-zoom{display:flex;align-items:center;gap:4px;flex:none}
+.atw-zoom-btn{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:26px;padding:0 6px;border:1px solid transparent;border-radius:999px;background:var(--atw-fill);color:var(--atw-ink);font:inherit;font-size:12px;font-weight:500;line-height:1;cursor:pointer}
+.atw-zoom-btn:hover{background:color-mix(in oklab,var(--atw-ink) 8%,var(--atw-paper))}
+.atw-zoom-btn:focus-visible{outline:2px solid var(--atw-brand);outline-offset:2px}
+.atw-zoom-btn--text{padding:0 10px;font-size:11px;color:var(--atw-muted)}
+.atw-zoom-value{min-width:38px;text-align:center;color:var(--atw-muted);font-size:11px;font-variant-numeric:tabular-nums;line-height:1}
 .atw-wave-label{position:absolute;color:var(--atw-muted);font-size:11px;line-height:1.33;letter-spacing:.05em;text-transform:uppercase;white-space:nowrap}
 .atw-svg{position:absolute;left:0;top:0;pointer-events:none;color:var(--atw-muted)}
 .atw-edge{fill:none;stroke:currentColor;stroke-width:1;opacity:.5;vector-effect:non-scaling-stroke}
@@ -2514,15 +2531,80 @@ window.__ModuleLoader__.load({
     function renderFlowPanel(view, run) {
       const tr = view.tr
       const layout = computeFlowLayout(run)
+      const zoomHead = h(
+        'div',
+        { className: 'atw-panel-head' },
+        h('span', { className: 'atw-panel-title' }, tr('flow.title'), h('span', { className: 'atw-panel-hint' }, ' ' + tr('flow.hint'))),
+        h(
+          'div',
+          { className: 'atw-zoom', role: 'group', 'aria-label': tr('flow.zoomGroup') },
+          h(
+            'button',
+            {
+              key: 'out',
+              type: 'button',
+              className: 'atw-zoom-btn',
+              title: tr('flow.zoomOut'),
+              'aria-label': tr('flow.zoomOut'),
+              onClick: () => view.actions.zoomFlowBy(-0.1),
+            },
+            '−',
+          ),
+          h('span', { className: 'atw-zoom-value', 'aria-live': 'polite' }, Math.round(view.flowZoom * 100) + '%'),
+          h(
+            'button',
+            {
+              key: 'in',
+              type: 'button',
+              className: 'atw-zoom-btn',
+              title: tr('flow.zoomIn'),
+              'aria-label': tr('flow.zoomIn'),
+              onClick: () => view.actions.zoomFlowBy(0.1),
+            },
+            '+',
+          ),
+          h(
+            'button',
+            {
+              key: 'fit',
+              type: 'button',
+              className: 'atw-zoom-btn atw-zoom-btn--text',
+              title: tr('flow.zoomFit'),
+              'aria-label': tr('flow.zoomFit'),
+              onClick: () => view.actions.fitFlow(),
+            },
+            tr('flow.zoomFit'),
+          ),
+          h(
+            'button',
+            {
+              key: 'reset',
+              type: 'button',
+              className: 'atw-zoom-btn atw-zoom-btn--text',
+              title: tr('flow.zoomReset'),
+              'aria-label': tr('flow.zoomReset'),
+              onClick: () => view.actions.resetFlowZoom(),
+            },
+            '100%',
+          ),
+        ),
+      )
       const body =
         layout.cards.length === 0
           ? h('div', { className: 'atw-muted' }, tr('flow.empty'))
           : h(
               'div',
-              { className: 'atw-flow' },
+              {
+                className: 'atw-flow-scroll',
+                ref: view.flowScrollRef,
+                onPointerDown: view.actions.flowPointerDown,
+                onPointerMove: view.actions.flowPointerMove,
+                onPointerUp: view.actions.flowPointerUp,
+                onPointerLeave: view.actions.flowPointerUp,
+              },
               h(
                 'div',
-                { className: 'atw-flow-canvas', style: { width: layout.width + 'px', height: layout.height + 'px' } },
+                { className: 'atw-flow-canvas', ref: view.flowStageRef, style: { width: layout.width + 'px', height: layout.height + 'px', zoom: view.flowZoom } },
                 h(
                   'svg',
                   {
@@ -2551,12 +2633,6 @@ window.__ModuleLoader__.load({
                   ),
                   layout.edges.map((edge) =>
                     h('path', { key: edge.key, className: 'atw-edge ' + edge.className, d: edge.d, markerEnd: 'url(#' + view.markerId + ')' }),
-                  ),
-                  layout.loops.map((loop) =>
-                    h('path', { key: loop.key, className: 'atw-edge atw-edge--loop', d: loop.d, markerEnd: 'url(#' + view.markerId + ')' }),
-                  ),
-                  layout.loops.map((loop) =>
-                    h('text', { key: loop.key + '-text', className: 'atw-loop-text', x: loop.labelX, y: loop.labelY }, loop.label),
                   ),
                 ),
                 layout.columns.map((column, index) =>
@@ -2589,7 +2665,7 @@ window.__ModuleLoader__.load({
       return h(
         'section',
         { className: 'atw-panel atw-panel--flow' },
-        panelHead(tr('flow.title'), tr('flow.hint')),
+        zoomHead,
         h('div', { className: 'atw-panel-body' }, h('div', { className: 'atw-flow-stack' }, lane, body)),
       )
     }
@@ -4031,6 +4107,8 @@ window.__ModuleLoader__.load({
       const [memberSendState, setMemberSendState] = React.useState(null)
       const [memberReload, setMemberReload] = React.useState(0)
       const [copiedPath, setCopiedPath] = React.useState(null)
+      /** Flow map zoom (CSS zoom keeps the scrollbars honest). */
+      const [flowZoom, setFlowZoom] = React.useState(1)
 
       /** Newest snapshot, so event handlers never read a stale closure. */
       const snapshotRef = React.useRef(null)
@@ -4043,6 +4121,13 @@ window.__ModuleLoader__.load({
       const memberSendRef = React.useRef(null)
       /** Board root, used to reach the conversation scrollport on mount. */
       const rootRef = React.useRef(null)
+      /** Flow map scroll viewport + canvas, for fit-to-width and drag-pan. */
+      const flowScrollRef = React.useRef(null)
+      const flowStageRef = React.useRef(null)
+      /** Drag-pan seat: null when not dragging. */
+      const flowDragRef = React.useRef(null)
+      /** Last run signature that already got an automatic fit. */
+      const flowFitKeyRef = React.useRef('')
       if (markerRef.current === null) markerRef.current = nextMarkerId()
 
       // A View switch reuses the conversation scrollport, which keeps the chat
@@ -4061,6 +4146,26 @@ window.__ModuleLoader__.load({
           cursor = cursor.parentElement
         }
       }, [])
+
+      // Fit the flow map to the panel the first time a run's item count is
+      // seen; later user zoom stays untouched. Guards keep the mock-DOM tests
+      // and SSR render safe.
+      React.useEffect(() => {
+        const run = snapshot !== null && snapshot !== undefined && isRecord(snapshot.run) ? snapshot.run : null
+        if (run === null) return
+        const items = Array.isArray(run.items) ? run.items : []
+        const key = str(run.id) + ':' + String(items.length)
+        if (key === flowFitKeyRef.current) return
+        const scroll = flowScrollRef.current
+        const canvas = flowStageRef.current
+        if (!scroll || !canvas || typeof scroll.clientWidth !== 'number' || typeof canvas.offsetWidth !== 'number') return
+        flowFitKeyRef.current = key
+        const base = canvas.offsetWidth
+        if (base <= 0 || scroll.clientWidth <= 0) return
+        if (base <= scroll.clientWidth) return
+        const fit = Math.max(0.4, Math.min(1, (scroll.clientWidth - 4) / base))
+        if (fit < 0.995) setFlowZoom(Math.round(fit * 100) / 100)
+      }, [snapshot])
 
       React.useEffect(() => {
         if (sessionId === '') return undefined
@@ -4289,6 +4394,43 @@ window.__ModuleLoader__.load({
             })
         },
         closeItem: () => setSelectedItemId(null),
+        setFlowZoom: (value) => {
+          const next = typeof value === 'number' ? value : Number.parseFloat(String(value))
+          if (!Number.isFinite(next)) return
+          setFlowZoom(Math.max(0.4, Math.min(1.6, Math.round(next * 100) / 100)))
+        },
+        zoomFlowBy: (delta) => {
+          setFlowZoom((value) => Math.max(0.4, Math.min(1.6, Math.round((value + delta) * 100) / 100)))
+        },
+        fitFlow: () => {
+          const scroll = flowScrollRef.current
+          const canvas = flowStageRef.current
+          if (!scroll || !canvas || typeof scroll.clientWidth !== 'number' || typeof canvas.offsetWidth !== 'number') return
+          const base = canvas.offsetWidth / (flowZoom || 1)
+          if (base <= 0 || scroll.clientWidth <= 0) return
+          setFlowZoom(Math.max(0.4, Math.min(1, Math.round(((scroll.clientWidth - 4) / base) * 100) / 100)))
+        },
+        resetFlowZoom: () => setFlowZoom(1),
+        flowPointerDown: (event) => {
+          const scroll = flowScrollRef.current
+          if (!scroll || !event || event.button !== 0) return
+          flowDragRef.current = {
+            x: event.clientX,
+            y: event.clientY,
+            left: typeof scroll.scrollLeft === 'number' ? scroll.scrollLeft : 0,
+            top: typeof scroll.scrollTop === 'number' ? scroll.scrollTop : 0,
+          }
+        },
+        flowPointerMove: (event) => {
+          const drag = flowDragRef.current
+          const scroll = flowScrollRef.current
+          if (!drag || !scroll || !event) return
+          scroll.scrollLeft = drag.left - (event.clientX - drag.x)
+          scroll.scrollTop = drag.top - (event.clientY - drag.y)
+        },
+        flowPointerUp: () => {
+          flowDragRef.current = null
+        },
         setFilter: (value) => setFilter(value),
         setChannelFilter: (value) => setChannelFilter(value),
         toggleMessage: (key) =>
@@ -4339,6 +4481,9 @@ window.__ModuleLoader__.load({
         now: Date.now(),
         markerId: markerRef.current,
         topoMarkerId: markerRef.current + '-topo',
+        flowZoom,
+        flowScrollRef,
+        flowStageRef,
         actions,
       }
 
