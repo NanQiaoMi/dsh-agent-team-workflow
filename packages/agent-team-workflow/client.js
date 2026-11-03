@@ -83,6 +83,9 @@ window.__ModuleLoader__.load({
       'topology.leadEdge': 'Lead → 成员',
       'topology.ownsEdge': '成员 → 工作项',
       'topology.reviewsEdge': '评审 → 被审项',
+      'topology.zoneMembers': '成员',
+      'topology.zoneItems': '工作项 · 按负责人对齐',
+      'topology.groupedHint': '同一负责人的工作项同列，连线不会乱穿',
       'events.title': '事件流',
       'events.count': '最近 {n} 条',
       'events.empty': '还没有事件',
@@ -397,6 +400,9 @@ window.__ModuleLoader__.load({
       'topology.leadEdge': 'Lead → member',
       'topology.ownsEdge': 'member → item',
       'topology.reviewsEdge': 'reviewer → item',
+      'topology.zoneMembers': 'Members',
+      'topology.zoneItems': 'Items · aligned by owner',
+      'topology.groupedHint': 'Items owned by one member share a column',
       'events.title': 'Event stream',
       'events.count': 'latest {n}',
       'events.empty': 'No events yet',
@@ -1553,7 +1559,7 @@ window.__ModuleLoader__.load({
      * Distribute `count` nodes over one or two rows inside a percentage box.
      * @returns `{ nodes: [{ x, y }] (0..100 percentage coordinates), perRow }`.
      */
-    function spreadNodes(count, singleRowY, firstRowY, secondRowY) {
+    function spreadNodes(count, singleRowY, firstRowY, secondRowY, margin = 7) {
       if (count <= 0) return { nodes: [], perRow: 1 }
       const rows = count > 6 ? 2 : 1
       const perRow = Math.ceil(count / rows)
@@ -1562,7 +1568,7 @@ window.__ModuleLoader__.load({
         const row = Math.min(rows - 1, Math.floor(index / perRow))
         const inRow = index - row * perRow
         const countInRow = Math.min(perRow, count - row * perRow)
-        const x = countInRow <= 1 ? 50 : 7 + (inRow * 86) / (countInRow - 1)
+        const x = countInRow <= 1 ? 50 : margin + (inRow * (100 - margin * 2)) / (countInRow - 1)
         const y = rows === 1 ? singleRowY : row === 0 ? firstRowY : secondRowY
         nodes.push({ x: round1(x), y })
       }
@@ -1640,11 +1646,11 @@ window.__ModuleLoader__.load({
 
     function computeTopology(team, items, collaboration) {
       const leadName = team.me && team.me.name ? team.me.name : ''
-      const lead = { x: 50, y: 12, name: leadName }
+      const lead = { x: 50, y: 9, name: leadName }
       const split = splitParticipants(team, items, collaboration)
       // Defensive cap: the layout supports two rows, so keep the drawn set bounded.
       const participants = split.participants.slice(0, 12)
-      const memberSpread = spreadNodes(participants.length, 44, 36, 52)
+      const memberSpread = spreadNodes(participants.length, 34, 28, 44, 15)
       const memberRows = participants.length > 6 ? 2 : 1
       // docs/19 §2: a pending graceful stop marks its target with a warn dot.
       const pendingStops = new Map()
@@ -1666,21 +1672,47 @@ window.__ModuleLoader__.load({
               count: split.idle.length,
               names: split.idle.map((member) => member.name).join(', '),
               x: 50,
-              y: memberRows === 2 ? 64 : 54,
+              y: memberRows === 2 ? 60 : 50,
             }
-      const itemSpread = spreadNodes(items.length, 84, 78, 92)
-      const itemNodes = items.map((item, index) => ({
+      // Work items are grouped by owner and aligned under that member's column,
+      // so owner→item links read as short vertical lines instead of a web.
+      const ownerOf = new Map()
+      for (const node of memberNodes) ownerOf.set(node.member.name, node)
+      const placements = new Map()
+      const usedPerOwner = new Map()
+      const unassigned = []
+      for (const item of items) {
+        const ownerNode = ownerOf.get(item.owner)
+        if (ownerNode === undefined) {
+          unassigned.push(item)
+          continue
+        }
+        const used = usedPerOwner.get(item.owner) ?? 0
+        usedPerOwner.set(item.owner, used + 1)
+        const row = used % 2
+        const overflow = Math.floor(used / 2)
+        const direction = ownerNode.x <= 50 ? 1 : -1
+        const x = Math.max(6, Math.min(94, ownerNode.x + overflow * 4 * direction))
+        placements.set(item.id, { x, y: 72 + row * 12 })
+      }
+      const unassignedSpread = spreadNodes(unassigned.length, 90, 86, 96)
+      unassigned.forEach((item, index) => {
+        placements.set(item.id, unassignedSpread.nodes[index])
+      })
+      const itemNodes = items.map((item) => ({
         key: 'item-' + item.id,
         item,
-        x: itemSpread.nodes[index].x,
-        y: itemSpread.nodes[index].y,
+        x: placements.get(item.id)?.x ?? 50,
+        y: placements.get(item.id)?.y ?? 90,
       }))
+      const itemSpread = { perRow: Math.max(1, Math.min(items.length, 10)) }
       const edges = []
       for (const node of memberNodes) {
         edges.push({
           key: 'lead-' + node.key,
           className: 'atw-edge--lead',
           d: linkPath(lead.x, lead.y + 4.5, node.x, node.y - 4.5),
+          arrow: true,
         })
       }
       const byName = new Map()
@@ -1694,6 +1726,7 @@ window.__ModuleLoader__.load({
             key: 'owns-' + node.key,
             className: 'atw-edge--owns',
             d: linkPath(owner.x, owner.y + 4.5, node.x, node.y - 4.5),
+            arrow: true,
           })
         }
         for (const reviewer of node.item.reviewers) {
@@ -1703,6 +1736,7 @@ window.__ModuleLoader__.load({
             key: 'reviews-' + node.key + '-' + reviewer,
             className: 'atw-edge--review',
             d: linkPath(reviewNode.x, reviewNode.y + 4.5, node.x, node.y - 4.5),
+            arrow: true,
           })
         }
       }
@@ -1817,6 +1851,7 @@ window.__ModuleLoader__.load({
 .atw-panel{display:flex;flex-direction:column;box-sizing:border-box;min-width:0;min-height:240px;max-height:320px;border:1px solid var(--atw-hairline);border-radius:var(--atw-radius-card);background:var(--atw-paper);box-shadow:var(--atw-shadow-card);overflow:hidden;transition:box-shadow .15s ease}
 .atw-panel:hover{box-shadow:0 0 0 1px color-mix(in oklab,var(--atw-ink) 7%,transparent),0 2px 6px color-mix(in oklab,var(--atw-ink) 10%,transparent),0 2px 4px -1px color-mix(in oklab,var(--atw-ink) 8%,transparent)}
 .atw-panel--flow{max-height:520px}
+.atw-panel--topo{max-height:440px;min-height:380px}
 .atw-panel-head{display:flex;flex:none;align-items:center;justify-content:space-between;gap:12px;min-width:0;box-sizing:border-box;padding:18px 20px 0}
 .atw-panel-title{font-size:12px;font-weight:600;line-height:1.33;letter-spacing:.05em;text-transform:uppercase;color:var(--atw-muted);white-space:nowrap}
 .atw-panel-hint{min-width:0;color:var(--atw-muted);font-size:12px;font-weight:400;line-height:1.33;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1857,7 +1892,7 @@ window.__ModuleLoader__.load({
 .atw-badge--git{max-width:148px;font-size:11px;line-height:1.33;padding:1px 8px}
 .atw-badge--link{text-decoration:none;cursor:pointer}
 .atw-link{color:var(--atw-brand);text-decoration:underline;overflow-wrap:anywhere}
-.atw-topo-canvas{position:relative;height:260px;border-radius:var(--atw-radius-pill);background:var(--atw-surface);overflow:hidden;border:1px solid var(--atw-hairline-soft)}
+.atw-topo-canvas{position:relative;height:300px;border-radius:var(--atw-radius-pill);background:var(--atw-surface);overflow:hidden;border:1px solid var(--atw-hairline-soft)}
 .atw-topo-svg{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;color:var(--atw-muted)}
 .atw-node{position:absolute;z-index:1;display:flex;align-items:center;gap:6px;box-sizing:border-box;max-width:100%;padding:4px 12px;border:1px solid var(--atw-hairline);border-radius:var(--atw-radius-pill);background:var(--atw-paper);color:var(--atw-ink);font-size:12px;line-height:1.33;font-weight:500;white-space:nowrap;box-shadow:0 1px 2px color-mix(in oklab,var(--atw-ink) 4%,transparent);transform:translate(-50%,-50%)}
 .atw-node--idle{border-style:dashed;border-color:var(--atw-idle);color:var(--atw-muted);max-width:40%}
@@ -1873,6 +1908,9 @@ window.__ModuleLoader__.load({
 .atw-node--tone-warn{border-color:var(--atw-warn);color:var(--atw-warn)}
 .atw-node--tone-error{border-color:var(--atw-error);color:var(--atw-error)}
 .atw-node--tone-idle{color:var(--atw-muted)}
+.atw-topo-zone{position:absolute;z-index:2;left:12px;color:var(--atw-muted);font-size:10px;line-height:1.33;letter-spacing:.06em;text-transform:uppercase;pointer-events:none}
+.atw-topo-zone--members{top:20%}
+.atw-topo-zone--items{top:60%}
 .atw-topo-empty{display:flex;align-items:center;justify-content:center;height:100%;color:var(--atw-muted);font-size:12px}
 .atw-legend{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:12px;color:var(--atw-muted);font-size:11px;line-height:1.33}
 .atw-legend-item{display:inline-flex;align-items:center;gap:6px}
@@ -2028,6 +2066,10 @@ window.__ModuleLoader__.load({
 .atw-proposal-resolution{color:var(--atw-muted);font-size:13px;line-height:1.43;overflow-wrap:anywhere}
 .atw-collab-list{display:flex;flex-direction:column;gap:8px;min-width:0}
 .atw-edge--peer{color:var(--atw-warn);opacity:.6}
+.atw-edge--topo{stroke-width:1.2}
+.atw-edge--topo.atw-edge--owns{opacity:.5}
+.atw-edge--topo.atw-edge--lead{opacity:.4}
+.atw-edge--topo.atw-edge--review{stroke-dasharray:3 4;opacity:.9}
 @keyframes atw-pulse{0%,100%{opacity:1}50%{opacity:.45}}
 @media (max-width:720px){.atw-root{padding:16px}.atw-title{font-size:24px}.atw-header{gap:16px}.atw-stat{padding:10px 14px;min-width:88px}.atw-stat-value{font-size:24px}.atw-scroll{gap:16px}.atw-main,.atw-lower,.atw-collab{gap:16px}}
 @media (prefers-reduced-motion:reduce){.atw-node--st-running{animation:none}.atw-card,.atw-panel,.atw-btn,.atw-filter,.atw-event,.atw-member-line--button,.atw-member-transcript-item--button{transition:none}.atw-card:hover{transform:none}}
@@ -2424,7 +2466,7 @@ window.__ModuleLoader__.load({
                         markerHeight: 7,
                         orient: 'auto-start-reverse',
                       },
-                      h('path', { className: 'atw-arrow', d: 'M0,0 L8,4 L0,8 Z' }),
+                      h('polygon', { className: 'atw-arrow', points: '0,0 8,4 0,8' }),
                     ),
                   ),
                   layout.edges.map((edge) =>
@@ -2488,7 +2530,7 @@ window.__ModuleLoader__.load({
       const empty = team.members.length === 0 && items.length === 0
       return h(
         'section',
-        { className: 'atw-panel' },
+        { className: 'atw-panel atw-panel--topo' },
         panelHead(tr('topology.title'), hint),
         h(
           'div',
@@ -2496,10 +2538,29 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { className: 'atw-topo-canvas' },
+            h('div', { className: 'atw-topo-zone atw-topo-zone--members' }, tr('topology.zoneMembers')),
+            h('div', { className: 'atw-topo-zone atw-topo-zone--items', title: tr('topology.groupedHint') }, tr('topology.zoneItems')),
             topology.edges.length > 0 || topology.peerEdges.length > 0
               ? h(
                   'svg',
                   { className: 'atw-topo-svg', viewBox: '0 0 100 100', preserveAspectRatio: 'none', 'aria-hidden': true },
+                  h(
+                    'defs',
+                    null,
+                    h(
+                      'marker',
+                      {
+                        id: view.topoMarkerId,
+                        viewBox: '0 0 8 8',
+                        refX: 6.5,
+                        refY: 4,
+                        markerWidth: 5,
+                        markerHeight: 5,
+                        orient: 'auto-start-reverse',
+                      },
+                      h('polygon', { className: 'atw-arrow', points: '0,0 8,4 0,8' }),
+                    ),
+                  ),
                   topology.peerEdges.map((edge) =>
                     h(
                       'path',
@@ -2514,7 +2575,13 @@ window.__ModuleLoader__.load({
                     ),
                   ),
                   topology.edges.map((edge) =>
-                    h('path', { key: edge.key, className: 'atw-edge ' + edge.className, d: edge.d, vectorEffect: 'non-scaling-stroke' }),
+                    h('path', {
+                      key: edge.key,
+                      className: 'atw-edge atw-edge--topo ' + edge.className,
+                      d: edge.d,
+                      vectorEffect: 'non-scaling-stroke',
+                      ...(edge.arrow === true ? { markerEnd: 'url(#' + view.topoMarkerId + ')' } : {}),
+                    }),
                   ),
                 )
               : null,
@@ -4187,6 +4254,7 @@ window.__ModuleLoader__.load({
         error,
         now: Date.now(),
         markerId: markerRef.current,
+        topoMarkerId: markerRef.current + '-topo',
         actions,
       }
 
