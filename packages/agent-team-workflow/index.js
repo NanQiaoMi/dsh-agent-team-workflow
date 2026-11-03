@@ -31,7 +31,7 @@ export const name = 'agent-team-workflow'
 /** Services this plugin needs; the plugin stays inactive without Agent Teams. */
 export const inject = ['agents', 'agentTeams', 'tools', 'systemPrompt', 'workingDirectory']
 
-const VERSION = '1.9.2'
+const VERSION = '1.9.3'
 
 /** Shared tool list, built once per plugin instance. */
 export function apply(ctx, config = {}) {
