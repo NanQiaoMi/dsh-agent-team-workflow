@@ -773,6 +773,14 @@ window.__ModuleLoader__.load({
       return 'M' + round1(x1) + ',' + round1(y1) + ' C' + round1(c1x) + ',' + round1(c1y) + ' ' + round1(c2x) + ',' + round1(c2y) + ' ' + round1(x2) + ',' + round1(y2)
     }
 
+    /** @returns a bowing path for review edges so they read apart from owner links. */
+    function reviewPath(x1, y1, x2, y2) {
+      const bulge = x2 >= x1 ? 7 : -7
+      const mx = (x1 + x2) / 2 + bulge
+      const my = (y1 + y2) / 2
+      return 'M' + round1(x1) + ',' + round1(y1) + ' Q' + round1(mx) + ',' + round1(my) + ' ' + round1(x2) + ',' + round1(y2)
+    }
+
     /** @returns a human message for a thrown value. */
     function messageOf(cause) {
       if (cause instanceof Error) return cause.message
@@ -1646,11 +1654,11 @@ window.__ModuleLoader__.load({
 
     function computeTopology(team, items, collaboration) {
       const leadName = team.me && team.me.name ? team.me.name : ''
-      const lead = { x: 50, y: 9, name: leadName }
+      const lead = { x: 50, y: 10, name: leadName }
       const split = splitParticipants(team, items, collaboration)
       // Defensive cap: the layout supports two rows, so keep the drawn set bounded.
       const participants = split.participants.slice(0, 12)
-      const memberSpread = spreadNodes(participants.length, 34, 28, 44, 15)
+      const memberSpread = spreadNodes(participants.length, 34, 26, 42, 10)
       const memberRows = participants.length > 6 ? 2 : 1
       // docs/19 §2: a pending graceful stop marks its target with a warn dot.
       const pendingStops = new Map()
@@ -1671,8 +1679,8 @@ window.__ModuleLoader__.load({
               key: 'idle',
               count: split.idle.length,
               names: split.idle.map((member) => member.name).join(', '),
-              x: 50,
-              y: memberRows === 2 ? 60 : 50,
+              x: 92,
+              y: 10,
             }
       // Work items are grouped by owner and aligned under that member's column,
       // so owner→item links read as short vertical lines instead of a web.
@@ -1693,9 +1701,9 @@ window.__ModuleLoader__.load({
         const overflow = Math.floor(used / 2)
         const direction = ownerNode.x <= 50 ? 1 : -1
         const x = Math.max(6, Math.min(94, ownerNode.x + overflow * 4 * direction))
-        placements.set(item.id, { x, y: 72 + row * 12 })
+        placements.set(item.id, { x, y: 72 + row * 13 })
       }
-      const unassignedSpread = spreadNodes(unassigned.length, 90, 86, 96)
+      const unassignedSpread = spreadNodes(unassigned.length, 91, 86, 96)
       unassigned.forEach((item, index) => {
         placements.set(item.id, unassignedSpread.nodes[index])
       })
@@ -1706,15 +1714,37 @@ window.__ModuleLoader__.load({
         y: placements.get(item.id)?.y ?? 90,
       }))
       const itemSpread = { perRow: Math.max(1, Math.min(items.length, 10)) }
+      const itemWidth = Math.max(10, Math.min(18, Math.floor(86 / Math.max(1, items.length))))
       const edges = []
-      for (const node of memberNodes) {
+      // Lead → members uses an org-chart bus: one spine, one bus per row and
+      // short drops. Nine individual curves turn into a readable fan otherwise.
+      const rowYs = [...new Set(memberNodes.map((node) => node.y))].sort((left, right) => left - right)
+      let busFromY = lead.y + 4.5
+      rowYs.forEach((rowY, rowIndex) => {
+        const rowNodes = memberNodes.filter((node) => node.y === rowY)
+        const minX = Math.min(...rowNodes.map((node) => node.x)) - 4
+        const maxX = Math.max(...rowNodes.map((node) => node.x)) + 4
+        const busY = rowY - 9
         edges.push({
-          key: 'lead-' + node.key,
-          className: 'atw-edge--lead',
-          d: linkPath(lead.x, lead.y + 4.5, node.x, node.y - 4.5),
-          arrow: true,
+          key: 'lead-spine-' + rowIndex,
+          className: 'atw-edge--lead atw-edge--lead-bus',
+          d: 'M' + round1(lead.x) + ',' + round1(busFromY) + ' L' + round1(lead.x) + ',' + round1(busY),
         })
-      }
+        edges.push({
+          key: 'lead-bus-' + rowIndex,
+          className: 'atw-edge--lead atw-edge--lead-bus',
+          d: 'M' + round1(minX) + ',' + round1(busY) + ' L' + round1(maxX) + ',' + round1(busY),
+        })
+        for (const node of rowNodes) {
+          edges.push({
+            key: 'lead-' + node.key,
+            className: 'atw-edge--lead',
+            d: 'M' + round1(node.x) + ',' + round1(busY) + ' L' + round1(node.x) + ',' + round1(rowY - 4.5),
+            arrow: true,
+          })
+        }
+        busFromY = busY
+      })
       const byName = new Map()
       for (const node of memberNodes) if (!byName.has(node.member.name)) byName.set(node.member.name, node)
       // Peer links may target the Lead too (a member can message the Lead directly).
@@ -1735,7 +1765,7 @@ window.__ModuleLoader__.load({
           edges.push({
             key: 'reviews-' + node.key + '-' + reviewer,
             className: 'atw-edge--review',
-            d: linkPath(reviewNode.x, reviewNode.y + 4.5, node.x, node.y - 4.5),
+            d: reviewPath(reviewNode.x, reviewNode.y + 4.5, node.x, node.y - 4.5),
             arrow: true,
           })
         }
@@ -1789,7 +1819,7 @@ window.__ModuleLoader__.load({
         memberRows,
         participantCount: memberNodes.length,
         idleCount: split.idle.length,
-        itemWidth: nodeWidth(itemSpread.perRow, 11, 5),
+        itemWidth,
       }
     }
 
@@ -1845,7 +1875,7 @@ window.__ModuleLoader__.load({
 .atw-progress-fill{height:100%;border-radius:var(--atw-radius-pill);background:var(--atw-success);transition:width .2s ease}
 .atw-error-strip{display:flex;align-items:center;justify-content:space-between;gap:12px;box-sizing:border-box;border:1px solid color-mix(in oklab,var(--atw-error) 35%,var(--atw-hairline));border-radius:var(--atw-radius-nested);background:color-mix(in oklab,var(--atw-error) 8%,var(--atw-paper));padding:8px 12px;color:var(--atw-error);font-size:12px;line-height:1.33}
 .atw-error-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.atw-main{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1.4fr);gap:20px;align-items:start;min-width:0}
+.atw-main{display:grid;grid-template-columns:minmax(0,1fr);gap:20px;align-items:start;min-width:0}
 .atw-lower{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;align-items:start;min-width:0}
 @media (max-width:1180px){.atw-main,.atw-collab,.atw-lower{grid-template-columns:minmax(0,1fr)}}
 .atw-panel{display:flex;flex-direction:column;box-sizing:border-box;min-width:0;min-height:240px;max-height:320px;border:1px solid var(--atw-hairline);border-radius:var(--atw-radius-card);background:var(--atw-paper);box-shadow:var(--atw-shadow-card);overflow:hidden;transition:box-shadow .15s ease}
@@ -1895,7 +1925,7 @@ window.__ModuleLoader__.load({
 .atw-topo-canvas{position:relative;height:300px;border-radius:var(--atw-radius-pill);background:var(--atw-surface);overflow:hidden;border:1px solid var(--atw-hairline-soft)}
 .atw-topo-svg{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;color:var(--atw-muted)}
 .atw-node{position:absolute;z-index:1;display:flex;align-items:center;gap:6px;box-sizing:border-box;max-width:100%;padding:4px 12px;border:1px solid var(--atw-hairline);border-radius:var(--atw-radius-pill);background:var(--atw-paper);color:var(--atw-ink);font-size:12px;line-height:1.33;font-weight:500;white-space:nowrap;box-shadow:0 1px 2px color-mix(in oklab,var(--atw-ink) 4%,transparent);transform:translate(-50%,-50%)}
-.atw-node--idle{border-style:dashed;border-color:var(--atw-idle);color:var(--atw-muted);max-width:40%}
+.atw-node--idle{border-style:dashed;border-color:var(--atw-idle);color:var(--atw-muted);max-width:26%;padding:3px 10px;font-size:11px}
 .atw-node--lead{max-width:52%;border-color:var(--atw-ink);background:var(--atw-ink);color:var(--atw-paper);font-weight:600}
 .atw-node-sub{max-width:110px;overflow:hidden;color:inherit;opacity:.75;font-weight:400;text-overflow:ellipsis}
 .atw-node--item{max-width:12%;padding:3px 9px;font-size:11px;line-height:1.33}
@@ -2068,7 +2098,8 @@ window.__ModuleLoader__.load({
 .atw-edge--peer{color:var(--atw-warn);opacity:.6}
 .atw-edge--topo{stroke-width:1.2}
 .atw-edge--topo.atw-edge--owns{opacity:.5}
-.atw-edge--topo.atw-edge--lead{opacity:.4}
+.atw-edge--topo.atw-edge--lead{opacity:.45}
+.atw-edge--lead-bus{opacity:.3}
 .atw-edge--topo.atw-edge--review{stroke-dasharray:3 4;opacity:.9}
 @keyframes atw-pulse{0%,100%{opacity:1}50%{opacity:.45}}
 @media (max-width:720px){.atw-root{padding:16px}.atw-title{font-size:24px}.atw-header{gap:16px}.atw-stat{padding:10px 14px;min-width:88px}.atw-stat-value{font-size:24px}.atw-scroll{gap:16px}.atw-main,.atw-lower,.atw-collab{gap:16px}}

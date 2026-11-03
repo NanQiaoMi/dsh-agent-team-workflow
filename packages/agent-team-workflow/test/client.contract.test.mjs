@@ -1105,7 +1105,7 @@ function withSnapshot(overrides) {
 test('docs/16 topology: only participants are drawn, idle members fold into one node', async () => {
   // The three-row layout contract: 2fr/1.4fr + 2fr/1fr + thirds, a 240–320px
   // panel band with an internal scroller, and a single column at <=1180px.
-  assert.ok(source.includes('grid-template-columns:minmax(0,2fr) minmax(0,1.4fr)'), 'flow + topology row ratios')
+  assert.match(source, /\.atw-main\{[^}]*grid-template-columns:minmax\(0,1fr\)/, 'flow and topology stack full width for a readable map')
   assert.ok(source.includes('grid-template-columns:minmax(0,2fr) minmax(0,1fr)'), 'channel + proposals row ratios')
   assert.ok(source.includes('grid-template-columns:repeat(3,minmax(0,1fr))'), 'event/gate/escalation thirds')
   assert.match(source, /\.atw-panel\{[^}]*min-height:240px[^}]*max-height:320px/, 'every panel keeps the 240–320px band')
@@ -1136,6 +1136,8 @@ test('docs/16 topology: only participants are drawn, idle members fold into one 
     assert.equal(drawn.length, busy.length, 'only members with work/review/channel activity are drawn')
     const idleNodes = findByClass(tree, 'atw-node--idle')
     assert.equal(idleNodes.length, 1, 'all idle members fold into exactly one node')
+    assert.equal(String(idleNodes[0].props.style?.left ?? ''), '92%', 'the idle pill sits in the top-right corner, clear of edges')
+    assert.equal(String(idleNodes[0].props.style?.top ?? ''), '10%')
     const idleText = textOf(idleNodes[0])
     assert.ok(idleText.includes('k:topology.idle'), 'the folded node is labelled with the idle count')
     assert.ok(String(idleNodes[0].props.title ?? '').includes('idle-1'), 'hovering lists the idle names')
@@ -2062,6 +2064,10 @@ test('topology: work items align under their owner column and stay inside the ca
     for (const node of [...memberNodes, ...itemNodes]) {
       const left = leftOf(node)
       assert.ok(left >= 3 && left <= 97, 'nodes stay inside the canvas (' + left + ')')
+    }
+    for (const node of itemNodes) {
+      const width = Number.parseFloat(String(node.props?.style?.maxWidth ?? 'NaN'))
+      assert.ok(width >= 10 && width <= 18, 'item ids keep at least 10% of the canvas width (' + width + ')')
     }
   } finally {
     board.dispose()
