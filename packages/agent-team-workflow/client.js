@@ -89,6 +89,7 @@ window.__ModuleLoader__.load({
       'topology.peerStrip': '同伴消息',
       'topology.reviewNote': '工作项角标 = 评审人',
       'topology.reviewedBy': '评 {names}',
+      'topology.noItems': '暂无负责项',
       'events.title': '事件流',
       'events.count': '最近 {n} 条',
       'events.empty': '还没有事件',
@@ -409,6 +410,7 @@ window.__ModuleLoader__.load({
       'topology.peerStrip': 'Peer messages',
       'topology.reviewNote': 'item badge = reviewer',
       'topology.reviewedBy': 'review {names}',
+      'topology.noItems': 'no items',
       'events.title': 'Event stream',
       'events.count': 'latest {n}',
       'events.empty': 'No events yet',
@@ -1816,9 +1818,23 @@ window.__ModuleLoader__.load({
       if (hasPeerEdges) {
         for (const edge of edges) if (edge.className === 'atw-edge--lead') edge.className = 'atw-edge--lead atw-edge--lead-muted'
       }
+      // Owner columns make the map responsive: flex children wrap by width,
+      // so node count never causes overlap or clipping.
+      const columnByOwner = new Map()
+      for (const node of memberNodes) {
+        columnByOwner.set(node.member.name, { key: node.key, member: node.member, stop: node.stop, items: [] })
+      }
+      const unassignedItems = []
+      for (const node of itemNodes) {
+        const column = columnByOwner.get(node.item.owner)
+        if (column === undefined) unassignedItems.push(node.item)
+        else column.items.push(node.item)
+      }
       return {
         lead,
         memberNodes,
+        columns: Array.from(columnByOwner.values()),
+        unassignedItems,
         idleNode,
         itemNodes,
         edges,
@@ -2114,6 +2130,26 @@ window.__ModuleLoader__.load({
 .atw-edge--topo.atw-edge--lead{opacity:.45}
 .atw-edge--lead-bus{opacity:.3}
 .atw-edge--topo.atw-edge--review{stroke-dasharray:3 4;opacity:.9}
+.atw-topo-canvas{position:relative;height:auto;border:none;background:none;overflow:visible;border-radius:0}
+.atw-topo-flex{display:flex;flex-direction:column;gap:16px;min-width:0}
+.atw-topo-leadrow{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;padding:4px 0 2px}
+.atw-topo-leadrow .atw-node{position:static;transform:none;max-width:100%}
+.atw-topo-grid{display:flex;flex-wrap:wrap;justify-content:center;align-items:stretch;gap:14px;min-width:0}
+.atw-topo-col{display:flex;flex-direction:column;align-items:center;gap:9px;box-sizing:border-box;flex:0 1 210px;min-width:160px;max-width:250px;padding:12px 10px 10px;border:1px solid var(--atw-hairline-soft);border-radius:var(--atw-radius-card);background:color-mix(in oklab,var(--atw-surface) 45%,var(--atw-paper))}
+.atw-topo-col-head{position:static;transform:none;display:flex;align-items:center;gap:6px;box-sizing:border-box;max-width:100%;padding:4px 12px;border:1px solid var(--atw-hairline);border-radius:var(--atw-radius-pill);background:var(--atw-paper);color:var(--atw-ink);font:inherit;font-size:12px;line-height:1.33;font-weight:500;cursor:pointer}
+.atw-topo-col-head:hover{background:var(--atw-fill)}
+.atw-topo-col-head:focus-visible{outline:2px solid var(--atw-brand);outline-offset:2px}
+.atw-topo-items{display:flex;flex-direction:column;gap:6px;width:100%}
+.atw-topo-item{position:static;transform:none;display:flex;align-items:center;gap:6px;box-sizing:border-box;width:100%;max-width:none;padding:5px 10px;border:1px solid var(--atw-hairline);border-radius:var(--atw-radius-pill);background:var(--atw-paper);color:var(--atw-ink);font:inherit;font-size:12px;line-height:1.33;text-align:left;cursor:pointer;white-space:nowrap}
+.atw-topo-item:hover{background:color-mix(in oklab,var(--atw-ink) 3%,var(--atw-paper))}
+.atw-topo-item:focus-visible{outline:2px solid var(--atw-brand);outline-offset:2px}
+.atw-topo-item .atw-badge{margin-left:auto;max-width:120px}
+.atw-topo-item-id{overflow:hidden;font-weight:600;text-overflow:ellipsis}
+.atw-topo-emptycol{color:var(--atw-muted);font-size:11px;line-height:1.33;padding:2px 0}
+.atw-topo-unassigned{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 2px 0;border-top:1px dashed var(--atw-hairline)}
+.atw-topo-unassigned-label{color:var(--atw-muted);font-size:11px;font-weight:500;letter-spacing:.04em;text-transform:uppercase}
+.atw-topo-unassigned .atw-topo-item{width:auto;max-width:220px}
+.atw-panel--topo{max-height:640px;min-height:0}
 @keyframes atw-pulse{0%,100%{opacity:1}50%{opacity:.45}}
 @media (max-width:720px){.atw-root{padding:16px}.atw-title{font-size:24px}.atw-header{gap:16px}.atw-stat{padding:10px 14px;min-width:88px}.atw-stat-value{font-size:24px}.atw-scroll{gap:16px}.atw-main,.atw-lower,.atw-collab{gap:16px}}
 @media (prefers-reduced-motion:reduce){.atw-node--st-running{animation:none}.atw-card,.atw-panel,.atw-btn,.atw-filter,.atw-event,.atw-member-line--button,.atw-member-transcript-item--button{transition:none}.atw-card:hover{transform:none}}
@@ -2572,6 +2608,32 @@ window.__ModuleLoader__.load({
         items.length +
         (topology.idleCount > 0 ? ' · ' + tr('topology.idle', { n: topology.idleCount }) : '')
       const empty = team.members.length === 0 && items.length === 0
+      const itemTitle = (item) =>
+        item.id +
+        ' · ' +
+        statusLabel(tr, item.status) +
+        (item.subject ? ' · ' + item.subject : '') +
+        (item.reviewers.length > 0 ? ' · ' + tr('topology.reviewedBy', { names: item.reviewers.join(', ') }) : '')
+      const itemChip = (item) =>
+        h(
+          'button',
+          {
+            key: 'item-' + item.id,
+            type: 'button',
+            className: 'atw-topo-item atw-node atw-node--item atw-node--tone-' + statusTone(item.status),
+            title: itemTitle(item),
+            onClick: () => view.actions.toggleItem(item.id),
+          },
+          h('span', { className: 'atw-dot' }),
+          h('span', { className: 'atw-topo-item-id' }, item.id),
+          item.reviewers.length === 0
+            ? null
+            : h(
+                'span',
+                { key: 'review', className: 'atw-badge atw-badge--review' },
+                tr('topology.reviewedBy', { names: item.reviewers.length > 1 ? '×' + item.reviewers.length : item.reviewers[0] }),
+              ),
+        )
       return h(
         'section',
         { className: 'atw-panel atw-panel--topo' },
@@ -2581,116 +2643,82 @@ window.__ModuleLoader__.load({
           { className: 'atw-panel-body' },
           h(
             'div',
-            { className: 'atw-topo-canvas', style: { height: topology.memberRows === 2 ? '310px' : '250px' } },
-            h('div', { className: 'atw-topo-zone atw-topo-zone--members' }, tr('topology.zoneMembers')),
-            h('div', { className: 'atw-topo-zone atw-topo-zone--items', title: tr('topology.groupedHint') }, tr('topology.zoneItems')),
-            topology.edges.length > 0
-              ? h(
-                  'svg',
-                  { className: 'atw-topo-svg', viewBox: '0 0 100 100', preserveAspectRatio: 'none', 'aria-hidden': true },
-                  h(
-                    'defs',
-                    null,
-                    h(
-                      'marker',
-                      {
-                        id: view.topoMarkerId,
-                        viewBox: '0 0 8 8',
-                        refX: 6.5,
-                        refY: 4,
-                        markerWidth: 5,
-                        markerHeight: 5,
-                        orient: 'auto-start-reverse',
-                      },
-                      h('polygon', { className: 'atw-arrow', points: '0,0 8,4 0,8' }),
-                    ),
+            { className: 'atw-topo-canvas' },
+            h(
+            'div',
+            { className: 'atw-topo-flex' },
+            h(
+              'div',
+              { className: 'atw-topo-leadrow' },
+              h(
+                'div',
+                { className: 'atw-node atw-node--lead' },
+                h('span', { className: 'atw-dot' }),
+                h('span', null, tr('topology.lead')),
+                topology.lead.name ? h('span', { className: 'atw-node-sub', title: topology.lead.name }, topology.lead.name) : null,
+              ),
+              topology.idleNode === null
+                ? null
+                : h(
+                    'div',
+                    {
+                      key: 'idle',
+                      className: 'atw-node atw-node--idle',
+                      title: tr('topology.idleNames', { names: topology.idleNode.names }),
+                    },
+                    h('span', { className: 'atw-dot' }),
+                    h('span', null, tr('topology.idle', { n: topology.idleNode.count })),
                   ),
-                  topology.edges.map((edge) =>
-                    h('path', {
-                      key: edge.key,
-                      className: 'atw-edge atw-edge--topo ' + edge.className,
-                      d: edge.d,
-                      vectorEffect: 'non-scaling-stroke',
-                      ...(edge.arrow === true ? { markerEnd: 'url(#' + view.topoMarkerId + ')' } : {}),
-                    }),
+            ),
+            topology.columns.length > 0
+              ? h(
+                  'div',
+                  { className: 'atw-topo-grid' },
+                  topology.columns.map((column) =>
+                    h(
+                      'div',
+                      { key: column.key, className: 'atw-topo-col' },
+                      h(
+                        'button',
+                        {
+                          key: 'head',
+                          type: 'button',
+                          className:
+                            'atw-node atw-node--member atw-topo-col-head atw-node--st-' + str(column.member.status, 'inactive'),
+                          title: column.member.name + ' · ' + memberStatusLabel(tr, column.member.status),
+                          onClick: () => view.actions.openMember(column.member.name),
+                        },
+                        h('span', { className: 'atw-dot' }),
+                        h('span', null, column.member.name),
+                        badge(contextLabel(tr, column.member.context), column.member.context === 'fork' ? 'warn' : 'idle', 'ctx'),
+                        column.stop === null ? null : h('span', { key: 'stop', className: 'atw-node-stop', title: tr('member.stop.pending') }),
+                      ),
+                      h(
+                        'div',
+                        { className: 'atw-topo-items' },
+                        column.items.length === 0
+                          ? h('div', { key: 'none', className: 'atw-topo-emptycol' }, tr('topology.noItems'))
+                          : column.items.map(itemChip),
+                      ),
+                    ),
                   ),
                 )
               : null,
-            h(
-              'div',
-              { className: 'atw-node atw-node--lead', style: { left: topology.lead.x + '%', top: topology.lead.y + '%' } },
-              h('span', { className: 'atw-dot' }),
-              h('span', null, tr('topology.lead')),
-              topology.lead.name ? h('span', { className: 'atw-node-sub', title: topology.lead.name }, topology.lead.name) : null,
-            ),
-            topology.memberNodes.map((node) =>
-              h(
-                'div',
-                {
-                  key: node.key,
-                  className: 'atw-node atw-node--member atw-node--st-' + str(node.member.status, 'inactive'),
-                  style: { left: node.x + '%', top: node.y + '%' },
-                  role: 'button',
-                  tabIndex: 0,
-                  title: node.member.name + ' · ' + memberStatusLabel(tr, node.member.status),
-                  onClick: () => view.actions.openMember(node.member.name),
-                  onKeyDown: (event) => {
-                    if (event && (event.key === 'Enter' || event.key === ' ')) {
-                      event.preventDefault()
-                      view.actions.openMember(node.member.name)
-                    }
-                  },
-                },
-                h('span', { className: 'atw-dot' }),
-                h('span', null, node.member.name),
-                badge(contextLabel(tr, node.member.context), node.member.context === 'fork' ? 'warn' : 'idle', 'ctx'),
-                node.stop === null ? null : h('span', { key: 'stop', className: 'atw-node-stop', title: tr('member.stop.pending') }),
-              ),
-            ),
-            topology.idleNode === null
-              ? null
-              : h(
+            topology.unassignedItems.length > 0
+              ? h(
                   'div',
-                  {
-                    key: 'idle',
-                    className: 'atw-node atw-node--idle',
-                    style: { left: topology.idleNode.x + '%', top: topology.idleNode.y + '%' },
-                    title: tr('topology.idleNames', { names: topology.idleNode.names }),
-                  },
-                  h('span', { className: 'atw-dot' }),
-                  h('span', null, tr('topology.idle', { n: topology.idleNode.count })),
-                ),
-            topology.itemNodes.map((node) =>
-              h(
-                'div',
-                {
-                  key: node.key,
-                  className: 'atw-node atw-node--item atw-node--tone-' + statusTone(node.item.status),
-                  style: { left: node.x + '%', top: node.y + '%', maxWidth: topology.itemWidth + '%' },
-                  title:
-                    node.item.id +
-                    ' · ' +
-                    statusLabel(tr, node.item.status) +
-                    (node.item.subject ? ' · ' + node.item.subject : '') +
-                    (node.item.reviewers.length > 0 ? ' · ' + tr('topology.reviewedBy', { names: node.item.reviewers.join(', ') }) : ''),
-                },
-                h('span', { className: 'atw-dot' }),
-                h('span', null, node.item.id),
-                node.item.reviewers.length === 0
-                  ? null
-                  : h(
-                      'span',
-                      { key: 'review', className: 'atw-badge atw-badge--review' },
-                      tr('topology.reviewedBy', { names: node.item.reviewers.length > 1 ? '×' + node.item.reviewers.length : node.item.reviewers[0] }),
-                    ),
-              ),
-            ),
+                  { className: 'atw-topo-unassigned' },
+                  h('span', { className: 'atw-topo-unassigned-label' }, tr('flow.openQueue')),
+                  topology.unassignedItems.map(itemChip),
+                )
+              : null,
             empty ? h('div', { className: 'atw-topo-empty' }, tr('topology.empty')) : null,
+          ),
           ),
           h(
             'div',
             { className: 'atw-legend' },
-            legendLine('legend-lead', tr('topology.leadEdge')),
+            legendLine('legend-members', tr('topology.zoneMembers')),
             legendLine('legend-owns', tr('topology.ownsEdge'), 'atw-legend-line--owns'),
           ),
           h('div', { className: 'atw-topo-note' }, tr('topology.reviewNote')),

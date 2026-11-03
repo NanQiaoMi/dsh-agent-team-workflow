@@ -890,7 +890,6 @@ test('v2 snapshot renders the channel stream, proposals, open queue, and peer ed
     const peerChips = findByClass(tree, 'atw-peer-chip')
     assert.equal(peerChips.length, 2, 'only resolvable peer messages are listed')
     assert.ok(/·\s*\d+/.test(textOf(peerChips[0])), 'peer chips carry the message count')
-    assert.ok(findByClass(tree, 'atw-edge--lead-muted').length > 0, 'Lead spokes are de-emphasized once peers talk')
     assert.ok(textOf(tree).includes('k:topology.peerStrip'), 'the topology gains a peer summary strip')
   } finally {
     board.dispose()
@@ -1136,8 +1135,6 @@ test('docs/16 topology: only participants are drawn, idle members fold into one 
     assert.equal(drawn.length, busy.length, 'only members with work/review/channel activity are drawn')
     const idleNodes = findByClass(tree, 'atw-node--idle')
     assert.equal(idleNodes.length, 1, 'all idle members fold into exactly one node')
-    assert.equal(String(idleNodes[0].props.style?.left ?? ''), '92%', 'the idle pill sits in the top-right corner, clear of edges')
-    assert.equal(String(idleNodes[0].props.style?.top ?? ''), '10%')
     const idleText = textOf(idleNodes[0])
     assert.ok(idleText.includes('k:topology.idle'), 'the folded node is labelled with the idle count')
     assert.ok(String(idleNodes[0].props.title ?? '').includes('idle-1'), 'hovering lists the idle names')
@@ -1162,8 +1159,8 @@ test('docs/16 topology: only participants are drawn, idle members fold into one 
     const tree = await nine.render()
     const nodes = findByClass(tree, 'atw-node--member')
     assert.equal(nodes.length, 9, 'nine participants stay visible')
-    const tops = new Set(nodes.map((node) => String(node.props.style?.top ?? '')))
-    assert.equal(tops.size, 2, 'more than six participants use a two-row grid')
+    assert.equal(findByClass(tree, 'atw-topo-col').length, 9, 'one adaptive column per participant')
+    assert.match(source, /\.atw-topo-grid\{[^}]*flex-wrap:wrap/, 'member columns wrap by available width, never by fixed rows')
     for (const node of nodes) assert.equal(node.props.style?.maxWidth, undefined, 'participant names are not width-capped')
   } finally {
     nine.dispose()
@@ -2007,7 +2004,7 @@ test('docs/19 token usage: a null (uncaptured) usage degrades without inventing 
   }
 })
 
-test('topology: work items align under their owner column and stay inside the canvas', async () => {
+test('topology: work items render inside their owner column', async () => {
   const base = V2_SNAPSHOT.run.items[0]
   const members = [
     { name: 'impl-a', role: 'teammate', status: 'running', context: 'fresh' },
@@ -2034,39 +2031,28 @@ test('topology: work items align under their owner column and stay inside the ca
   )
   try {
     const tree = await board.render()
-    const leftOf = (element) => Number.parseFloat(String(element.props?.style?.left ?? 'NaN'))
-    const topOf = (element) => Number.parseFloat(String(element.props?.style?.top ?? 'NaN'))
-    const memberNodes = findByClass(tree, 'atw-node--member')
-    const itemNodes = findByClass(tree, 'atw-node--item')
-    assert.equal(memberNodes.length, 2)
-    assert.equal(itemNodes.length, 3)
-    const memberX = {}
-    for (const node of memberNodes) memberX[String(node.props?.title ?? '').split(' · ')[0]] = leftOf(node)
-    const byId = {}
-    for (const node of itemNodes) {
-      const title = String(node.props?.title ?? '')
-      byId[title.split(' · ')[0]] = node
+    const columns = findByClass(tree, 'atw-topo-col')
+    assert.equal(columns.length, 2, 'one column per participant')
+    const columnFor = {}
+    for (const column of columns) {
+      const text = textOf(column)
+      if (text.includes('impl-a')) columnFor['impl-a'] = text
+      if (text.includes('rev-b')) columnFor['rev-b'] = text
     }
-    // First item of each owner shares the owner's x; a second item stays in the
-    // same column but moves to the second row band.
-    assert.ok(Math.abs(leftOf(byId.X1) - memberX['impl-a']) < 0.2, 'X1 aligns under impl-a')
-    assert.ok(Math.abs(leftOf(byId.X3) - memberX['rev-b']) < 0.2, 'X3 aligns under rev-b')
-    assert.ok(Math.abs(leftOf(byId.X2) - memberX['impl-a']) < 4.1, 'a second owned item stays in the column band')
-    assert.notEqual(topOf(byId.X1), topOf(byId.X2), 'the second item moves to the next row band')
-    for (const node of [...memberNodes, ...itemNodes]) {
-      const left = leftOf(node)
-      assert.ok(left >= 3 && left <= 97, 'nodes stay inside the canvas (' + left + ')')
-    }
-    for (const node of itemNodes) {
-      const width = Number.parseFloat(String(node.props?.style?.maxWidth ?? 'NaN'))
-      assert.ok(width >= 14 && width <= 20, 'item ids keep at least 14% of the canvas width (' + width + ')')
+    assert.ok(columnFor['impl-a'].includes('X1') && columnFor['impl-a'].includes('X2'), 'both impl-a items sit in its column')
+    assert.ok(columnFor['rev-b'].includes('X3'), 'rev-b item sits in its column')
+    assert.ok(!columnFor['rev-b'].includes('X1') && !columnFor['rev-b'].includes('X2'), 'items never leak into another column')
+    assert.equal(findByClass(tree, 'atw-node--item').length, 3, 'every item renders exactly once')
+    assert.equal(findByClass(tree, 'atw-topo-item').length, 3, 'item chips are interactive buttons')
+    for (const node of findByClass(tree, 'atw-node--item')) {
+      assert.equal(node.props?.style?.left, undefined, 'flex layout carries no absolute x position')
     }
   } finally {
     board.dispose()
   }
 })
 
-test('topology: owners sharing a column never stack two items on one slot', async () => {
+test('topology: every owned item lands once in its owner column at nine-owner scale', async () => {
   const members = Array.from({ length: 9 }, (_, index) => ({
     name: 'm' + (index + 1),
     role: 'teammate',
@@ -2089,14 +2075,22 @@ test('topology: owners sharing a column never stack two items on one slot', asyn
   const board = await mountBoard(withSnapshot({ team: { members }, run: { items } }))
   try {
     const tree = await board.render()
+    const columns = findByClass(tree, 'atw-topo-col')
+    assert.equal(columns.length, 9, 'nine adaptive columns render')
     const itemNodes = findByClass(tree, 'atw-node--item')
-    assert.equal(itemNodes.length, 9)
-    const places = itemNodes.map((node) => String(node.props.style.left) + '|' + String(node.props.style.top))
-    assert.equal(new Set(places).size, 9, 'two owners sharing an x column do not stack their items')
-    for (const node of itemNodes) {
-      const left = Number.parseFloat(String(node.props.style.left))
-      assert.ok(left >= 3 && left <= 97, 'dense items stay inside the canvas')
+    assert.equal(itemNodes.length, 9, 'every item renders exactly once')
+    const seen = new Set()
+    for (const column of columns) {
+      const text = textOf(column)
+      for (const node of itemNodes) {
+        const id = String(node.props?.title ?? '').split(' · ')[0]
+        if (text.includes(id)) {
+          assert.ok(!seen.has(id), 'item ' + id + ' appears in more than one column')
+          seen.add(id)
+        }
+      }
     }
+    assert.equal(seen.size, 9, 'all nine items are grouped into columns')
   } finally {
     board.dispose()
   }
