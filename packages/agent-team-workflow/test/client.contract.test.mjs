@@ -2012,3 +2012,58 @@ test('docs/19 token usage: a null (uncaptured) usage degrades without inventing 
     legacy.dispose()
   }
 })
+
+test('topology: work items align under their owner column and stay inside the canvas', async () => {
+  const base = V2_SNAPSHOT.run.items[0]
+  const members = [
+    { name: 'impl-a', role: 'teammate', status: 'running', context: 'fresh' },
+    { name: 'rev-b', role: 'teammate', status: 'running', context: 'fresh' },
+  ]
+  const item = (id, owner, wave) => ({
+    ...base,
+    id,
+    wave,
+    owner,
+    subject: 'item ' + id,
+    status: 'running',
+    reviewers: [],
+    reviewRequests: [],
+    handoffs: [],
+    thread: [],
+    claim: null,
+  })
+  const board = await mountBoard(
+    withSnapshot({
+      team: { members },
+      run: { items: [item('X1', 'impl-a', 1), item('X2', 'impl-a', 1), item('X3', 'rev-b', 2)] },
+    }),
+  )
+  try {
+    const tree = await board.render()
+    const leftOf = (element) => Number.parseFloat(String(element.props?.style?.left ?? 'NaN'))
+    const topOf = (element) => Number.parseFloat(String(element.props?.style?.top ?? 'NaN'))
+    const memberNodes = findByClass(tree, 'atw-node--member')
+    const itemNodes = findByClass(tree, 'atw-node--item')
+    assert.equal(memberNodes.length, 2)
+    assert.equal(itemNodes.length, 3)
+    const memberX = {}
+    for (const node of memberNodes) memberX[String(node.props?.title ?? '').split(' · ')[0]] = leftOf(node)
+    const byId = {}
+    for (const node of itemNodes) {
+      const title = String(node.props?.title ?? '')
+      byId[title.split(' · ')[0]] = node
+    }
+    // First item of each owner shares the owner's x; a second item stays in the
+    // same column but moves to the second row band.
+    assert.ok(Math.abs(leftOf(byId.X1) - memberX['impl-a']) < 0.2, 'X1 aligns under impl-a')
+    assert.ok(Math.abs(leftOf(byId.X3) - memberX['rev-b']) < 0.2, 'X3 aligns under rev-b')
+    assert.ok(Math.abs(leftOf(byId.X2) - memberX['impl-a']) < 4.1, 'a second owned item stays in the column band')
+    assert.notEqual(topOf(byId.X1), topOf(byId.X2), 'the second item moves to the next row band')
+    for (const node of [...memberNodes, ...itemNodes]) {
+      const left = leftOf(node)
+      assert.ok(left >= 3 && left <= 97, 'nodes stay inside the canvas (' + left + ')')
+    }
+  } finally {
+    board.dispose()
+  }
+})

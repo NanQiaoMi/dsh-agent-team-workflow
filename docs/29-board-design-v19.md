@@ -30,6 +30,19 @@
 - **动效**：120-200ms 过渡 + 运行节点脉冲；`prefers-reduced-motion` 全部降级；
 - **响应式**：720px 以下收窄 padding、标题降为 24px、统计块紧凑。
 
+## 2.1 协作拓扑重构（v1.9.1，本轮重点）
+
+旧布局的问题：成员和工单各自均匀散布，成员→工单项的连线横穿画布；左侧「成员/工作项」标签压在节点上；条目多时连线像一团乱麻。
+
+新布局：
+- **按负责人分列**：每个工单放在其 owner 的正下方（同 owner 的第 2 个起放到下一行，再溢出则在本列 ±4% 内错位），owner→item 连线变成短竖线；
+- **Lead 反色胶囊**居中在顶部，成员按单行/双行（>6 人）均分在中间带，间距收紧并留出 15% 左右边距，节点不再被画布裁切；
+- **频道/评审边**：评审边保持虚线 + 箭头，Lead 边弱化；同伴边只保留 top-8 并加权；
+- **箭头标记**：新增 SVG marker，owner/review/lead 边带方向箭头，逻辑一眼可见；
+- **区域标签**：「成员」「工作项 · 按负责人对齐」固定在左上方空白处（不再压住节点）；
+- **画布增高到 300px**，拓扑面板独立 440px 高度带（其它面板仍 240–320px）；
+- **契约测试新增**：owner 列对齐、第二行错位、所有节点 left ∈ [3,97] 不越界。
+
 ## 3. 约束保持
 
 - 零新增依赖、零外部字体/CDN；仅 `require('react')`；
@@ -40,4 +53,5 @@
 
 - 改造前：`docs/evidence/dashboard/board-before-v2.png`
 - 改造后：`docs/evidence/dashboard/board-after-final.png`、`board-after-drawer.png`
+- 拓扑重构后（真实 fixture，2 成员 + 1 工单，工单对齐在 owner 下方）：`docs/evidence/dashboard/topology-v193c.png`
 - 测试：`packages/agent-team-workflow` 客户端契约 35/35，全量套件见 `docs/evidence/test-run.txt`。
