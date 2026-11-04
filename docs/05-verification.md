@@ -15,6 +15,7 @@
 | V6 | 最终组合配置进入 profile 121 | `dsh --profile 121 --dump-config` 输出含本行与配置 | ✅ 已验证 |
 | V7 | **最终代码代**在运行中的 Desktop 里 live 跑一次完整团队流程 | 重启 DSH 后真实 run（4 成员 / 2 项 / 约 5 分钟） | ✅ **已验证**，见 [`08-live-run.md`](08-live-run.md) 与 [`evidence/live-run/`](evidence/live-run/) |
 | V10 | 对等协作层（workflow v2） | 离线测试 39 例（collaboration 14 + tools 19 + 相关 engine/plugin）：认领/释放、评审邀请与接受、交接、提案投票/平票/Lead 仲裁、阻断提案拦截、频道与摘要、v1 板自动升级；快照 v2 与客户端面板 26+17 例 | ✅ 全绿（113/113） |
+| V29 | v1.13.0：活跃 Agent 标注 | Hero「活跃」统计；running 成员列绿色高亮+`运行中`胶囊，inactive 降透明度；卡片执行者 live 点；40 客户端用例 | ✅ 客户端 40/40；预览 [`active-agents-preview.png`](evidence/dashboard/active-agents-preview.png) |
 | V28 | v1.12.0：关系可视化 | 删除依赖箭头；卡片 `依赖/解锁` chip；流程图 `依赖链` + `评审关系` 摘要条；拓扑评审关系摘要；39 客户端用例 | ✅ 客户端 39/39；截图 [`relations-strips-live.png`](evidence/dashboard/relations-strips-live.png) |
 | V27 | v1.11.0：流程图缩放/平移 | 面板头缩放控件（−/+/适应/重置）、首次自动适应宽度、拖动平移、CSS zoom 保真滚动条；移除 R1/2 回路箭头；38 客户端用例 | ✅ 客户端 38/38；截图 [`flow-zoom-live.png`](evidence/dashboard/flow-zoom-live.png) |
 | V26 | v1.10.0：拓扑自适应布局 | 成员改 flex 自适应列（wrap），工单放列内，评审角标；无 SVG/绝对坐标；8 人/10 工单不重叠不裁切；37 客户端用例 | ✅ 客户端 37/37；预览见 [`29`](29-board-design-v19.md) |

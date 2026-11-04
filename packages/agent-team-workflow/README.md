@@ -89,8 +89,8 @@ client.js           Web 端看板（conversation.view，纯 JS 动态模块，�
                     会静默跳过本包的客户端半（看板 tab 不出现），详见 docs/11
 lib/dashboard.js    看板聚合（零 import 纯函数）：waves/状态归一化/counts/截断
 lib/dashboard-route.js  GET /api/agent-team-workflow.snapshot（Connection 认证 Fetch 路由）
-test/               218 个离线用例（engine 26 / collaboration 25 / tools 37 / plugin 6 /
-                    dashboard 33 / route 7 / client 39 / git 25 / hooks 4 / member-route 6 / transcript 4 / tool-guard 6）
+test/               219 个离线用例（engine 26 / collaboration 25 / tools 37 / plugin 6 /
+                    dashboard 33 / route 7 / client 40 / git 25 / hooks 4 / member-route 6 / transcript 4 / tool-guard 6）
 ```
 
 ## 验证
