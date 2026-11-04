@@ -1113,6 +1113,9 @@ test('docs/16 topology: only participants are drawn, idle members fold into one 
   // panel band with an internal scroller, and a single column at <=1180px.
   assert.match(source, /\.atw-main\{[^}]*grid-template-columns:minmax\(0,1fr\)/, 'flow and topology stack full width for a readable map')
   assert.ok(source.includes('grid-template-columns:minmax(0,2fr) minmax(0,1fr)'), 'channel + proposals row ratios')
+  assert.match(source, /\.atw-topo-col-head\{[^}]*flex-wrap:wrap/, 'long member names wrap their badges instead of clipping')
+  assert.match(source, /\.atw-topo-col-name\{[^}]*text-overflow:ellipsis/, 'the member name owns the ellipsis, badges stay intact')
+  assert.match(source, /\.atw-topo-grid\{[^}]*align-items:flex-start/, 'columns hug their content instead of stretching empty cards')
   assert.ok(source.includes('grid-template-columns:repeat(3,minmax(0,1fr))'), 'event/gate/escalation thirds')
   assert.match(source, /\.atw-panel\{[^}]*min-height:240px[^}]*max-height:320px/, 'every panel keeps the 240–320px band')
   assert.ok(source.includes('@media (max-width:1180px)'), 'narrow screens collapse to one column')

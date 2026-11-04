@@ -127,6 +127,17 @@ v1.9.3 之后画布只剩 Lead 总线、owner 竖线、评审车道三类线；�
 
 预览：`docs/evidence/dashboard/active-agents-preview.png`（活跃 3、两个 running 列高亮、inactive 列变灰、卡片 live 点）。
 
+## 2.9 六人以上拓扑的密排优化（v1.14.0）
+
+用户实测 6 成员 / 8 工单时，成员列头部被裁切：长名字 +「运行中」+「fresh」挤在一行，`portrait-engineer 运…` 直接被切；同时每列被拉伸到等高，空列形成大片空白。
+
+- **列宽 218–330px**（原 160–250），长名字可读；
+- **列头允许换行**：名字 `flex:1 1 auto` 独占省略号，`运行中` 胶囊 `flex:none` 不被压扁；名字过长时胶囊自动换到第二行而不是一起被裁；
+- **精简列头信息**：`fresh/fork` 上下文徽章从列头移除，移入悬停 title（`名字 · 状态 · 上下文`），列头更安静；
+- **列按内容收紧**：`.atw-topo-grid{align-items:flex-start}`，空列只占标题+「暂无负责项」，不再被撑成同高大方框；
+- **工单胶囊**：评审角标 `max-width:62%` + 省略号，长 reviewer 名不会撑破胶囊；
+- 真实数据预览（6 成员 / 8 工单 / 空闲 2 人）：`docs/evidence/dashboard/topology-6members-preview.png`。
+
 ## 3. 约束保持
 
 - 零新增依赖、零外部字体/CDN；仅 `require('react')`；
