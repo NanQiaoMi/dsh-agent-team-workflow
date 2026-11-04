@@ -28,6 +28,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   writeArtifacts: true,
   /** Treat reported files outside declared write scopes as a hard gate failure. */
   strictScopes: false,
+  /** Deny native write/edit calls outside the caller's declared write scopes at runtime. */
+  enforceWriteScopes: false,
   /** Allow overlapping write scopes inside one wave (recorded as a warning). */
   allowScopeOverlap: false,
   /** Notify the assigned reviewer automatically when a report is submitted. */
@@ -194,6 +196,7 @@ export function resolveSettings(raw = {}) {
     injectPolicy: readBool(config.injectPolicy, DEFAULT_SETTINGS.injectPolicy),
     writeArtifacts: readBool(config.writeArtifacts, DEFAULT_SETTINGS.writeArtifacts),
     strictScopes: readBool(config.strictScopes, DEFAULT_SETTINGS.strictScopes),
+    enforceWriteScopes: readBool(config.enforceWriteScopes, DEFAULT_SETTINGS.enforceWriteScopes),
     allowScopeOverlap: readBool(config.allowScopeOverlap, DEFAULT_SETTINGS.allowScopeOverlap),
     autoNotify: readBool(config.autoNotify, DEFAULT_SETTINGS.autoNotify),
     requireReviewEvidence: readBool(config.requireReviewEvidence, DEFAULT_SETTINGS.requireReviewEvidence),
@@ -230,6 +233,7 @@ export function runSettings(settings) {
     maxParallelItems: settings.maxParallelItems,
     workerContext: settings.workerContext,
     strictScopes: settings.strictScopes,
+    enforceWriteScopes: settings.enforceWriteScopes,
     allowScopeOverlap: settings.allowScopeOverlap,
     requireReviewEvidence: settings.requireReviewEvidence,
     proposalTimeoutMinutes: settings.proposalTimeoutMinutes,

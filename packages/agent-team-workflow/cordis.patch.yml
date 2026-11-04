@@ -23,6 +23,8 @@
         workerContext: fresh
         # Treat reported files outside declared write scopes as a gate failure.
         strictScopes: false
+        # Also deny native write/edit calls outside the caller's write scopes at runtime.
+        enforceWriteScopes: false
         # Allow overlapping write scopes inside one wave (recorded as a warning).
         allowScopeOverlap: false
         # Notify the reviewer/author automatically on review transitions.

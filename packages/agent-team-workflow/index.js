@@ -25,13 +25,14 @@ import { registerMemberRoute } from './lib/member-route.js'
 import { summarizeTranscript } from './lib/transcript.js'
 import { installToolSandbox } from '../tool-guard-kit/index.js'
 import { teamSubjectResolver } from './lib/tool-guard.js'
+import { scopeGuardReason } from './lib/scope-guard.js'
 
 export const name = 'agent-team-workflow'
 
 /** Services this plugin needs; the plugin stays inactive without Agent Teams. */
 export const inject = ['agents', 'agentTeams', 'tools', 'systemPrompt', 'workingDirectory']
 
-const VERSION = '1.15.0'
+const VERSION = '1.16.0'
 
 /** Shared tool list, built once per plugin instance. */
 export function apply(ctx, config = {}) {
@@ -51,6 +52,15 @@ export function apply(ctx, config = {}) {
     auditLimit: 64,
     label: 'agent-team-workflow.toolSandbox()',
   })
+
+  // Runtime write-scope guard: gate-time strictScopes stays, but direct
+  // write/edit calls outside the caller's item scopes are denied up front.
+  if (settings.enforceWriteScopes) {
+    ctx.effect(
+      () => ctx.tools.guard((exec) => scopeGuardReason(exec, ctx, store, settings)),
+      'agent-team-workflow.scopeGuard()',
+    )
+  }
 
   const maybeInstall = (agent) => {
     if (installed.has(agent)) return
