@@ -15,6 +15,7 @@
 | V6 | 最终组合配置进入 profile 121 | `dsh --profile 121 --dump-config` 输出含本行与配置 | ✅ 已验证 |
 | V7 | **最终代码代**在运行中的 Desktop 里 live 跑一次完整团队流程 | 重启 DSH 后真实 run（4 成员 / 2 项 / 约 5 分钟） | ✅ **已验证**，见 [`08-live-run.md`](08-live-run.md) 与 [`evidence/live-run/`](evidence/live-run/) |
 | V10 | 对等协作层（workflow v2） | 离线测试 39 例（collaboration 14 + tools 19 + 相关 engine/plugin）：认领/释放、评审邀请与接受、交接、提案投票/平票/Lead 仲裁、阻断提案拦截、频道与摘要、v1 板自动升级；快照 v2 与客户端面板 26+17 例 | ✅ 全绿（113/113） |
+| V31 | v1.15.0：事件流独占整行 | 事件流移出三列、独占全宽行；过滤单行；四列日志布局 + 两行详情；门禁/升级两列在下 | ✅ 客户端 40/40；预览 [`events-row-preview.png`](evidence/dashboard/events-row-preview.png) |
 | V30 | v1.14.0：六人以上拓扑密排 | 列宽 218–330；列头换行、名字省略号、徽章不裁切；上下文移入 title；列按内容收紧；工单评审角标省略号 | ✅ 客户端 40/40；预览 [`topology-6members-preview.png`](evidence/dashboard/topology-6members-preview.png) |
 | V29 | v1.13.0：活跃 Agent 标注 | Hero「活跃」统计；running 成员列绿色高亮+`运行中`胶囊，inactive 降透明度；卡片执行者 live 点；40 客户端用例 | ✅ 客户端 40/40；预览 [`active-agents-preview.png`](evidence/dashboard/active-agents-preview.png) |
 | V28 | v1.12.0：关系可视化 | 删除依赖箭头；卡片 `依赖/解锁` chip；流程图 `依赖链` + `评审关系` 摘要条；拓扑评审关系摘要；39 客户端用例 | ✅ 客户端 39/39；截图 [`relations-strips-live.png`](evidence/dashboard/relations-strips-live.png) |
