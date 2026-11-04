@@ -47,6 +47,7 @@ window.__ModuleLoader__.load({
       'stat.approved': '已批准',
       'stat.members': '参与者',
       'stat.open': '待处理',
+      'stat.active': '活跃',
       'header.offline': '离线，显示上一次成功的数据',
       'header.paused': '轮询已暂停',
       'phase.planned': '已计划',
@@ -98,6 +99,7 @@ window.__ModuleLoader__.load({
       'topology.peerStrip': '同伴消息',
       'topology.reviewNote': '工作项角标 = 评审人',
       'topology.reviewRelations': '评审关系',
+      'topology.active': '活跃 {n}',
       'topology.reviewedBy': '评 {names}',
       'topology.noItems': '暂无负责项',
       'events.title': '事件流',
@@ -378,6 +380,7 @@ window.__ModuleLoader__.load({
       'stat.approved': 'Approved',
       'stat.members': 'Members',
       'stat.open': 'Open',
+      'stat.active': 'Active',
       'header.offline': 'Offline, showing the last successful snapshot',
       'header.paused': 'Polling paused',
       'phase.planned': 'planned',
@@ -429,6 +432,7 @@ window.__ModuleLoader__.load({
       'topology.peerStrip': 'Peer messages',
       'topology.reviewNote': 'item badge = reviewer',
       'topology.reviewRelations': 'Reviews',
+      'topology.active': '{n} active',
       'topology.reviewedBy': 'review {names}',
       'topology.noItems': 'no items',
       'events.title': 'Event stream',
@@ -716,9 +720,9 @@ window.__ModuleLoader__.load({
     const PROPOSAL_BLOCKING_KINDS = ['dod', 'scope', 'replan']
     const FLOW = {
       cardWidth: 208,
-      cardHeight: 152,
+      cardHeight: 168,
       /** Shorter cards for items without a Git row: no dead space in the middle. */
-      cardHeightNoGit: 132,
+      cardHeightNoGit: 150,
       columnGap: 72,
       rowGap: 32,
       padX: 14,
@@ -1965,10 +1969,7 @@ window.__ModuleLoader__.load({
 .atw-card-id{flex:none;font-size:12px;font-weight:600;letter-spacing:.02em}
 .atw-card-subject{max-height:38px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical;font-size:13px;line-height:1.43}
 .atw-card-meta{overflow:hidden;color:var(--atw-muted);font-size:12px;line-height:1.33;white-space:nowrap;text-overflow:ellipsis}
-.atw-card-rel{display:flex;align-items:center;gap:6px;flex:none;max-height:18px;overflow:hidden;color:var(--atw-muted);font-size:10px;line-height:1.33;white-space:nowrap}
-.atw-card-rel .atw-rel-chip{overflow:hidden;text-overflow:ellipsis;padding:1px 7px;font-size:10px;background:color-mix(in oklab,var(--atw-brand) 9%,var(--atw-paper));color:var(--atw-brand)}
-.atw-card-rel .atw-rel-chip--out{background:var(--atw-fill);color:var(--atw-muted)}
-.atw-card-flags{display:flex;align-items:center;gap:6px;flex-wrap:wrap;max-height:34px;margin-top:auto;overflow:hidden;color:var(--atw-muted);font-size:12px;line-height:1.33}
+.atw-card-flags{display:flex;align-items:center;gap:6px;flex-wrap:wrap;max-height:38px;margin-top:auto;overflow:hidden;color:var(--atw-muted);font-size:12px;line-height:1.33}
 .atw-card-pending{overflow:hidden;color:var(--atw-warn);white-space:nowrap;text-overflow:ellipsis}
 .atw-card-git{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;font-size:11px;line-height:1.33;white-space:nowrap}
 .atw-badge--git{max-width:148px;font-size:11px;line-height:1.33;padding:1px 8px}
@@ -2149,6 +2150,15 @@ window.__ModuleLoader__.load({
 .atw-collab-list{display:flex;flex-direction:column;gap:8px;min-width:0}
 .atw-topo-note{margin-top:8px;color:var(--atw-muted);font-size:11px;line-height:1.33}
 .atw-badge--review{background:color-mix(in oklab,var(--atw-brand) 10%,var(--atw-paper));color:var(--atw-brand);font-size:10px;padding:1px 7px}
+.atw-live-dot{display:inline-block;flex:none;width:7px;height:7px;margin-right:6px;border-radius:50%;background:var(--atw-success);box-shadow:0 0 0 2px color-mix(in oklab,var(--atw-success) 22%,transparent);vertical-align:middle;animation:atw-pulse 1.6s ease-in-out infinite}
+.atw-topo-col{transition:background-color .15s ease,border-color .15s ease,opacity .15s ease}
+.atw-topo-col--active{border-color:color-mix(in oklab,var(--atw-success) 38%,var(--atw-hairline));background:color-mix(in oklab,var(--atw-success) 7%,var(--atw-paper));box-shadow:0 0 0 1px color-mix(in oklab,var(--atw-success) 22%,transparent)}
+.atw-topo-col--active .atw-topo-col-head{border-color:color-mix(in oklab,var(--atw-success) 40%,var(--atw-hairline))}
+.atw-topo-col--active .atw-dot{background:var(--atw-success);animation:atw-pulse 1.6s ease-in-out infinite}
+.atw-topo-col--inactive{opacity:.74}
+.atw-topo-col--inactive:hover{opacity:1}
+.atw-badge--live{background:color-mix(in oklab,var(--atw-success) 14%,var(--atw-paper));color:var(--atw-success);font-size:10px;padding:1px 7px}
+.atw-card-flags .atw-rel-chip{font-size:10px;padding:1px 7px;max-width:150px;overflow:hidden;text-overflow:ellipsis}
 .atw-rel-strip{display:flex;flex-direction:column;gap:6px;margin-top:12px;padding:10px 2px 0;border-top:1px dashed var(--atw-hairline)}
 .atw-rel-group{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
 .atw-rel-label{color:var(--atw-muted);font-size:11px;font-weight:500;line-height:1.33;letter-spacing:.04em;text-transform:uppercase;min-width:64px}
@@ -2185,7 +2195,7 @@ window.__ModuleLoader__.load({
 .atw-panel--topo{max-height:640px;min-height:0}
 @keyframes atw-pulse{0%,100%{opacity:1}50%{opacity:.45}}
 @media (max-width:720px){.atw-root{padding:16px}.atw-title{font-size:24px}.atw-header{gap:16px}.atw-stat{padding:10px 14px;min-width:88px}.atw-stat-value{font-size:24px}.atw-scroll{gap:16px}.atw-main,.atw-lower,.atw-collab{gap:16px}}
-@media (prefers-reduced-motion:reduce){.atw-node--st-running{animation:none}.atw-card,.atw-panel,.atw-btn,.atw-filter,.atw-event,.atw-member-line--button,.atw-member-transcript-item--button{transition:none}.atw-card:hover{transform:none}}
+@media (prefers-reduced-motion:reduce){.atw-node--st-running{animation:none}.atw-live-dot,.atw-topo-col--active .atw-dot{animation:none}.atw-card,.atw-panel,.atw-btn,.atw-filter,.atw-event,.atw-member-line--button,.atw-member-transcript-item--button{transition:none}.atw-card:hover{transform:none}}
 `
 
     // ---------------------------------------------------------------------
@@ -2248,6 +2258,7 @@ window.__ModuleLoader__.load({
       const updated = view.lastUpdated > 0 ? tr('header.updated', { when: relativeTime(view.lastUpdated, view.now, tr) }) : tr('header.never')
       const runId = run && run.id ? str(run.id) : ''
       const openCount = items.filter((item) => item.status === 'pending' || item.status === 'in_review' || item.status === 'changes_requested').length
+      const activeCount = team.members.filter((member) => member.status === 'running').length
       const stat = (key, value, label) =>
         h(
           'div',
@@ -2273,6 +2284,7 @@ window.__ModuleLoader__.load({
                 { className: 'atw-stats' },
                 stat('approved', approved + '/' + total, tr('stat.approved')),
                 stat('members', String(team.members.length), tr('stat.members')),
+                stat('active', String(activeCount), tr('stat.active')),
                 stat('open', String(openCount), tr('stat.open')),
               )
             : null,
@@ -2443,7 +2455,7 @@ window.__ModuleLoader__.load({
       return h('div', { key: 'git', className: 'atw-section' }, h('div', { className: 'atw-section-title' }, tr('git.title')), rows)
     }
 
-    function renderItemCard(view, card) {
+    function renderItemCard(view, card, activeOwners = new Set()) {
       const tr = view.tr
       const item = card.item
       const tone = statusTone(item.status)
@@ -2486,24 +2498,32 @@ window.__ModuleLoader__.load({
           badge(statusLabel(tr, item.status), tone, 'status'),
         ),
         h('div', { className: 'atw-card-subject' }, str(item.subject, tr('drawer.none'))),
-        h('div', { className: 'atw-card-meta' }, tr('flow.owner', { name: str(item.owner, tr('common.unknown')) })),
+        h(
+          'div',
+          { className: 'atw-card-meta' },
+          activeOwners.has(item.owner)
+            ? h('span', { key: 'live', className: 'atw-live-dot', title: tr('member.status.running'), 'aria-hidden': true })
+            : null,
+          tr('flow.owner', { name: str(item.owner, tr('common.unknown')) }),
+        ),
         renderGitBadges(view, item.git),
-        item.blockedBy.length === 0 && card.unlocks.length === 0
-          ? null
-          : h(
-              'div',
-              { className: 'atw-card-rel' },
-              item.blockedBy.length === 0
-                ? null
-                : h('span', { key: 'deps', className: 'atw-rel-chip', title: item.blockedBy.join(', ') }, tr('flow.dependsOn') + ' ' + item.blockedBy.join(' · ')),
-              card.unlocks.length === 0
-                ? null
-                : h('span', { key: 'unlocks', className: 'atw-rel-chip atw-rel-chip--out', title: card.unlocks.join(', ') }, tr('flow.unlocks') + ' ' + card.unlocks.join(' · ')),
-            ),
         h(
           'div',
           { className: 'atw-card-flags' },
           h('span', { key: 'round' }, tr('flow.round', { submitted: reviews.submittedRounds, max: reviews.maxRounds })),
+          item.blockedBy.length > 0
+            ? h(
+                'span',
+                { key: 'deps', className: 'atw-rel-chip', title: item.blockedBy.join(', ') },
+                tr('flow.dependsOn') + ' ' + item.blockedBy.join(' · '),
+              )
+            : card.unlocks.length > 0
+              ? h(
+                  'span',
+                  { key: 'unlocks', className: 'atw-rel-chip atw-rel-chip--out', title: card.unlocks.join(', ') },
+                  tr('flow.unlocks') + ' ' + card.unlocks.join(' · '),
+                )
+              : null,
           // docs/19 §5.2: plan-first state rides on the card; the rest of the
           // flags stay in the detail drawer (docs/16 §3 noise budget).
           item.plan !== null && item.plan.status !== null
@@ -2556,9 +2576,10 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function renderFlowPanel(view, run) {
+    function renderFlowPanel(view, run, team) {
       const tr = view.tr
       const layout = computeFlowLayout(run)
+      const activeOwners = new Set(team.members.filter((member) => member.status === 'running').map((member) => member.name))
       const zoomHead = h(
         'div',
         { className: 'atw-panel-head' },
@@ -2674,7 +2695,7 @@ window.__ModuleLoader__.load({
                     column.label > 0 ? tr('flow.wave', { n: column.label }) : tr('flow.waveUnknown'),
                   ),
                 ),
-                layout.cards.map((card) => renderItemCard(view, card)),
+                layout.cards.map((card) => renderItemCard(view, card, activeOwners)),
               ),
             )
       const collaboration = normalizeCollaboration(run)
@@ -2740,6 +2761,7 @@ window.__ModuleLoader__.load({
       const tr = view.tr
       const items = run ? normalizeRunItems(run) : []
       const topology = computeTopology(team, items, normalizeCollaboration(run))
+      const activeCount = topology.columns.filter((column) => column.member.status === 'running').length
       const hint =
         tr('topology.members') +
         ' ' +
@@ -2748,6 +2770,7 @@ window.__ModuleLoader__.load({
         tr('topology.items') +
         ' ' +
         items.length +
+        (activeCount > 0 ? ' · ' + tr('topology.active', { n: activeCount }) : '') +
         (topology.idleCount > 0 ? ' · ' + tr('topology.idle', { n: topology.idleCount }) : '')
       const empty = team.members.length === 0 && items.length === 0
       const itemTitle = (item) =>
@@ -2819,7 +2842,13 @@ window.__ModuleLoader__.load({
                   topology.columns.map((column) =>
                     h(
                       'div',
-                      { key: column.key, className: 'atw-topo-col' },
+                      {
+                        key: column.key,
+                        className:
+                          'atw-topo-col' +
+                          (column.member.status === 'running' ? ' atw-topo-col--active' : '') +
+                          (column.member.status === 'inactive' ? ' atw-topo-col--inactive' : ''),
+                      },
                       h(
                         'button',
                         {
@@ -2832,6 +2861,9 @@ window.__ModuleLoader__.load({
                         },
                         h('span', { className: 'atw-dot' }),
                         h('span', null, column.member.name),
+                        column.member.status === 'running'
+                          ? h('span', { key: 'live', className: 'atw-badge atw-badge--live' }, tr('member.status.running'))
+                          : null,
                         badge(contextLabel(tr, column.member.context), column.member.context === 'fork' ? 'warn' : 'idle', 'ctx'),
                         column.stop === null ? null : h('span', { key: 'stop', className: 'atw-node-stop', title: tr('member.stop.pending') }),
                       ),
@@ -4116,7 +4148,7 @@ window.__ModuleLoader__.load({
         return h('div', { className: 'atw-scroll' }, content)
       }
       const collaboration = normalizeCollaboration(run)
-      content.push(h('div', { className: 'atw-main' }, renderFlowPanel(view, run), renderTopologyPanel(view, team, run)))
+      content.push(h('div', { className: 'atw-main' }, renderFlowPanel(view, run, team), renderTopologyPanel(view, team, run)))
       content.push(h('div', { className: 'atw-collab' }, renderChannelPanel(view, run), renderProposalsPanel(view, run)))
       content.push(h('div', { className: 'atw-usage-wrap' }, renderUsagePanel(view, run)))
       content.push(

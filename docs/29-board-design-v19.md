@@ -115,6 +115,18 @@ v1.9.3 之后画布只剩 Lead 总线、owner 竖线、评审车道三类线；�
 
 真实 Host 截图：`docs/evidence/dashboard/relations-strips-live.png`（流程图底部「评审关系 rev → S」、拓扑「评审关系 rev → S」、卡片角标同屏）。
 
+## 2.8 活跃 Agent 标注与高亮（v1.13.0）
+
+原先「谁真的在跑」只能靠模糊的绿点/状态文字判断。现在引擎快照里的 `team.members[].status` 被直接映射为视觉层级：
+
+- **Hero 新增「活跃」统计**：已批准 / 参与者 / **活跃** / 待处理 四格，活跃=status `running` 的成员数；
+- **拓扑成员列高亮**：running 列加绿色描边、浅绿底色、呼吸绿点与 `运行中` 胶囊；inactive 列整体降至 74% 不透明度并弱化（hover 恢复），一眼区分"在干活"与"待命"；
+- **流程图卡片**：执行者行前置**绿色 live 点**（带脉冲），owner 正在运行的卡片立即被识别；
+- **面板 hint**：`成员 3 · 工作项 4 · 活跃 2 · 空闲 1 人`；
+- **降级**：`prefers-reduced-motion` 下关闭呼吸动画；颜色全部来自 success token。
+
+预览：`docs/evidence/dashboard/active-agents-preview.png`（活跃 3、两个 running 列高亮、inactive 列变灰、卡片 live 点）。
+
 ## 3. 约束保持
 
 - 零新增依赖、零外部字体/CDN；仅 `require('react')`；

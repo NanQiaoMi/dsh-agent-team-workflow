@@ -1254,7 +1254,8 @@ test('docs/16: card badges stay within budget and Git/PR badges render (and vani
     for (const card of cards) {
       const flags = findByClass(card, 'atw-card-flags')
       assert.equal(flags.length, 1, 'every card keeps one flags row')
-      assert.ok((flags[0].children ?? []).filter(Boolean).length <= 2, 'flags stay within the status + R + one-flag budget')
+      // round + one status flag + optional dependency + unlock chip
+      assert.ok((flags[0].children ?? []).filter(Boolean).length <= 4, 'flags stay within the round + status-flag + relation-chip budget')
     }
     const w1 = textOf(cardFor('W1'))
     assert.ok(w1.includes('k:git.branch'), 'branch badge')
@@ -1486,8 +1487,8 @@ test('docs/17 density: idle excludes the Lead, the flow panel is 520px, cards cl
     const heightOf = (card) => Number(String(card.props.style.height).replace('px', ''))
     const withGit = cardFor('W1')
     const noGit = cardFor('W2')
-    assert.equal(heightOf(withGit), 152, 'cards with a Git row keep the full height')
-    assert.equal(heightOf(noGit), 132, 'cards without a Git row are shorter')
+    assert.equal(heightOf(withGit), 168, 'cards with a Git row keep the full height')
+    assert.equal(heightOf(noGit), 150, 'cards without a Git row are shorter')
     const flags = findByClass(noGit, 'atw-card-flags')[0]
     const children = (noGit.children ?? []).filter((child) => child !== null && child !== undefined)
     assert.equal(children[children.length - 1], flags, 'the flags row is the last card row (bottom-anchored)')
@@ -2169,6 +2170,32 @@ test('flow relations: dependency and review chips replace crossing arrows', asyn
     const strip = findByClass(tree, 'atw-rel-strip')[0]
     assert.ok(textOf(strip).includes('M1 → M2'), 'the relation strip spells out the dependency edge')
     assert.ok(textOf(strip).includes('rev-b → M1'), 'the relation strip spells out the review edge')
+  } finally {
+    board.dispose()
+  }
+})
+
+test('active agents carry a visible highlight in stats, topology and flow cards', async () => {
+  const board = await mountBoard(V2_SNAPSHOT)
+  try {
+    const tree = await board.render()
+    const stats = findByClass(tree, 'atw-stat')
+    assert.equal(stats.length, 4, 'the hero adds an Active stat')
+    const activeStat = stats.find((stat) => textOf(stat).includes('k:stat.active'))
+    assert.ok(activeStat !== undefined, 'the Active stat is labelled')
+    assert.ok(textOf(activeStat).includes('2'), 'two fixture members are running')
+
+    const columns = findByClass(tree, 'atw-topo-col')
+    assert.equal(columns.filter((column) => String(column.props?.className ?? '').includes('atw-topo-col--active')).length, 2, 'running members get the active column treatment')
+    assert.equal(columns.filter((column) => String(column.props?.className ?? '').includes('atw-topo-col--inactive')).length, 1, 'idle members are dimmed')
+    assert.equal(findByClass(tree, 'atw-badge--live').length, 2, 'the running badge appears on active columns only')
+
+    const runningOwners = new Set(['impl-a', 'impl-b'])
+    for (const id of ['W1', 'W2', 'W3']) {
+      const item = V2_SNAPSHOT.run.items.find((entry) => entry.id === id)
+      const expected = runningOwners.has(item.owner) ? 1 : 0
+      assert.equal(findByClass(cardById(tree, id), 'atw-live-dot').length, expected, 'live dot tracks the owner status (' + id + ')')
+    }
   } finally {
     board.dispose()
   }
