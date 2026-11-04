@@ -348,6 +348,17 @@ test('two Teams in one workspace never share a board', () => {
   })
 })
 
+test('the optional runtime write-scope guard registers a second guard when enabled', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createContext(cwd)
+    apply(harness.ctx, { enforceWriteScopes: true })
+    assert.equal(harness.guards.length, 2, 'sandbox + scope guard when enforceWriteScopes is on')
+    const scopeGuard = harness.guards[1]
+    // No board is loaded yet, so the guard fails open instead of guessing.
+    assert.equal(scopeGuard({ name: 'write', agent: harness.teammate, arguments: { file_path: 'x.txt' } }), undefined)
+  })
+})
+
 test('the native tool sandbox registers one guard and lets non-members through', () => {
   return withWorkspace(async (cwd) => {
     const harness = createContext(cwd)
