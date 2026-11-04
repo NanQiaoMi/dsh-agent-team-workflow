@@ -2177,18 +2177,21 @@ window.__ModuleLoader__.load({
 .atw-topo-flex{display:flex;flex-direction:column;gap:16px;min-width:0}
 .atw-topo-leadrow{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;padding:4px 0 2px}
 .atw-topo-leadrow .atw-node{position:static;transform:none;max-width:100%}
-.atw-topo-grid{display:flex;flex-wrap:wrap;justify-content:center;align-items:stretch;gap:14px;min-width:0}
-.atw-topo-col{display:flex;flex-direction:column;align-items:center;gap:9px;box-sizing:border-box;flex:0 1 210px;min-width:160px;max-width:250px;padding:12px 10px 10px;border:1px solid var(--atw-hairline-soft);border-radius:var(--atw-radius-card);background:color-mix(in oklab,var(--atw-surface) 45%,var(--atw-paper))}
-.atw-topo-col-head{position:static;transform:none;display:flex;align-items:center;gap:6px;box-sizing:border-box;max-width:100%;padding:4px 12px;border:1px solid var(--atw-hairline);border-radius:var(--atw-radius-pill);background:var(--atw-paper);color:var(--atw-ink);font:inherit;font-size:12px;line-height:1.33;font-weight:500;cursor:pointer}
+.atw-topo-grid{display:flex;flex-wrap:wrap;justify-content:center;align-items:flex-start;gap:14px;min-width:0}
+.atw-topo-col{display:flex;flex-direction:column;align-items:center;gap:9px;box-sizing:border-box;flex:0 1 252px;min-width:218px;max-width:330px;padding:12px 12px 12px;border:1px solid var(--atw-hairline-soft);border-radius:var(--atw-radius-card);background:color-mix(in oklab,var(--atw-surface) 45%,var(--atw-paper))}
+.atw-topo-col-head{position:static;transform:none;display:flex;align-items:center;flex-wrap:wrap;row-gap:4px;justify-content:flex-start;gap:6px;box-sizing:border-box;width:100%;max-width:100%;padding:4px 12px;border:1px solid var(--atw-hairline);border-radius:var(--atw-radius-pill);background:var(--atw-paper);color:var(--atw-ink);font:inherit;font-size:12px;line-height:1.33;font-weight:500;cursor:pointer}
 .atw-topo-col-head:hover{background:var(--atw-fill)}
 .atw-topo-col-head:focus-visible{outline:2px solid var(--atw-brand);outline-offset:2px}
-.atw-topo-items{display:flex;flex-direction:column;gap:6px;width:100%}
+.atw-topo-col-name{flex:1 1 auto;min-width:0;overflow:hidden;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
+.atw-topo-col-head .atw-badge{flex:none}
+.atw-topo-col-head .atw-node-stop{flex:none}
+.atw-topo-items{display:flex;flex-direction:column;gap:6px;width:100%;flex:1 1 auto}
 .atw-topo-item{position:static;transform:none;display:flex;align-items:center;gap:6px;box-sizing:border-box;width:100%;max-width:none;padding:5px 10px;border:1px solid var(--atw-hairline);border-radius:var(--atw-radius-pill);background:var(--atw-paper);color:var(--atw-ink);font:inherit;font-size:12px;line-height:1.33;text-align:left;cursor:pointer;white-space:nowrap}
 .atw-topo-item:hover{background:color-mix(in oklab,var(--atw-ink) 3%,var(--atw-paper))}
 .atw-topo-item:focus-visible{outline:2px solid var(--atw-brand);outline-offset:2px}
-.atw-topo-item .atw-badge{margin-left:auto;max-width:120px}
+.atw-topo-item .atw-badge{margin-left:auto;flex:none;max-width:62%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .atw-topo-item-id{overflow:hidden;font-weight:600;text-overflow:ellipsis}
-.atw-topo-emptycol{color:var(--atw-muted);font-size:11px;line-height:1.33;padding:2px 0}
+.atw-topo-emptycol{display:flex;align-items:center;justify-content:center;flex:1 1 auto;min-height:64px;color:var(--atw-muted);font-size:11px;line-height:1.33;padding:0}
 .atw-topo-unassigned{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 2px 0;border-top:1px dashed var(--atw-hairline)}
 .atw-topo-unassigned-label{color:var(--atw-muted);font-size:11px;font-weight:500;letter-spacing:.04em;text-transform:uppercase}
 .atw-topo-unassigned .atw-topo-item{width:auto;max-width:220px}
@@ -2856,15 +2859,19 @@ window.__ModuleLoader__.load({
                           type: 'button',
                           className:
                             'atw-node atw-node--member atw-topo-col-head atw-node--st-' + str(column.member.status, 'inactive'),
-                          title: column.member.name + ' · ' + memberStatusLabel(tr, column.member.status),
+                          title:
+                            column.member.name +
+                            ' · ' +
+                            memberStatusLabel(tr, column.member.status) +
+                            ' · ' +
+                            contextLabel(tr, column.member.context),
                           onClick: () => view.actions.openMember(column.member.name),
                         },
                         h('span', { className: 'atw-dot' }),
-                        h('span', null, column.member.name),
+                        h('span', { className: 'atw-topo-col-name', title: column.member.name }, column.member.name),
                         column.member.status === 'running'
                           ? h('span', { key: 'live', className: 'atw-badge atw-badge--live' }, tr('member.status.running'))
                           : null,
-                        badge(contextLabel(tr, column.member.context), column.member.context === 'fork' ? 'warn' : 'idle', 'ctx'),
                         column.stop === null ? null : h('span', { key: 'stop', className: 'atw-node-stop', title: tr('member.stop.pending') }),
                       ),
                       h(
