@@ -1922,7 +1922,8 @@ window.__ModuleLoader__.load({
 .atw-error-strip{display:flex;align-items:center;justify-content:space-between;gap:12px;box-sizing:border-box;border:1px solid color-mix(in oklab,var(--atw-error) 35%,var(--atw-hairline));border-radius:var(--atw-radius-nested);background:color-mix(in oklab,var(--atw-error) 8%,var(--atw-paper));padding:8px 12px;color:var(--atw-error);font-size:12px;line-height:1.33}
 .atw-error-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .atw-main{display:grid;grid-template-columns:minmax(0,1fr);gap:20px;align-items:start;min-width:0}
-.atw-lower{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;align-items:start;min-width:0}
+.atw-lower{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;align-items:start;min-width:0}
+.atw-events-row{display:grid;grid-template-columns:minmax(0,1fr);gap:20px;min-width:0}
 @media (max-width:1180px){.atw-main,.atw-collab,.atw-lower{grid-template-columns:minmax(0,1fr)}}
 .atw-panel{display:flex;flex-direction:column;box-sizing:border-box;min-width:0;min-height:240px;max-height:320px;border:1px solid var(--atw-hairline);border-radius:var(--atw-radius-card);background:var(--atw-paper);box-shadow:var(--atw-shadow-card);overflow:hidden;transition:box-shadow .15s ease}
 .atw-panel:hover{box-shadow:0 0 0 1px color-mix(in oklab,var(--atw-ink) 7%,transparent),0 2px 6px color-mix(in oklab,var(--atw-ink) 10%,transparent),0 2px 4px -1px color-mix(in oklab,var(--atw-ink) 8%,transparent)}
@@ -2001,19 +2002,20 @@ window.__ModuleLoader__.load({
 .atw-legend-line--review{border-top-style:dashed;border-top-color:var(--atw-brand)}
 .atw-legend-line--owns{border-top-color:var(--atw-muted);opacity:.6}
 .atw-dot{flex:none;width:6px;height:6px;border-radius:50%;background:currentColor}
-.atw-filters{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.atw-filters{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .atw-filter{border:1px solid transparent;border-radius:var(--atw-radius-pill);background:var(--atw-fill);color:var(--atw-muted);font:inherit;font-size:12px;font-weight:500;line-height:1.33;padding:3px 12px;cursor:pointer;transition:background-color .12s ease,color .12s ease}
 .atw-filter:hover{background:color-mix(in oklab,var(--atw-ink) 8%,var(--atw-paper));color:var(--atw-ink)}
 .atw-filter:focus-visible{outline:2px solid var(--atw-brand);outline-offset:2px}
 .atw-filter--active{background:var(--atw-ink);color:var(--atw-paper)}
-.atw-events{display:flex;flex-direction:column;gap:8px;padding:2px 0}
-.atw-event{display:flex;align-items:baseline;gap:8px;min-width:0;padding:10px 12px;border:1px solid var(--atw-hairline-soft);border-radius:var(--atw-radius-nested);background:var(--atw-paper);font-size:13px;line-height:1.43;transition:background-color .12s ease}
+.atw-panel--events{max-height:460px}
+.atw-events{display:flex;flex-direction:column;gap:6px;padding:2px 0}
+.atw-event{display:grid;grid-template-columns:66px 108px minmax(0,1fr) max-content;align-items:start;gap:14px;min-width:0;padding:10px 14px;border:0;border-bottom:1px solid var(--atw-hairline-soft);background:transparent;font-size:13px;line-height:1.43;transition:background-color .12s ease}
 .atw-event:hover{background:color-mix(in oklab,var(--atw-ink) 2%,var(--atw-paper))}
-.atw-event:last-child{border-bottom:1px solid var(--atw-hairline-soft)}
-.atw-event-time{flex:none;color:var(--atw-muted);font-size:11px;line-height:1.33;white-space:nowrap}
-.atw-event-type{flex:none;color:var(--atw-muted);font-size:11px;line-height:1.33;white-space:nowrap}
-.atw-event-detail{flex:1 1 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.atw-event-actor{flex:none;color:var(--atw-muted);font-size:11px;line-height:1.33;white-space:nowrap}
+.atw-event:last-child{border-bottom:none}
+.atw-event-time{color:var(--atw-muted);font-size:11px;line-height:1.45;white-space:nowrap;font-variant-numeric:tabular-nums;padding-top:1px}
+.atw-event-type{color:var(--atw-muted);font-size:11px;font-weight:500;line-height:1.45;letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-top:1px}
+.atw-event-detail{min-width:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+.atw-event-actor{color:var(--atw-muted);font-size:11px;line-height:1.45;white-space:nowrap;justify-self:end;padding-top:1px}
 .atw-event--review .atw-event-type{color:var(--atw-brand)}
 .atw-event--escalation .atw-event-type{color:var(--atw-error)}
 .atw-event--repair .atw-event-type{color:var(--atw-warn)}
@@ -2993,7 +2995,7 @@ window.__ModuleLoader__.load({
                 ),
               ),
             )
-      return h('section', { className: 'atw-panel' }, head, body)
+      return h('section', { className: 'atw-panel atw-panel--events' }, head, body)
     }
 
     function renderPathRow(view, key, label, path, copyKey) {
@@ -4158,15 +4160,8 @@ window.__ModuleLoader__.load({
       content.push(h('div', { className: 'atw-main' }, renderFlowPanel(view, run, team), renderTopologyPanel(view, team, run)))
       content.push(h('div', { className: 'atw-collab' }, renderChannelPanel(view, run), renderProposalsPanel(view, run)))
       content.push(h('div', { className: 'atw-usage-wrap' }, renderUsagePanel(view, run)))
-      content.push(
-        h(
-          'div',
-          { className: 'atw-lower' },
-          renderEventsPanel(view, run),
-          renderGatePanel(view, run),
-          renderEscalationsPanel(view, run),
-        ),
-      )
+      content.push(h('div', { className: 'atw-events-row' }, renderEventsPanel(view, run)))
+      content.push(h('div', { className: 'atw-lower' }, renderGatePanel(view, run), renderEscalationsPanel(view, run)))
       const notes = renderDiagnostics(view, diagnostics)
       if (notes !== null) content.push(notes)
       const items = normalizeRunItems(run)

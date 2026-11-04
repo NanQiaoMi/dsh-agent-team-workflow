@@ -138,6 +138,19 @@ v1.9.3 之后画布只剩 Lead 总线、owner 竖线、评审车道三类线；�
 - **工单胶囊**：评审角标 `max-width:62%` + 省略号，长 reviewer 名不会撑破胶囊；
 - 真实数据预览（6 成员 / 8 工单 / 空闲 2 人）：`docs/evidence/dashboard/topology-6members-preview.png`。
 
+## 2.10 事件流独占整行（v1.15.0）
+
+事件流原来和门禁、升级挤在 1/3 列里：过滤胶囊换行成三排，事件行只剩单行截断，时间/类型/详情/actor 挤在一起。现在事件流有自己的一整行：
+
+- **独占一行**：事件流从 `.atw-lower` 三列中移出，成 `.atw-events-row` 全宽行；门禁 + 升级改为两列在下；
+- **过滤条一行**：全宽后 全部/评审/升级/修复/交付 胶囊单行右对齐，不再换行；
+- **事件行改成日志布局**：`grid-template-columns:66px 108px minmax(0,1fr) max-content`，时间、类型、详情、actor 四列对齐；详情支持两行截断（hover 看全文）；
+- **去掉逐行卡片边框**：改成分隔线列表（`border-bottom:1px hairline`，最后一行无边框），更像日志流、视觉更安静；
+- **类型完整显示**：`review/submitted` / `item/reported` 不再被截成 `review/submitt…`；
+- 面板高度 460px，30 条事件内部滚动。
+
+预览：`docs/evidence/dashboard/events-row-preview.png`（全宽、单行过滤、四列对齐、分隔线）。
+
 ## 3. 约束保持
 
 - 零新增依赖、零外部字体/CDN；仅 `require('react')`；
