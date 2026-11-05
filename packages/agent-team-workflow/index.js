@@ -75,6 +75,7 @@ export function apply(ctx, config = {}) {
     if (installed.has(agent)) return
     const membership = ctx.agentTeams.tryMembership(agent)
     if (membership === undefined) return
+    const policy = buildPolicy(settings, membership.role)
     installed.set(agent, install(agent, ctx, { settings, tools, store, policy }))
     // Warm the prompt-context summary so the first step already sees the run
     // instead of waiting for the member to call a tool. Best effort: a missing

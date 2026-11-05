@@ -369,3 +369,34 @@ test('the native tool sandbox registers one guard and lets non-members through',
     assert.equal(guard({ name: 'write', agent: { id: 'session-outsider' } }), undefined)
   })
 })
+
+test('role-adaptive policy tailors prompt sections for implementer and reviewer', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createContext(cwd)
+    apply(harness.ctx, {})
+
+    const worker = { id: 'session-impl', session: { id: 'session-impl' } }
+    worker.ctx = harness.scopedFor(worker)
+    harness.membership.set(worker.id, { root: harness.lead, id: worker.id, name: 'impl', role: 'implementer' })
+
+    const reviewer = { id: 'session-rev', session: { id: 'session-rev' } }
+    reviewer.ctx = harness.scopedFor(reviewer)
+    harness.membership.set(reviewer.id, { root: harness.lead, id: reviewer.id, name: 'rev', role: 'reviewer' })
+
+    harness.ctx.emit('agent/created', { agent: worker })
+    harness.ctx.emit('agent/created', { agent: reviewer })
+
+    const workerSection = harness.sections.find((s) => s.agent === worker.id && s.name === 'team:workflow')
+    assert.ok(workerSection, 'worker must have workflow policy section')
+    assert.match(workerSection.text, /Worker Protocol/)
+    assert.match(workerSection.text, /Do NOT plan, delegate, or spawn/)
+    assert.match(workerSection.text, /Your task is already claimed for you/)
+
+    const reviewerSection = harness.sections.find((s) => s.agent === reviewer.id && s.name === 'team:workflow')
+    assert.ok(reviewerSection, 'reviewer must have workflow policy section')
+    assert.match(reviewerSection.text, /Reviewer Protocol/)
+    assert.match(reviewerSection.text, /adversarial reviewer/)
+    assert.match(reviewerSection.text, /Inspect Real Changes/)
+  })
+})
+
