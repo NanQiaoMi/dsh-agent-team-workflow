@@ -81,6 +81,16 @@ export const DEFAULT_SETTINGS = Object.freeze({
   tokenBudgetPerRun: 0,
   /** Per-item git worktree isolation: 'off' | 'serial' | 'parallel'. */
   worktreeIsolation: 'off',
+  /** Automatically reconcile team workflow events and wake inactive workers/reviewers. */
+  autoOrchestrate: true,
+  /** Wake assigned workers when their task dependencies are satisfied. */
+  autoWakeUnblocked: true,
+  /** Wake assigned reviewers when an item has been reported. */
+  autoWakeReviewers: true,
+  /** Notify the Lead when all items in the plan are approved. */
+  autoNotifyConverged: true,
+  /** Interval in seconds for the liveness watchdog timer (0 disables the timer). */
+  watchdogIntervalSeconds: 30,
 })
 
 function clampInt(value, fallback, min, max) {
@@ -218,6 +228,11 @@ export function resolveSettings(raw = {}) {
     tokenBudgetPerMember: clampInt(config.tokenBudgetPerMember, DEFAULT_SETTINGS.tokenBudgetPerMember, 0, 1_000_000_000),
     tokenBudgetPerRun: clampInt(config.tokenBudgetPerRun, DEFAULT_SETTINGS.tokenBudgetPerRun, 0, 1_000_000_000),
     worktreeIsolation: readWorktreeMode(config.worktreeIsolation),
+    autoOrchestrate: readBool(config.autoOrchestrate, DEFAULT_SETTINGS.autoOrchestrate),
+    autoWakeUnblocked: readBool(config.autoWakeUnblocked, DEFAULT_SETTINGS.autoWakeUnblocked),
+    autoWakeReviewers: readBool(config.autoWakeReviewers, DEFAULT_SETTINGS.autoWakeReviewers),
+    autoNotifyConverged: readBool(config.autoNotifyConverged, DEFAULT_SETTINGS.autoNotifyConverged),
+    watchdogIntervalSeconds: clampInt(config.watchdogIntervalSeconds, DEFAULT_SETTINGS.watchdogIntervalSeconds, 0, 3600),
   })
 }
 
@@ -254,5 +269,10 @@ export function runSettings(settings) {
     tokenBudgetPerMember: settings.tokenBudgetPerMember,
     tokenBudgetPerRun: settings.tokenBudgetPerRun,
     worktreeIsolation: settings.worktreeIsolation,
+    autoOrchestrate: settings.autoOrchestrate,
+    autoWakeUnblocked: settings.autoWakeUnblocked,
+    autoWakeReviewers: settings.autoWakeReviewers,
+    autoNotifyConverged: settings.autoNotifyConverged,
+    watchdogIntervalSeconds: settings.watchdogIntervalSeconds,
   }
 }

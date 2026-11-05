@@ -26,21 +26,30 @@ import { summarizeTranscript } from './lib/transcript.js'
 import { installToolSandbox } from '../tool-guard-kit/index.js'
 import { teamSubjectResolver } from './lib/tool-guard.js'
 import { scopeGuardReason } from './lib/scope-guard.js'
+import { createOrchestrator } from './lib/orchestrator.js'
 
 export const name = 'agent-team-workflow'
 
 /** Services this plugin needs; the plugin stays inactive without Agent Teams. */
 export const inject = ['agents', 'agentTeams', 'tools', 'systemPrompt', 'workingDirectory']
 
-const VERSION = '1.16.0'
+const VERSION = '1.17.0'
 
 /** Shared tool list, built once per plugin instance. */
 export function apply(ctx, config = {}) {
   const settings = resolveSettings(config)
   const store = createStore({ ctx, settings })
-  const tools = buildTools({ ctx, settings, store, version: VERSION, tokenUsage: () => tokenUsage })
+  const orchestrator = createOrchestrator({ ctx, store, settings })
+  const tools = buildTools({ ctx, settings, store, version: VERSION, tokenUsage: () => tokenUsage, orchestrator })
   const policy = buildPolicy(settings)
   const installed = new Map()
+
+  // Start autonomous watchdog timer
+  orchestrator.startWatchdog()
+  ctx.effect(
+    () => () => orchestrator.stopWatchdog(),
+    'agent-team-workflow.watchdog()',
+  )
 
   // Native-tool sandbox: one global guard that only acts on teammates whose
   // role names a tool policy (allow/deny/readOnly). The mechanism lives in the
