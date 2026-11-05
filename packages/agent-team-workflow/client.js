@@ -363,6 +363,23 @@ window.__ModuleLoader__.load({
       'board.usageOutput': '输出',
       'board.usageCacheRead': '缓存读',
       'board.usageCacheWrite': '缓存写',
+      'pipeline.title': '协作流水线',
+      'pipeline.planning': '规划拆解',
+      'pipeline.implementing': '并行实现',
+      'pipeline.reviewing': '交叉评审',
+      'pipeline.reworking': '缺陷返工',
+      'pipeline.converged': '终审收敛',
+      'pipeline.stageCount': '{n} 项',
+      'pipeline.noticeReworking': '发现缺陷，成员正在针对性修改中',
+      'pipeline.noticeConverged': '所有工作项已批准，等待全自动终审',
+      'pipeline.noticeFinalized': '协作已收敛并完成收尾归档',
+      'card.summary': '交付摘要',
+      'card.findingLabel': '待修复缺陷',
+      'card.findingTooltip': '[{id}] {claim}',
+      'card.worktree': '物理隔离',
+      'card.merged': '已合入',
+      'git.worktree': 'Worktree 分支',
+      'git.worktreePath': '工作区路径',
     }
 
     const en = {
@@ -696,6 +713,23 @@ window.__ModuleLoader__.load({
       'board.usageOutput': 'output',
       'board.usageCacheRead': 'cache read',
       'board.usageCacheWrite': 'cache write',
+      'pipeline.title': 'Collaboration Pipeline',
+      'pipeline.planning': 'Planning',
+      'pipeline.implementing': 'Implementing',
+      'pipeline.reviewing': 'Reviewing',
+      'pipeline.reworking': 'Reworking',
+      'pipeline.converged': 'Converged',
+      'pipeline.stageCount': '{n} item(s)',
+      'pipeline.noticeReworking': 'Defects reported, targeted rework in progress',
+      'pipeline.noticeConverged': 'All items approved, awaiting final review',
+      'pipeline.noticeFinalized': 'Converged and finalized',
+      'card.summary': 'Delivery Summary',
+      'card.findingLabel': 'Pending Fix',
+      'card.findingTooltip': '[{id}] {claim}',
+      'card.worktree': 'Worktree',
+      'card.merged': 'Merged',
+      'git.worktree': 'Worktree Branch',
+      'git.worktreePath': 'Worktree Path',
     }
 
     // ---------------------------------------------------------------------
@@ -1071,6 +1105,22 @@ window.__ModuleLoader__.load({
         createdBy: str(item.createdBy),
         git: normalizeGit(item.git, runGit),
         plan: normalizePlan(item.plan),
+        summaryPreview:
+          typeof item.summaryPreview === 'string' && item.summaryPreview.trim() !== ''
+            ? item.summaryPreview.trim()
+            : item.report && typeof item.report.summary === 'string' && item.report.summary.trim() !== ''
+              ? item.report.summary.trim().slice(0, 140)
+              : null,
+        latestFinding:
+          item.latestFinding && typeof item.latestFinding === 'object'
+            ? {
+                id: str(item.latestFinding.id),
+                severity: str(item.latestFinding.severity, 'major'),
+                file: str(item.latestFinding.file),
+                line: num(item.latestFinding.line, Number.NaN),
+                claim: str(item.latestFinding.claim),
+              }
+            : null,
       }
     }
 
@@ -1115,6 +1165,11 @@ window.__ModuleLoader__.load({
         prReview: isRecord(raw.prReview) ? { verdict: str(raw.prReview.verdict), mode: str(raw.prReview.mode) } : null,
         mergedAt: Number.isFinite(itemMerged) ? itemMerged : parseTime(run.mergedAt),
         commits: toArray(raw.commits).length,
+        worktree: str(raw.worktree),
+        worktreeBranch: str(raw.worktreeBranch),
+        worktreePath: str(raw.worktreePath),
+        worktreeMerged: raw.worktreeMerged === true || Number.isFinite(parseTime(raw.worktreeMergedAt)),
+        worktreeMergedAt: parseTime(raw.worktreeMergedAt),
       }
     }
 
@@ -1921,6 +1976,27 @@ window.__ModuleLoader__.load({
 .atw-progress-fill{height:100%;border-radius:var(--atw-radius-pill);background:var(--atw-success);transition:width .2s ease}
 .atw-error-strip{display:flex;align-items:center;justify-content:space-between;gap:12px;box-sizing:border-box;border:1px solid color-mix(in oklab,var(--atw-error) 35%,var(--atw-hairline));border-radius:var(--atw-radius-nested);background:color-mix(in oklab,var(--atw-error) 8%,var(--atw-paper));padding:8px 12px;color:var(--atw-error);font-size:12px;line-height:1.33}
 .atw-error-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.atw-pipeline-banner{display:flex;flex-direction:column;gap:8px;padding:10px 14px;background:var(--atw-paper);border:1px solid var(--atw-hairline-soft);border-radius:var(--atw-radius-nested);box-shadow:var(--atw-shadow-card)}
+.atw-pipeline-steps{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.atw-pipeline-step{display:flex;align-items:center;gap:8px}
+.atw-pipeline-step-head{display:flex;align-items:center;gap:6px;padding:3px 8px;border-radius:var(--atw-radius-nested);font-size:12px;line-height:1.33}
+.atw-pipeline-step--active .atw-pipeline-step-head{background:color-mix(in oklab,var(--atw-brand) 12%,var(--atw-paper));border:1px solid var(--atw-brand);color:var(--atw-ink);font-weight:600}
+.atw-pipeline-step--done .atw-pipeline-step-head{background:color-mix(in oklab,var(--atw-success) 10%,var(--atw-paper));border:1px solid var(--atw-hairline);color:var(--atw-success)}
+.atw-pipeline-step--upcoming .atw-pipeline-step-head{background:transparent;border:1px dashed var(--atw-hairline);color:var(--atw-muted)}
+.atw-pipeline-step-num{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;font-size:10px;font-weight:700;background:color-mix(in oklab,var(--atw-ink) 8%,var(--atw-paper))}
+.atw-pipeline-step-label{font-size:12px}
+.atw-pipeline-step-count{font-size:10px;padding:1px 5px;border-radius:999px;background:color-mix(in oklab,var(--atw-ink) 10%,var(--atw-paper));font-weight:500}
+.atw-pipeline-arrow{color:var(--atw-muted);font-size:12px;user-select:none}
+.atw-pipeline-notice{font-size:11px;line-height:1.33;padding:4px 8px;border-radius:var(--atw-radius-nested)}
+.atw-pipeline-notice--warn{background:color-mix(in oklab,var(--atw-warn) 10%,var(--atw-paper));color:var(--atw-warn);border-left:3px solid var(--atw-warn)}
+.atw-pipeline-notice--brand{background:color-mix(in oklab,var(--atw-brand) 10%,var(--atw-paper));color:var(--atw-brand);border-left:3px solid var(--atw-brand)}
+.atw-pipeline-notice--success{background:color-mix(in oklab,var(--atw-success) 10%,var(--atw-paper));color:var(--atw-success);border-left:3px solid var(--atw-success)}
+.atw-card-finding{display:flex;align-items:center;gap:4px;overflow:hidden;font-size:11px;line-height:1.2;color:var(--atw-error);background:color-mix(in oklab,var(--atw-error) 8%,var(--atw-paper));border-radius:var(--atw-radius-nested);padding:2px 4px}
+.atw-card-finding-badge{flex:none;font-weight:600;font-size:10px}
+.atw-card-finding-text{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.atw-card-summary{display:flex;align-items:center;gap:4px;overflow:hidden;font-size:11px;line-height:1.2;color:var(--atw-muted);background:color-mix(in oklab,var(--atw-ink) 4%,var(--atw-paper));border-radius:var(--atw-radius-nested);padding:2px 4px}
+.atw-card-summary-icon{flex:none;font-size:10px}
+.atw-card-summary-text{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .atw-main{display:grid;grid-template-columns:minmax(0,1fr);gap:20px;align-items:start;min-width:0}
 .atw-lower{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;align-items:start;min-width:0}
 .atw-events-row{display:grid;grid-template-columns:minmax(0,1fr);gap:20px;min-width:0}
@@ -2336,6 +2412,83 @@ window.__ModuleLoader__.load({
       )
     }
 
+    function renderPipelineBanner(view, run) {
+      if (!run) return null
+      const tr = view.tr
+      const items = run.items ? normalizeRunItems(run) : []
+      const stage =
+        run.pipelineStage ||
+        (items.some((i) => i.status === 'changes_requested')
+          ? 'reworking'
+          : items.some((i) => i.status === 'in_review')
+            ? 'reviewing'
+            : items.some((i) => i.status === 'running')
+              ? 'implementing'
+              : items.length > 0 && items.every((i) => i.status === 'approved')
+                ? 'converged'
+                : 'planning')
+
+      const stageOrder = ['planning', 'implementing', 'reviewing', 'reworking', 'converged']
+      const currentKey = stage === 'finalized' ? 'converged' : stage
+      const stageIndex = stageOrder.indexOf(currentKey)
+
+      const counts = {
+        planning: items.filter((i) => i.status === 'pending').length,
+        implementing: items.filter((i) => i.status === 'running').length,
+        reviewing: items.filter((i) => i.status === 'in_review').length,
+        reworking: items.filter((i) => i.status === 'changes_requested').length,
+        converged: items.filter((i) => i.status === 'approved').length,
+      }
+
+      const steps = stageOrder.map((key, index) => {
+        let stateClass = 'atw-pipeline-step--upcoming'
+        if (index < stageIndex || stage === 'finalized') {
+          stateClass = 'atw-pipeline-step--done'
+        } else if (index === stageIndex) {
+          stateClass = 'atw-pipeline-step--active'
+        }
+        const label =
+          key === 'planning'
+            ? tr('pipeline.planning')
+            : key === 'implementing'
+              ? tr('pipeline.implementing')
+              : key === 'reviewing'
+                ? tr('pipeline.reviewing')
+                : key === 'reworking'
+                  ? tr('pipeline.reworking')
+                  : tr('pipeline.converged')
+        const count = counts[key]
+        return h(
+          'div',
+          { key, className: 'atw-pipeline-step ' + stateClass },
+          h(
+            'div',
+            { className: 'atw-pipeline-step-head' },
+            h('span', { className: 'atw-pipeline-step-num' }, String(index + 1)),
+            h('span', { className: 'atw-pipeline-step-label' }, label),
+            count > 0 ? h('span', { className: 'atw-pipeline-step-count' }, tr('pipeline.stageCount', { n: count })) : null,
+          ),
+          index < stageOrder.length - 1 ? h('span', { key: 'arrow-' + key, className: 'atw-pipeline-arrow', 'aria-hidden': true }, '→') : null,
+        )
+      })
+
+      let notice = null
+      if (stage === 'reworking') {
+        notice = h('div', { key: 'notice', className: 'atw-pipeline-notice atw-pipeline-notice--warn' }, tr('pipeline.noticeReworking'))
+      } else if (stage === 'finalized') {
+        notice = h('div', { key: 'notice', className: 'atw-pipeline-notice atw-pipeline-notice--success' }, tr('pipeline.noticeFinalized'))
+      } else if (stage === 'converged') {
+        notice = h('div', { key: 'notice', className: 'atw-pipeline-notice atw-pipeline-notice--brand' }, tr('pipeline.noticeConverged'))
+      }
+
+      return h(
+        'div',
+        { className: 'atw-pipeline-banner' },
+        h('div', { className: 'atw-pipeline-steps' }, steps),
+        notice,
+      )
+    }
+
     /** @returns one small Git/PR badge (kept on the shared `atw-badge` scale). */
     function gitBadge(label, tone, key) {
       return h('span', { key, className: 'atw-badge atw-badge--git' + (tone ? ' atw-badge--' + tone : '') }, label)
@@ -2348,6 +2501,19 @@ window.__ModuleLoader__.load({
       const badges = []
       if (git.branch !== '') {
         badges.push(h('span', { key: 'branch', className: 'atw-badge atw-badge--git', title: git.branch }, tr('git.branch', { branch: git.branch })))
+      }
+      if (git.worktreeBranch !== '' && git.worktreeBranch !== git.branch) {
+        badges.push(
+          h(
+            'span',
+            {
+              key: 'worktree',
+              className: 'atw-badge atw-badge--git' + (git.worktreeMerged ? ' atw-badge--success' : ''),
+              title: git.worktreePath || git.worktreeBranch,
+            },
+            git.worktreeMerged ? '✓ ' + tr('card.merged') : '⎇ ' + tr('card.worktree'),
+          ),
+        )
       }
       if (git.pushed) badges.push(gitBadge(tr('git.pushed'), 'success', 'pushed'))
       if (git.verify !== null) badges.push(gitBadge(git.verify.ok ? tr('git.verifyOk') : tr('git.verifyFail'), git.verify.ok ? 'success' : 'error', 'verify'))
@@ -2401,6 +2567,12 @@ window.__ModuleLoader__.load({
       if (git.base !== '') rows.push(kvRow('git-base', tr('git.base'), git.base))
       if (git.sha !== '') rows.push(kvRow('git-sha', tr('git.sha'), git.sha))
       if (git.remote !== '') rows.push(kvRow('git-remote', tr('git.remote'), git.remote))
+      if (git.worktreeBranch !== '') {
+        rows.push(kvRow('git-worktree', tr('git.worktree'), git.worktreeBranch + (git.worktreeMerged ? ' (' + tr('card.merged') + ')' : '')))
+      }
+      if (git.worktreePath !== '') {
+        rows.push(kvRow('git-worktree-path', tr('git.worktreePath'), git.worktreePath))
+      }
       rows.push(kvRow('git-push', tr('git.pushState'), badge(git.pushed ? tr('git.pushed') : tr('git.notPushed'), git.pushed ? 'success' : 'idle')))
       rows.push(
         kvRow(
@@ -2460,6 +2632,35 @@ window.__ModuleLoader__.load({
       return h('div', { key: 'git', className: 'atw-section' }, h('div', { className: 'atw-section-title' }, tr('git.title')), rows)
     }
 
+    function renderFindingPreview(view, finding) {
+      const tr = view.tr
+      const loc = finding.file ? (Number.isFinite(finding.line) ? finding.file + ':' + finding.line : finding.file) : ''
+      const text = (loc ? '[' + loc + '] ' : '') + finding.claim
+      return h(
+        'div',
+        {
+          key: 'latest-finding',
+          className: 'atw-card-finding',
+          title: tr('card.findingTooltip', { id: finding.id || '?', claim: finding.claim }),
+        },
+        h('span', { className: 'atw-card-finding-badge' }, tr('card.findingLabel')),
+        h('span', { className: 'atw-card-finding-text' }, text),
+      )
+    }
+
+    function renderSummaryPreview(view, summary) {
+      return h(
+        'div',
+        {
+          key: 'summary-preview',
+          className: 'atw-card-summary',
+          title: summary,
+        },
+        h('span', { className: 'atw-card-summary-icon' }, '💬'),
+        h('span', { className: 'atw-card-summary-text' }, summary),
+      )
+    }
+
     function renderItemCard(view, card, activeOwners = new Set()) {
       const tr = view.tr
       const item = card.item
@@ -2512,6 +2713,11 @@ window.__ModuleLoader__.load({
           tr('flow.owner', { name: str(item.owner, tr('common.unknown')) }),
         ),
         renderGitBadges(view, item.git),
+        item.latestFinding !== null
+          ? renderFindingPreview(view, item.latestFinding)
+          : item.summaryPreview !== null
+            ? renderSummaryPreview(view, item.summaryPreview)
+            : null,
         h(
           'div',
           { className: 'atw-card-flags' },
@@ -4157,6 +4363,8 @@ window.__ModuleLoader__.load({
         return h('div', { className: 'atw-scroll' }, content)
       }
       const collaboration = normalizeCollaboration(run)
+      const banner = renderPipelineBanner(view, run)
+      if (banner !== null) content.push(banner)
       content.push(h('div', { className: 'atw-main' }, renderFlowPanel(view, run, team), renderTopologyPanel(view, team, run)))
       content.push(h('div', { className: 'atw-collab' }, renderChannelPanel(view, run), renderProposalsPanel(view, run)))
       content.push(h('div', { className: 'atw-usage-wrap' }, renderUsagePanel(view, run)))

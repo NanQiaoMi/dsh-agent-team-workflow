@@ -1261,3 +1261,64 @@ test('the snapshot exposes the plan-first record and degrades gracefully', () =>
   const broken = buildSnapshot(makeInput(makeState({ items: [makeItem({ plan: { status: 'nope' } })] }), { team: makeTeam() }))
   assert.equal(broken.run.items[0].plan, null)
 })
+
+test('pipelineStage, summaryPreview, latestFinding, and worktree status are properly exposed', () => {
+  const state = makeState({
+    phase: 'planning',
+    items: [
+      makeItem({
+        id: 'W1',
+        status: 'changes_requested',
+        report: { summary: 'Implemented isolated worktree support and test suites' },
+        reviews: [
+          {
+            round: 1,
+            reviewer: 'reviewer-1',
+            status: 'submitted',
+            findings: [
+              { id: 'F1', severity: 'major', file: 'lib/tools.js', line: 42, claim: 'Missing permission check', resolution: null },
+            ],
+          },
+        ],
+        git: {
+          branch: 'agentteam/run-1',
+          worktree: '.agentteam/wt-W1',
+          worktreePath: '/abs/path/.agentteam/wt-W1',
+          worktreeBranch: 'agentteam/run-1/wt-W1',
+          worktreeMergedAt: '2026-11-05T00:00:00.000Z',
+        },
+      }),
+      makeItem({
+        id: 'W2',
+        status: 'approved',
+      }),
+    ],
+  })
+
+  const snapshot = buildSnapshot(makeInput(state, { team: makeTeam() }))
+  assert.equal(snapshot.run.pipelineStage, 'reworking')
+  const item1 = snapshot.run.items[0]
+  assert.equal(item1.summaryPreview, 'Implemented isolated worktree support and test suites')
+  assert.deepEqual(item1.latestFinding, {
+    id: 'F1',
+    severity: 'major',
+    file: 'lib/tools.js',
+    line: 42,
+    claim: 'Missing permission check',
+  })
+  assert.equal(item1.git.worktreePath, '/abs/path/.agentteam/wt-W1')
+  assert.equal(item1.git.worktreeMerged, true)
+
+  // Stage transitions
+  const implementingState = makeState({ items: [makeItem({ status: 'running' })] })
+  assert.equal(buildSnapshot(makeInput(implementingState)).run.pipelineStage, 'implementing')
+
+  const reviewingState = makeState({ items: [makeItem({ status: 'in_review' })] })
+  assert.equal(buildSnapshot(makeInput(reviewingState)).run.pipelineStage, 'reviewing')
+
+  const convergedState = makeState({ items: [makeItem({ status: 'approved' })] })
+  assert.equal(buildSnapshot(makeInput(convergedState)).run.pipelineStage, 'converged')
+
+  const finalizedState = makeState({ finalizedAt: '2026-11-05T01:00:00.000Z', items: [makeItem({ status: 'approved' })] })
+  assert.equal(buildSnapshot(makeInput(finalizedState)).run.pipelineStage, 'finalized')
+})
