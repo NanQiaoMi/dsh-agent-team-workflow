@@ -172,7 +172,24 @@ export async function autoMergeApprovedWorktree({ cwd, state, itemId, agent, sto
     if (typeof merged.error === 'string' && /nothing to commit/i.test(merged.error)) {
       // Worktree had no new changes; treat as merged cleanly
     } else {
-      return { ok: false, error: merged.error }
+      await store.mutateState(agent, (current) => {
+        W.ensureCollaboration(current)
+        const target = W.findItem(current, item.id)
+        if (target) {
+          target.git = {
+            ...(target.git ?? {}),
+            worktreeMergeError: merged.error,
+          }
+          W.appendEvent(current, {
+            at: new Date().toISOString(),
+            type: 'git/worktree-merge-conflict',
+            actor: 'worktree-manager',
+            detail: `${target.id}: ${merged.error}`,
+          })
+        }
+        return current
+      })
+      return { ok: false, error: merged.error, conflict: true }
     }
   }
 
@@ -185,6 +202,7 @@ export async function autoMergeApprovedWorktree({ cwd, state, itemId, agent, sto
         ...(target.git ?? {}),
         worktreeMergedAt: mergedAt,
         worktreeMergeMethod: 'squash',
+        worktreeMergeError: null,
       }
       W.appendEvent(current, {
         at: mergedAt,

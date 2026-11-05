@@ -380,6 +380,7 @@ window.__ModuleLoader__.load({
       'card.merged': '已合入',
       'git.worktree': 'Worktree 分支',
       'git.worktreePath': '工作区路径',
+      'git.mergeConflict': '合入冲突',
     }
 
     const en = {
@@ -730,6 +731,7 @@ window.__ModuleLoader__.load({
       'card.merged': 'Merged',
       'git.worktree': 'Worktree Branch',
       'git.worktreePath': 'Worktree Path',
+      'git.mergeConflict': 'Merge Conflict',
     }
 
     // ---------------------------------------------------------------------
@@ -1170,6 +1172,7 @@ window.__ModuleLoader__.load({
         worktreePath: str(raw.worktreePath),
         worktreeMerged: raw.worktreeMerged === true || Number.isFinite(parseTime(raw.worktreeMergedAt)),
         worktreeMergedAt: parseTime(raw.worktreeMergedAt),
+        worktreeMergeError: str(raw.worktreeMergeError),
       }
     }
 
@@ -2503,17 +2506,31 @@ window.__ModuleLoader__.load({
         badges.push(h('span', { key: 'branch', className: 'atw-badge atw-badge--git', title: git.branch }, tr('git.branch', { branch: git.branch })))
       }
       if (git.worktreeBranch !== '' && git.worktreeBranch !== git.branch) {
-        badges.push(
-          h(
-            'span',
-            {
-              key: 'worktree',
-              className: 'atw-badge atw-badge--git' + (git.worktreeMerged ? ' atw-badge--success' : ''),
-              title: git.worktreePath || git.worktreeBranch,
-            },
-            git.worktreeMerged ? '✓ ' + tr('card.merged') : '⎇ ' + tr('card.worktree'),
-          ),
-        )
+        if (git.worktreeMergeError !== '') {
+          badges.push(
+            h(
+              'span',
+              {
+                key: 'worktree-conflict',
+                className: 'atw-badge atw-badge--error',
+                title: git.worktreeMergeError,
+              },
+              '⚠ ' + tr('git.mergeConflict'),
+            ),
+          )
+        } else {
+          badges.push(
+            h(
+              'span',
+              {
+                key: 'worktree',
+                className: 'atw-badge atw-badge--git' + (git.worktreeMerged ? ' atw-badge--success' : ''),
+                title: git.worktreePath || git.worktreeBranch,
+              },
+              git.worktreeMerged ? '✓ ' + tr('card.merged') : '⎇ ' + tr('card.worktree'),
+            ),
+          )
+        }
       }
       if (git.pushed) badges.push(gitBadge(tr('git.pushed'), 'success', 'pushed'))
       if (git.verify !== null) badges.push(gitBadge(git.verify.ok ? tr('git.verifyOk') : tr('git.verifyFail'), git.verify.ok ? 'success' : 'error', 'verify'))
@@ -2572,6 +2589,9 @@ window.__ModuleLoader__.load({
       }
       if (git.worktreePath !== '') {
         rows.push(kvRow('git-worktree-path', tr('git.worktreePath'), git.worktreePath))
+      }
+      if (git.worktreeMergeError !== '') {
+        rows.push(kvRow('git-worktree-error', tr('git.mergeConflict'), git.worktreeMergeError))
       }
       rows.push(kvRow('git-push', tr('git.pushState'), badge(git.pushed ? tr('git.pushed') : tr('git.notPushed'), git.pushed ? 'success' : 'idle')))
       rows.push(

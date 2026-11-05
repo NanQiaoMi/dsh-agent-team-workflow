@@ -39,6 +39,7 @@ const CONTRACT_FUNCTIONS = [
   'gitWorktreeAdd',
   'gitWorktreeRemove',
   'gitWorktreeList',
+  'gitWorktreeSync',
 ].sort()
 
 /**
@@ -733,5 +734,58 @@ test('worktree helpers refuse bad paths and non-repositories', async () => {
     const result = await Git.gitWorktreeAdd({ cwd: outside, path: '.agentteam/worktrees/W1', branch: 'x' })
     assert.equal(result.ok, false)
     assert.match(result.error, /not a git repository/)
+  })
+})
+
+test('gitWorktreeSync synchronizes upstream changes and aborts on conflict', async () => {
+  await withRepo(async ({ repo }) => {
+    // 1. Add worktree W1
+    const wtRel = '.agentteam/worktrees/W1'
+    const added = await Git.gitWorktreeAdd({ cwd: repo, path: wtRel, branch: 'agentteam-wt/W1' })
+    assert.equal(added.ok, true)
+    const wtAbs = join(repo, wtRel)
+
+    // Initially already up to date with main
+    const initialSync = await Git.gitWorktreeSync({ cwd: wtAbs, fromBranch: 'main' })
+    assert.equal(initialSync.ok, true)
+    assert.equal(initialSync.upToDate, true)
+    assert.equal(initialSync.merged, false)
+    assert.equal(initialSync.conflict, false)
+
+    // Make a commit in main repo
+    await writeFile(join(repo, 'upstream_update.txt'), 'hello from main\n')
+    await realExec('git', ['add', 'upstream_update.txt'], { cwd: repo })
+    await realExec('git', ['commit', '-m', 'feat: upstream update'], { cwd: repo })
+
+    // Sync from main inside worktree
+    const activeSync = await Git.gitWorktreeSync({ cwd: wtAbs, fromBranch: 'main' })
+    assert.equal(activeSync.ok, true)
+    assert.equal(activeSync.merged, true)
+    assert.equal(activeSync.upToDate, false)
+    assert.equal(activeSync.conflict, false)
+    const syncedContent = await readFile(join(wtAbs, 'upstream_update.txt'), 'utf8')
+    assert.equal(syncedContent, 'hello from main\n')
+
+    // Now induce a conflict:
+    // Worktree commits a change to conflict.txt
+    await writeFile(join(wtAbs, 'conflict.txt'), 'worktree version\n')
+    await realExec('git', ['add', 'conflict.txt'], { cwd: wtAbs })
+    await realExec('git', ['commit', '-m', 'feat: conflict from wt'], { cwd: wtAbs })
+
+    // Main commits a conflicting change to conflict.txt
+    await writeFile(join(repo, 'conflict.txt'), 'main version\n')
+    await realExec('git', ['add', 'conflict.txt'], { cwd: repo })
+    await realExec('git', ['commit', '-m', 'feat: conflict from main'], { cwd: repo })
+
+    // Sync from main inside worktree should fail cleanly with conflict: true, and abort merge when requested
+    const conflictSync = await Git.gitWorktreeSync({ cwd: wtAbs, fromBranch: 'main', abortOnConflict: true })
+    assert.equal(conflictSync.ok, false)
+    assert.equal(conflictSync.conflict, true)
+    assert.ok(conflictSync.conflictedFiles.includes('conflict.txt'))
+    assert.match(conflictSync.error, /conflicts in \[conflict\.txt\]/)
+
+    // Verify worktree is left in a clean state (merge was aborted)
+    const statusAfter = await Git.gitStatus({ cwd: wtAbs })
+    assert.equal(statusAfter.clean, true)
   })
 })

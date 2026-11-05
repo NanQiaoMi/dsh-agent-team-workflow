@@ -522,6 +522,7 @@ function buildItemGit(raw) {
     worktreeMergedAt: isoOf(raw.worktreeMergedAt),
     worktreeMerged: raw.worktreeMerged === true || isoOf(raw.worktreeMergedAt) !== null,
     worktreePath: textOf(raw.worktreePath) || null,
+    worktreeMergeError: textOf(raw.worktreeMergeError) || null,
   }
 }
 

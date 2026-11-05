@@ -1308,6 +1308,23 @@ test('pipelineStage, summaryPreview, latestFinding, and worktree status are prop
   })
   assert.equal(item1.git.worktreePath, '/abs/path/.agentteam/wt-W1')
   assert.equal(item1.git.worktreeMerged, true)
+  assert.equal(item1.git.worktreeMergeError, null)
+
+  const conflictState = makeState({
+    items: [
+      makeItem({
+        id: 'W3',
+        status: 'approved',
+        git: {
+          worktree: '.agentteam/wt-W3',
+          worktreeBranch: 'wt/W3',
+          worktreeMergeError: 'merge conflict in shared.txt',
+        },
+      }),
+    ],
+  })
+  const conflictSnapshot = buildSnapshot(makeInput(conflictState))
+  assert.equal(conflictSnapshot.run.items[0].git.worktreeMergeError, 'merge conflict in shared.txt')
 
   // Stage transitions
   const implementingState = makeState({ items: [makeItem({ status: 'running' })] })

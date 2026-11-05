@@ -490,3 +490,144 @@ test('worktreeIsolation off skips all worktree creation cleanly', async () => {
     assert.equal(wtList.worktrees.length, 1) // only the main repo checkout
   })
 })
+
+test('worktree auto-merge conflict is diagnosed and recovered via worktree_sync', async () => {
+  await withRepo(async ({ repo }) => {
+    const harness = createHarness(repo)
+    const settings = resolveSettings({
+      gitEnabled: true,
+      gitBaseBranch: 'main',
+      worktreeIsolation: 'parallel',
+      autoWorktree: true,
+      autoMergeWorktree: true,
+      autoCleanupWorktrees: true,
+      autoStaff: false,
+    })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({
+      ctx: harness.ctx,
+      settings,
+      store,
+      version: '1.23.0',
+    })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const reviewTool = tools.find((t) => t.name === 'team_flow_review_submit')
+    const gitTool = tools.find((t) => t.name === 'team_flow_git')
+
+    const worker1Agent = { id: 'session-w1', session: { id: 'session-w1' } }
+    const reviewer1Agent = { id: 'session-r1', session: { id: 'session-r1' } }
+
+    // Plan 1 item
+    await planTool.execute(
+      {
+        objective: 'Test conflict recovery',
+        acceptance_criteria: ['Conflict handled'],
+        items: [
+          {
+            id: 'T1',
+            subject: 'Conflict task',
+            owner: 'worker1',
+            reviewers: ['reviewer1'],
+            definition_of_done: ['Resolved'],
+            evidence_commands: ['cat shared.txt'],
+          },
+        ],
+      },
+      { agent: harness.lead },
+    )
+
+    let state = await store.readState(harness.lead)
+    const t1 = state.items.find((it) => it.id === 'T1')
+    assert.ok(t1.git?.worktreePath)
+
+    // In parallel, write to shared.txt in the run branch
+    const runBranch = state.git.branch
+    await gitRun(repo, ['switch', runBranch])
+    await writeFile(join(repo, 'shared.txt'), 'run branch content\n')
+    await gitRun(repo, ['add', 'shared.txt'])
+    await gitRun(repo, ['commit', '-m', 'feat: run branch commit'])
+    await gitRun(repo, ['switch', 'main'])
+
+    // Worker1 writes conflicting shared.txt inside its worktree
+    const fileInWt = join(t1.git.worktreePath, 'shared.txt')
+    await writeFile(fileInWt, 'worktree branch content\n')
+    await gitTool.execute(
+      {
+        action: 'commit',
+        item_id: 'T1',
+        files: ['shared.txt'],
+        message: 'feat: worktree conflicting commit',
+      },
+      { agent: worker1Agent },
+    )
+
+    // Worker1 submits report
+    await reportTool.execute(
+      {
+        item_id: 'T1',
+        summary: 'Finished shared.txt in worktree',
+        files: ['shared.txt'],
+        commands: [{ command: 'cat shared.txt', exit_code: 0, output: 'worktree branch content\n' }],
+        evidence: ['evidence verified'],
+      },
+      { agent: worker1Agent },
+    )
+
+    // Reviewer1 approves report
+    // autoMergeApprovedWorktree should run and detect conflict with run branch!
+    await reviewTool.execute(
+      {
+        item_id: 'T1',
+        verdict: 'approve',
+        summary: 'Approved',
+        evidence_checked: ['evidence verified'],
+      },
+      { agent: reviewer1Agent },
+    )
+
+    // Inspect state: item T1 should have worktreeMergeError recorded
+    state = await store.readState(harness.lead)
+    const conflictedT1 = state.items.find((it) => it.id === 'T1')
+    assert.ok(conflictedT1.git?.worktreeMergeError, 'worktreeMergeError must be recorded')
+    assert.match(conflictedT1.git.worktreeMergeError, /conflicts/i)
+
+    // Now worker calls worktree_sync to pull from run branch and diagnose
+    const syncRes = await gitTool.execute(
+      {
+        action: 'worktree_sync',
+        item_id: 'T1',
+      },
+      { agent: worker1Agent },
+    )
+    assert.equal(syncRes.conflict, true)
+    assert.ok(syncRes.conflicted_files.includes('shared.txt'))
+
+    // Worker resolves conflict in worktree by updating shared.txt and committing
+    await writeFile(fileInWt, 'merged content\n')
+    await gitTool.execute(
+      {
+        action: 'commit',
+        item_id: 'T1',
+        files: ['shared.txt'],
+        message: 'fix: resolve conflict with run branch',
+      },
+      { agent: worker1Agent },
+    )
+
+    // Lead executes merge for T1 worktree
+    const mergeRes = await gitTool.execute(
+      {
+        action: 'merge',
+        item_id: 'T1',
+      },
+      { agent: harness.lead },
+    )
+    assert.ok(mergeRes.item_git?.worktreeMergedAt)
+
+    // Verify content on run branch is merged
+    const finalContent = await gitRun(repo, ['show', `${runBranch}:shared.txt`])
+    assert.equal(finalContent, 'merged content\n')
+  })
+})

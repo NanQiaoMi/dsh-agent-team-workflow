@@ -418,3 +418,98 @@ test('orchestrator auto-finalizes the run when autoFinalize is enabled and gates
   })
 })
 
+test('orchestrator wakes Lead for arbitration when an item is ESCALATED', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    harness.members.push(
+      { name: 'worker-1', role: 'teammate', id: 'session-w1', status: 'inactive' },
+      { name: 'rev-1', role: 'teammate', id: 'session-rev', status: 'inactive' },
+    )
+    const settings = resolveSettings({ autoOrchestrate: true })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const orchestrator = createOrchestrator({ ctx: harness.ctx, store, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: '1.23.0' })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    await planTool.execute(
+      {
+        objective: 'Test escalation arbitration',
+        acceptance_criteria: ['Lead notified on escalation'],
+        items: [
+          {
+            id: 'W1',
+            subject: 'Escalated task',
+            owner: 'worker-1',
+            reviewers: ['rev-1'],
+            definition_of_done: ['Arbitrated'],
+          },
+        ],
+      },
+      { agent: harness.lead, signal: new AbortController().signal },
+    )
+
+    // Escalate item W1
+    await store.mutateState(harness.lead, (s) => {
+      const item = s.items.find((it) => it.id === 'W1')
+      item.status = 'escalated'
+      item.escalation = { reason: 'Exceeded rework budget', at: new Date().toISOString() }
+      return s
+    })
+
+    const res = await orchestrator.reconcile(harness.lead, { force: true })
+    assert.ok(res.actionsTaken.some((a) => a.type === 'wake-arbitration' && a.itemId === 'W1'))
+    const leadNotice = harness.messages.find((m) => m.target === 'lead' && m.text.includes('LEAD_ARBITRATION_REQUIRED'))
+    assert.ok(leadNotice, 'Lead must receive LEAD_ARBITRATION_REQUIRED notice')
+    assert.match(leadNotice.text, /Exceeded rework budget/)
+  })
+})
+
+test('orchestrator alerts Lead and Worker on worktree merge conflict', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    harness.members.push(
+      { name: 'worker-1', role: 'teammate', id: 'session-w1', status: 'inactive' },
+      { name: 'rev-1', role: 'teammate', id: 'session-rev', status: 'inactive' },
+    )
+    const settings = resolveSettings({ autoOrchestrate: true })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const orchestrator = createOrchestrator({ ctx: harness.ctx, store, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: '1.23.0' })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    await planTool.execute(
+      {
+        objective: 'Test conflict alert',
+        acceptance_criteria: ['Alert on conflict'],
+        items: [
+          {
+            id: 'W1',
+            subject: 'Conflicted task',
+            owner: 'worker-1',
+            reviewers: ['rev-1'],
+            definition_of_done: ['Resolved'],
+          },
+        ],
+      },
+      { agent: harness.lead, signal: new AbortController().signal },
+    )
+
+    // Mark item W1 approved but with worktreeMergeError
+    await store.mutateState(harness.lead, (s) => {
+      const item = s.items.find((it) => it.id === 'W1')
+      item.status = 'approved'
+      item.git = {
+        worktreeBranch: 'agentteam-wt/run/W1',
+        worktreeMergeError: 'merge of branch into run branch has conflicts',
+      }
+      return s
+    })
+
+    const res = await orchestrator.reconcile(harness.lead, { force: true })
+    assert.ok(res.actionsTaken.some((a) => a.type === 'notify-worktree-conflict' && a.itemId === 'W1'))
+    const conflictNotice = harness.messages.find((m) => m.text.includes('merge conflict during auto-merge'))
+    assert.ok(conflictNotice, 'notice must mention merge conflict')
+    assert.match(conflictNotice.text, /worktree_sync/)
+  })
+})
+

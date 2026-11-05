@@ -59,6 +59,7 @@
 | [`docs/35-pipeline-optimizations.md`](docs/35-pipeline-optimizations.md) | **v1.20 链路深度优化与极简能效**：自动认领零轮次空转、审阅即送精准 Diff、角色自适应极简协议削减 60% Token |
 | [`docs/36-autonomous-convergence-and-rework.md`](docs/36-autonomous-convergence-and-rework.md) | **v1.21 全自动闭环收敛与返工自驱动体系**：缺陷结构化下达、审查者 Worktree 独立复测、全自动门禁收敛与报告归档 |
 | [`docs/37-dashboard-status-enhancement.md`](docs/37-dashboard-status-enhancement.md) | **v1.22 看板全景透视增强**：宏观协作流水线横幅（规划➔实现➔评审➔返工➔收敛）、卡片缺陷/交付实时预览、Worktree 物理隔离徽章 |
+| [`docs/38-worktree-sync-and-conflict-healing.md`](docs/38-worktree-sync-and-conflict-healing.md) | **v1.23 多工作树交叉同步、冲突自愈与升级仲裁看门狗**：`gitWorktreeSync` 安全合流、自动合并冲突阻断与通知、升级仲裁主动唤醒、合入冲突看板徽章与诊断 |
 | [`docs/29-board-design-v19.md`](docs/29-board-design-v19.md) | **v1.9 看板视觉重构**：参考 refero shadcn 风格（单色/24px 卡片/18px 胶囊/发丝线/统计块），新旧截图与设计映射 |
 | [`docs/13-collaboration-live-run.md`](docs/13-collaboration-live-run.md) | **对等协作 live run**：3 成员 / 3 开放项 / 8 分钟，抢单、直连问答、提案投票、互邀评审、gate 全记录 + 看板截图 |
 | [`packages/agent-team-workflow/`](packages/agent-team-workflow/) | 可安装插件包（零外部依赖，纯 ESM） |
