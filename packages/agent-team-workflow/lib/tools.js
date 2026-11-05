@@ -15,6 +15,11 @@ import * as G from './git.js'
 import { fireHooks } from './hooks.js'
 import * as W from './workflow.js'
 import {
+  autoProvisionWorktrees,
+  autoMergeApprovedWorktree,
+  autoCleanupRunWorktrees,
+} from './worktree-manager.js'
+import {
   approvedMessage,
   changesRequestedMessage,
   renderQueueBrief,
@@ -603,8 +608,13 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           }
           return { state, archivedPaths }
         })
-        const state = outcome.state
+        let state = outcome.state
         const archived = outcome.archivedPaths
+
+        // Auto-provision worktrees if enabled
+        const cwd = store.workingDir(agent)
+        await autoProvisionWorktrees({ cwd, state, agent, store }).catch(() => {})
+        state = (await store.readState(agent)) ?? state
 
         const openItems = items.filter((item) => item.assignment === 'open')
         const assignedItems = items.filter((item) => item.assignment !== 'open')
@@ -1002,7 +1012,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
         }
         if (!W.VERDICTS.includes(args.verdict)) throw new Error(`verdict must be one of ${W.VERDICTS.join('/')}`)
         let outcome = null
-        const state = await store.mutateState(agent, async (current) => {
+        let state = await store.mutateState(agent, async (current) => {
           if (current === null) throw new Error('no workflow run exists yet')
           requireWritableRun(current, 'team_flow_review_submit')
           const item = W.findItem(current, String(args.item_id ?? ''))
@@ -1051,6 +1061,13 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           const failure = settings.autoNotify ? await sendPeer(ctx, agent, item.owner, approvedMessage(state, item, outcome.review), exec.signal) : null
           if (failure === null && settings.autoNotify) notified.push(item.owner)
           else if (failure !== null) syncWarnings.push(failure)
+          const cwd = store.workingDir(agent)
+          await autoMergeApprovedWorktree({ cwd, state, itemId: item.id, agent, store }).catch(() => {})
+          state = (await store.readState(agent)) ?? state
+          if (state?.settings?.worktreeIsolation === 'serial') {
+            await autoProvisionWorktrees({ cwd, state, agent, store }).catch(() => {})
+            state = (await store.readState(agent)) ?? state
+          }
         }
         if (outcome.nextReviewer !== null && outcome.nextReviewer !== undefined) {
           if (!isLiveMember(ctx, agent, outcome.nextReviewer)) syncWarnings.push(`next reviewer "${outcome.nextReviewer}" is not in the roster`)
@@ -1135,7 +1152,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           }
         }
         let outcome = null
-        const state = await store.mutateState(agent, async (current) => {
+        let state = await store.mutateState(agent, async (current) => {
           if (current === null) throw new Error('no workflow run exists yet')
           requireWritableRun(current, 'team_flow_review_respond')
           const item = W.findItem(current, String(args.item_id ?? ''))
@@ -1257,7 +1274,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
 
         let gate = null
         let reportPath = null
-        const state = await store.mutateState(agent, async (current) => {
+        let state = await store.mutateState(agent, async (current) => {
           if (current === null) throw new Error('no workflow run exists yet')
           for (const override of overrides) W.findItem(current, override.itemId)
           // Capture token usage (when the Host exposes the token-meter projection)
@@ -1366,6 +1383,9 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
               /* finalize already succeeded; task cleanup is best effort */
             }
           }
+          const cwd = store.workingDir(agent)
+          await autoCleanupRunWorktrees({ cwd, state, agent, store }).catch(() => {})
+          state = (await store.readState(agent)) ?? state
         }
         const overrideArgs = overrides.map((override) => ({ item_id: override.itemId, reason: override.reason }))
         const nextActions =
@@ -1512,7 +1532,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
         const reason = String(args.reason ?? '').trim()
         if (reason.length === 0) throw new Error('every repair needs a reason; it is recorded in the audit trail')
         let outcome = null
-        const state = await store.mutateState(agent, async (current) => {
+        let state = await store.mutateState(agent, async (current) => {
           if (current === null) throw new Error('no workflow run exists yet')
           requireWritableRun(current, 'team_flow_repair')
           const item = W.findItem(current, String(args.item_id ?? ''))
@@ -1773,6 +1793,21 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           if (mode === 'off') throw new Error('worktree isolation is disabled; set worktreeIsolation: "serial" or "parallel" in the plugin config')
           const slug = (value) => String(value).replace(/[^A-Za-z0-9._/-]+/g, '-')
           if (action === 'worktree_add') {
+            if (target.git?.worktree && target.git?.worktreePath) {
+              return {
+                action,
+                item_id: target.id,
+                mode,
+                worktree: {
+                  relative: target.git.worktree,
+                  absolute: target.git.worktreePath,
+                  branch: target.git.worktreeBranch,
+                  startPoint: target.git.worktreeBase ?? null,
+                },
+                detail: { ok: true, path: target.git.worktree, branch: target.git.worktreeBranch },
+                warnings,
+              }
+            }
             if (mode === 'serial') {
               const other = state.items.find((item) => item.id !== target.id && item.git?.worktreeBranch !== undefined && item.git?.worktreeMergedAt == null)
               if (other !== undefined) throw new Error(`serial worktree isolation allows one active worktree at a time; item "${other.id}" still owns one (merge or remove it first)`)
@@ -1793,6 +1828,9 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
               return current
             })
             return { action, item_id: target.id, mode, worktree: { relative, absolute, branch, startPoint: startPoint ?? null }, detail: result, warnings }
+          }
+          if (target.git?.worktreeRemovedAt || (!target.git?.worktree && !target.git?.worktreePath)) {
+            return { action, item_id: target.id, already_removed: true, detail: { ok: true }, warnings }
           }
           const absolute = target.git?.worktreePath ?? path.resolve(cwd, target.git?.worktree ?? `.agentteam/worktrees/${state.runId}/${target.id}`)
           const result = await G.gitWorktreeRemove({ cwd, path: target.git?.worktree ?? `.agentteam/worktrees/${state.runId}/${target.id}` })
@@ -1946,7 +1984,17 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           if (typeof target.git?.worktreeBranch !== 'string') throw new Error(`item "${target.id}" has no worktree branch; run worktree_add first`)
           if (target.status !== W.ITEM_STATUS.APPROVED) throw new Error(`item "${target.id}" is "${target.status}"; merge its worktree branch only after it is approved`)
           if (state.git === null || typeof state.git.branch !== 'string') throw new Error('no run branch recorded; run prepare first')
-          if (target.git.worktreeMergedAt != null) throw new Error(`item "${target.id}" worktree branch is already merged`)
+          if (target.git.worktreeMergedAt != null) {
+            return {
+              action,
+              item_id: target.id,
+              item_git: target.git,
+              run_git: state.git,
+              detail: { ok: true, sha: target.git.worktreeMergeSha ?? null },
+              already_merged: true,
+              warnings,
+            }
+          }
           const method = args.method === 'squash' ? 'squash' : 'no-ff'
           const result = await G.gitMerge({
             cwd,
@@ -2270,6 +2318,8 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             else warnings.push(failure)
           }
         }
+        const cwd = store.workingDir(agent)
+        await autoProvisionWorktrees({ cwd, state: await store.readState(agent), agent, store }).catch(() => {})
         const state = await store.readState(agent)
         return {
           item_id: item.id,

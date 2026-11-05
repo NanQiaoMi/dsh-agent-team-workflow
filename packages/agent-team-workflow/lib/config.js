@@ -81,6 +81,12 @@ export const DEFAULT_SETTINGS = Object.freeze({
   tokenBudgetPerRun: 0,
   /** Per-item git worktree isolation: 'off' | 'serial' | 'parallel'. */
   worktreeIsolation: 'off',
+  /** Automatically provision worktrees for planned/created items when worktreeIsolation is active. */
+  autoWorktree: true,
+  /** Automatically merge an approved item's worktree branch into the run branch. */
+  autoMergeWorktree: true,
+  /** Automatically clean up temporary worktrees when the run is finalized. */
+  autoCleanupWorktrees: true,
   /** Automatically reconcile team workflow events and wake inactive workers/reviewers. */
   autoOrchestrate: true,
   /** Wake assigned workers when their task dependencies are satisfied. */
@@ -228,6 +234,9 @@ export function resolveSettings(raw = {}) {
     tokenBudgetPerMember: clampInt(config.tokenBudgetPerMember, DEFAULT_SETTINGS.tokenBudgetPerMember, 0, 1_000_000_000),
     tokenBudgetPerRun: clampInt(config.tokenBudgetPerRun, DEFAULT_SETTINGS.tokenBudgetPerRun, 0, 1_000_000_000),
     worktreeIsolation: readWorktreeMode(config.worktreeIsolation),
+    autoWorktree: readBool(config.autoWorktree, DEFAULT_SETTINGS.autoWorktree),
+    autoMergeWorktree: readBool(config.autoMergeWorktree, DEFAULT_SETTINGS.autoMergeWorktree),
+    autoCleanupWorktrees: readBool(config.autoCleanupWorktrees, DEFAULT_SETTINGS.autoCleanupWorktrees),
     autoOrchestrate: readBool(config.autoOrchestrate, DEFAULT_SETTINGS.autoOrchestrate),
     autoWakeUnblocked: readBool(config.autoWakeUnblocked, DEFAULT_SETTINGS.autoWakeUnblocked),
     autoWakeReviewers: readBool(config.autoWakeReviewers, DEFAULT_SETTINGS.autoWakeReviewers),
@@ -269,6 +278,9 @@ export function runSettings(settings) {
     tokenBudgetPerMember: settings.tokenBudgetPerMember,
     tokenBudgetPerRun: settings.tokenBudgetPerRun,
     worktreeIsolation: settings.worktreeIsolation,
+    autoWorktree: settings.autoWorktree,
+    autoMergeWorktree: settings.autoMergeWorktree,
+    autoCleanupWorktrees: settings.autoCleanupWorktrees,
     autoOrchestrate: settings.autoOrchestrate,
     autoWakeUnblocked: settings.autoWakeUnblocked,
     autoWakeReviewers: settings.autoWakeReviewers,
