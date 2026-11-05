@@ -373,6 +373,32 @@ function buildReport(report) {
 }
 
 /**
+ * Extract the most recent open finding for an item, to give quick visibility
+ * on the dashboard card.
+ * @param reviews - blackboard item reviews
+ * @returns { id, severity, file, line, claim } or null
+ */
+function extractLatestFinding(reviews) {
+  const list = recordList(reviews)
+  for (let r = list.length - 1; r >= 0; r -= 1) {
+    const findings = recordList(list[r].findings)
+    for (let f = findings.length - 1; f >= 0; f -= 1) {
+      const finding = findings[f]
+      if (resolutionState(finding.resolution) === null) {
+        return {
+          id: textOf(finding.id) || null,
+          severity: textOf(finding.severity) || 'major',
+          file: textOf(finding.file) || null,
+          line: integerOf(finding.line),
+          claim: clip(finding.claim, 160),
+        }
+      }
+    }
+  }
+  return null
+}
+
+/**
  * Normalize one work item.
  * @param raw - blackboard item.
  * @param id - the item's resolved id.
@@ -386,6 +412,8 @@ function buildItem(raw, id, context) {
   const submitted = reviews.filter((review) => textOf(review.status) === 'submitted')
   const thread = context.channelEntries.filter((entry) => entry.itemId === id)
   if (thread.length > MAX_THREAD) context.stats.threadClipped += 1
+  const report = buildReport(raw.report)
+  const summaryPreview = report && report.summary ? clip(report.summary, 140) : null
   return {
     id,
     subject: clip(raw.subject),
@@ -406,7 +434,9 @@ function buildItem(raw, id, context) {
             revision: integerOf(task.revision),
             status: textOf(task.status) || null,
           },
-    report: buildReport(raw.report),
+    report,
+    summaryPreview,
+    latestFinding: extractLatestFinding(raw.reviews),
     reviews: {
       reworkRounds: countReworkRounds(raw),
       submittedRounds: submitted.length,
@@ -490,6 +520,8 @@ function buildItemGit(raw) {
     worktree: textOf(raw.worktree) || null,
     worktreeBranch: textOf(raw.worktreeBranch) || null,
     worktreeMergedAt: isoOf(raw.worktreeMergedAt),
+    worktreeMerged: raw.worktreeMerged === true || isoOf(raw.worktreeMergedAt) !== null,
+    worktreePath: textOf(raw.worktreePath) || null,
   }
 }
 
@@ -1125,6 +1157,38 @@ function buildCollaboration(state, context) {
 }
 
 /**
+ * Derive the macro collaboration pipeline stage.
+ * @param state - blackboard run state
+ * @param items - normalized items
+ * @returns 'planning' | 'implementing' | 'reviewing' | 'reworking' | 'converged' | 'finalized'
+ */
+function computePipelineStage(state, items) {
+  const phase = textOf(state.phase).trim().toLowerCase()
+  if (state.finalizedAt || phase === 'finalized' || phase === 'completed') {
+    return 'finalized'
+  }
+  if (phase === 'converged' || phase === 'gate') {
+    return 'converged'
+  }
+  if (items.length === 0) {
+    return 'planning'
+  }
+  if (items.every((it) => it.status === 'approved')) {
+    return 'converged'
+  }
+  if (items.some((it) => it.status === 'changes_requested')) {
+    return 'reworking'
+  }
+  if (items.some((it) => it.status === 'in_review')) {
+    return 'reviewing'
+  }
+  if (items.some((it) => it.status === 'running' || (it.git && it.git.commits && it.git.commits.length > 0))) {
+    return 'implementing'
+  }
+  return 'planning'
+}
+
+/**
  * Build the run block of the snapshot.
  * @param state - blackboard run record (non-null).
  * @param context - `{ tasks, artifacts, memberNames, warnings }`.
@@ -1179,6 +1243,7 @@ function buildRun(state, context) {
   return {
     id: textOf(state.runId).trim() || textOf(state.id).trim() || null,
     phase: textOf(state.phase).trim() || 'unknown',
+    pipelineStage: computePipelineStage(state, items),
     objective: clip(state.objective),
     acceptanceCriteria: textList(state.acceptanceCriteria),
     constraints: textList(state.constraints),

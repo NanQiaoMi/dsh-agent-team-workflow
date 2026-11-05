@@ -2205,3 +2205,73 @@ test('active agents carry a visible highlight in stats, topology and flow cards'
     board.dispose()
   }
 })
+
+test('dashboard enhancement: pipeline banner, finding previews, summary previews, and worktrees', async () => {
+  const enhancedSnapshot = {
+    ...V2_SNAPSHOT,
+    run: {
+      ...V2_SNAPSHOT.run,
+      pipelineStage: 'reworking',
+      items: [
+        {
+          ...V2_SNAPSHOT.run.items[0],
+          id: 'W1',
+          status: 'changes_requested',
+          latestFinding: { id: 'F1', severity: 'major', file: 'src/core.js', line: 12, claim: 'Null pointer risk' },
+          git: {
+            branch: 'agentteam/run-v2',
+            worktreeBranch: 'agentteam/run-v2/wt-W1',
+            worktreePath: '/tmp/wt-W1',
+            worktreeMerged: false,
+            pushed: false,
+            verify: null,
+            pr: null,
+          },
+        },
+        {
+          ...V2_SNAPSHOT.run.items[1],
+          id: 'W2',
+          status: 'approved',
+          summaryPreview: 'All unit tests passing and verified on node 22',
+          git: {
+            branch: 'agentteam/run-v2',
+            worktreeBranch: 'agentteam/run-v2/wt-W2',
+            worktreePath: '/tmp/wt-W2',
+            worktreeMerged: true,
+            pushed: true,
+            verify: { ok: true },
+            pr: null,
+          },
+        },
+      ],
+    },
+  }
+
+  const board = await mountBoard(enhancedSnapshot)
+  try {
+    let tree = await board.render()
+    assert.equal(findByClass(tree, 'atw-pipeline-banner').length, 1, 'pipeline banner renders')
+    assert.equal(findByClass(tree, 'atw-pipeline-step').length, 5, '5 pipeline stages render')
+    assert.ok(textOf(findByClass(tree, 'atw-pipeline-notice')[0]).includes('k:pipeline.noticeReworking'), 'shows rework notice')
+
+    const w1 = cardById(tree, 'W1')
+    assert.equal(findByClass(w1, 'atw-card-finding').length, 1, 'W1 has finding preview')
+    assert.ok(textOf(findByClass(w1, 'atw-card-finding')[0]).includes('Null pointer risk'))
+    assert.ok(textOf(w1).includes('k:card.worktree'), 'W1 has worktree badge')
+
+    const w2 = cardById(tree, 'W2')
+    assert.equal(findByClass(w2, 'atw-card-summary').length, 1, 'W2 has summary preview')
+    assert.ok(textOf(findByClass(w2, 'atw-card-summary')[0]).includes('All unit tests passing'))
+    assert.ok(textOf(w2).includes('k:card.merged'), 'W2 has merged worktree badge')
+
+    // Click W1 to open drawer and check worktree details
+    w1.props.onClick()
+    tree = await board.render()
+    const drawer = textOf(findByClass(tree, 'atw-drawer')[0])
+    assert.ok(drawer.includes('k:git.worktree'))
+    assert.ok(drawer.includes('agentteam/run-v2/wt-W1'))
+    assert.ok(drawer.includes('/tmp/wt-W1'))
+  } finally {
+    board.dispose()
+  }
+})
