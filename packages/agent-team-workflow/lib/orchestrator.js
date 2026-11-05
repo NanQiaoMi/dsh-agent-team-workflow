@@ -112,7 +112,8 @@ export function createOrchestrator({ ctx, store, settings }) {
                 const scopes = Array.isArray(item.writeScopes) && item.writeScopes.length > 0
                   ? item.writeScopes.join(', ')
                   : '(entire workspace)'
-                const msg = `[AUTO_DISPATCH] Task ${item.id} "${item.subject}" is ready and unblocked. Declared write scopes: ${scopes}. Please claim the task, begin work, and call team_flow_report when done.`
+                const wt = item.git?.worktreePath ? ` Worktree: ${item.git.worktreePath}.` : ''
+                const msg = `[AUTO_DISPATCH] Task ${item.id} "${item.subject}" is ready and unblocked.${wt} Declared write scopes: ${scopes}. Please claim the task, begin work, and call team_flow_report when done.`
                 const ok = await sendNotice(root, item.owner, msg)
                 if (ok) {
                   actionsTaken.push({ type: 'wake-worker', target: item.owner, itemId: item.id })

@@ -54,6 +54,7 @@
 | [`docs/27-tool-guard-kit.md`](docs/27-tool-guard-kit.md) | **v1.8 可复用沙箱库 `@local/dsh-tool-guard-kit`**：三步抽象成零依赖库（判定/审计/生命周期/Teams 适配器），本插件改为消费该库 |
 | [`docs/31-runtime-scope-guard.md`](docs/31-runtime-scope-guard.md) | **v1.16 运行时写范围守卫**：`enforceWriteScopes` 调用时拒绝越界写入；reviewer 无写权限；fail-open 与限制 |
 | [`docs/32-autonomous-orchestrator.md`](docs/32-autonomous-orchestrator.md) | **v1.17 自驱动状态机引擎与看门狗**：任务就绪自动派发、审阅自动唤醒、全批准收敛通知、周期性防假死看门狗 |
+| [`docs/33-worktree-parallel-engine.md`](docs/33-worktree-parallel-engine.md) | **v1.18 物理 Worktree 自动化隔离体系**：自动创建专属 worktree 与分支、派发附带隔离目录、审阅通过自动 squash-merge、终审自动清理 |
 | [`docs/29-board-design-v19.md`](docs/29-board-design-v19.md) | **v1.9 看板视觉重构**：参考 refero shadcn 风格（单色/24px 卡片/18px 胶囊/发丝线/统计块），新旧截图与设计映射 |
 | [`docs/13-collaboration-live-run.md`](docs/13-collaboration-live-run.md) | **对等协作 live run**：3 成员 / 3 开放项 / 8 分钟，抢单、直连问答、提案投票、互邀评审、gate 全记录 + 看板截图 |
 | [`packages/agent-team-workflow/`](packages/agent-team-workflow/) | 可安装插件包（零外部依赖，纯 ESM） |
