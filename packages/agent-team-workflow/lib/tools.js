@@ -1075,7 +1075,9 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
         if (outcome.nextReviewer !== null && outcome.nextReviewer !== undefined) {
           if (!isLiveMember(ctx, agent, outcome.nextReviewer)) syncWarnings.push(`next reviewer "${outcome.nextReviewer}" is not in the roster`)
           else if (settings.autoNotify) {
-            const failure = await sendPeer(ctx, agent, outcome.nextReviewer, reviewRequestMessage(state, item), exec.signal)
+            const cwd = store.workingDir(agent)
+            const diff = await getWorktreeDiffSummary({ cwd, state, item }).catch(() => null)
+            const failure = await sendPeer(ctx, agent, outcome.nextReviewer, reviewRequestMessage(state, item, diff), exec.signal)
             if (failure === null) notified.push(outcome.nextReviewer)
             else syncWarnings.push(failure)
           }
@@ -1180,7 +1182,9 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
         } else if (outcome.nextReviewer !== null && outcome.nextReviewer !== undefined) {
           if (!isLiveMember(ctx, agent, outcome.nextReviewer)) syncWarnings.push(`reviewer "${outcome.nextReviewer}" is not in the roster`)
           else if (settings.autoNotify) {
-            const failure = await sendPeer(ctx, agent, outcome.nextReviewer, reviewRequestMessage(state, item), exec.signal)
+            const cwd = store.workingDir(agent)
+            const diff = await getWorktreeDiffSummary({ cwd, state, item }).catch(() => null)
+            const failure = await sendPeer(ctx, agent, outcome.nextReviewer, reviewRequestMessage(state, item, diff), exec.signal)
             if (failure === null) notified.push(outcome.nextReviewer)
             else syncWarnings.push(failure)
           }
@@ -1907,7 +1911,10 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           return { action, item_id: item.id, item_git: next.git, run_git: state.git, repo: await G.gitStatus({ cwd }), warnings }
         }
         if (action === 'verify') {
-          requireOwner(item)
+          const isAssignedReviewer = Array.isArray(item.reviewers) && item.reviewers.some((r) => (typeof r === 'string' ? r === membership.name : r?.name === membership.name))
+          if (membership.role !== 'lead' && item.owner !== membership.name && !isAssignedReviewer) {
+            requireOwner(item)
+          }
           const commands = Array.isArray(args.commands) && args.commands.length > 0 ? args.commands.map((command) => String(command)) : (state.settings.gitVerifyCommands ?? [])
           if (commands.length === 0) throw new Error('no verification commands configured; pass commands or set gitVerifyCommands')
           // Isolated items verify their own worktree copy, not the shared checkout.

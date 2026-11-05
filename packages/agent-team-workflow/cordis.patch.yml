@@ -75,3 +75,10 @@
         # Per-item git worktree isolation: off | serial (one active worktree) | parallel (one per item).
         # Parallel mode isolates overlapping write scopes and lets items commit/verify in their own checkout.
         worktreeIsolation: off
+        # Autonomous state machine: auto-wake unblocked workers, auto-wake reviewers, and watchdog.
+        autoOrchestrate: true
+        autoWakeUnblocked: true
+        autoWakeReviewers: true
+        autoNotifyConverged: true
+        autoFinalize: false
+        watchdogIntervalSeconds: 30
