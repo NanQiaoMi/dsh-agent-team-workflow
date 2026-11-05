@@ -13,6 +13,7 @@
  */
 
 import { ITEM_STATUS, RUN_PHASE } from './workflow.js'
+import { getWorktreeDiffSummary } from './worktree-manager.js'
 
 /**
  * Build an orchestrator instance bound to the plugin context and store.
@@ -109,11 +110,27 @@ export function createOrchestrator({ ctx, store, settings }) {
             // If worker is currently inactive, wake it up!
             if (m && m.status === 'inactive') {
               if (options.force || !shouldThrottle(teamId, 'wake-worker', item.owner, item.id)) {
+                // Auto-claim backing shared task if pending
+                if (item.taskId) {
+                  try {
+                    const task = ctx.agentTeams.getTask(root, item.taskId)
+                    if (task && task.status === 'pending') {
+                      await ctx.agentTeams.updateTask(root, {
+                        taskId: item.taskId,
+                        expectedRevision: task.revision,
+                        action: 'claim',
+                      })
+                    }
+                  } catch {
+                    /* auto-claim is best effort */
+                  }
+                }
+
                 const scopes = Array.isArray(item.writeScopes) && item.writeScopes.length > 0
                   ? item.writeScopes.join(', ')
                   : '(entire workspace)'
                 const wt = item.git?.worktreePath ? ` Worktree: ${item.git.worktreePath}.` : ''
-                const msg = `[AUTO_DISPATCH] Task ${item.id} "${item.subject}" is ready and unblocked.${wt} Declared write scopes: ${scopes}. Please claim the task, begin work, and call team_flow_report when done.`
+                const msg = `[AUTO_DISPATCH] Task ${item.id} "${item.subject}" is ready and unblocked.${wt} The backing task has been automatically claimed for you. Declared write scopes: ${scopes}. Start work directly inside your worktree (do not call team_flow_status or claim again), and call team_flow_report when done.`
                 const ok = await sendNotice(root, item.owner, msg)
                 if (ok) {
                   actionsTaken.push({ type: 'wake-worker', target: item.owner, itemId: item.id })
@@ -142,8 +159,11 @@ export function createOrchestrator({ ctx, store, settings }) {
               const m = memberMap.get(revName)
               if (m && m.status === 'inactive') {
                 if (options.force || !shouldThrottle(teamId, 'wake-reviewer', revName, item.id)) {
+                  const cwd = store.workingDir(root)
+                  const diff = await getWorktreeDiffSummary({ cwd, state, item }).catch(() => null)
                   const wt = item.git?.worktreePath ? ` Worktree: ${item.git.worktreePath}.` : ''
-                  const msg = `[AUTO_DISPATCH] Item ${item.id} "${item.subject}" is awaiting your review.${wt} Please inspect evidence and call team_flow_review_submit.`
+                  const diffSummary = diff ? `\n\n${diff}` : ''
+                  const msg = `[AUTO_DISPATCH] Item ${item.id} "${item.subject}" is awaiting your review.${wt}${diffSummary}\n\nPlease inspect the changes and evidence above and call team_flow_review_submit.`
                   const ok = await sendNotice(root, revName, msg)
                   if (ok) {
                     actionsTaken.push({ type: 'wake-reviewer', target: revName, itemId: item.id })

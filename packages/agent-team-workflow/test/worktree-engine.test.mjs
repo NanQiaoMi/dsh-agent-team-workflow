@@ -300,6 +300,12 @@ test('autoMergeApprovedWorktree squash-merges approved worktree changes and clea
       { agent: worker1Agent },
     )
 
+    // Verify reviewer receives notification with diff delivery
+    const reviewNotice = harness.messages.find((m) => m.target === 'reviewer1')
+    assert.ok(reviewNotice, 'reviewer must receive notification')
+    assert.ok(reviewNotice.text.includes('# Code Changes (Diff)'), 'review notice must include code diff section')
+    assert.ok(reviewNotice.text.includes('file_a.txt'), 'diff must list file_a.txt')
+
     // 4. Reviewer1 approves report
     const reviewRes = await reviewTool.execute(
       {

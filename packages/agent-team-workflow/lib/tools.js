@@ -18,6 +18,7 @@ import {
   autoProvisionWorktrees,
   autoMergeApprovedWorktree,
   autoCleanupRunWorktrees,
+  getWorktreeDiffSummary,
 } from './worktree-manager.js'
 import {
   approvedMessage,
@@ -925,7 +926,9 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           if (!isLiveMember(ctx, agent, outcome.nextReviewer)) {
             syncWarnings.push(`reviewer "${outcome.nextReviewer}" is not in the roster; spawn it with the reviewer prompt from team_flow_plan, then the author can re-report or the Lead can re-notify.`)
           } else if (settings.autoNotify) {
-            const failure = await sendPeer(ctx, agent, outcome.nextReviewer, reviewRequestMessage(state, item), exec.signal)
+            const cwd = store.workingDir(agent)
+            const diff = await getWorktreeDiffSummary({ cwd, state, item }).catch(() => null)
+            const failure = await sendPeer(ctx, agent, outcome.nextReviewer, reviewRequestMessage(state, item, diff), exec.signal)
             if (failure === null) notified.push(outcome.nextReviewer)
             else syncWarnings.push(failure)
           }

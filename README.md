@@ -56,6 +56,7 @@
 | [`docs/32-autonomous-orchestrator.md`](docs/32-autonomous-orchestrator.md) | **v1.17 自驱动状态机引擎与看门狗**：任务就绪自动派发、审阅自动唤醒、全批准收敛通知、周期性防假死看门狗 |
 | [`docs/33-worktree-parallel-engine.md`](docs/33-worktree-parallel-engine.md) | **v1.18 物理 Worktree 自动化隔离体系**：自动创建专属 worktree 与分支、派发附带隔离目录、审阅通过自动 squash-merge、终审自动清理 |
 | [`docs/34-desktop-and-distillation.md`](docs/34-desktop-and-distillation.md) | **v1.19 桌面集成与模型协议蒸馏**：解除桌面禁用列表、激活 profile 121 全自动模式、优化审阅者工作树知悉 |
+| [`docs/35-pipeline-optimizations.md`](docs/35-pipeline-optimizations.md) | **v1.20 链路深度优化与极简能效**：自动认领零轮次空转、审阅即送精准 Diff、角色自适应极简协议削减 60% Token |
 | [`docs/29-board-design-v19.md`](docs/29-board-design-v19.md) | **v1.9 看板视觉重构**：参考 refero shadcn 风格（单色/24px 卡片/18px 胶囊/发丝线/统计块），新旧截图与设计映射 |
 | [`docs/13-collaboration-live-run.md`](docs/13-collaboration-live-run.md) | **对等协作 live run**：3 成员 / 3 开放项 / 8 分钟，抢单、直连问答、提案投票、互邀评审、gate 全记录 + 看板截图 |
 | [`packages/agent-team-workflow/`](packages/agent-team-workflow/) | 可安装插件包（零外部依赖，纯 ESM） |

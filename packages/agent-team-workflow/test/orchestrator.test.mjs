@@ -170,6 +170,8 @@ test('orchestrator wakes inactive assigned workers for unblocked tasks', () => {
     const dispatchMsg = harness.messages.find((m) => m.target === 'worker-1' && m.text.includes('AUTO_DISPATCH'))
     assert.ok(dispatchMsg)
     assert.match(dispatchMsg.text, /AUTO_DISPATCH.*W1/)
+    assert.match(dispatchMsg.text, /automatically claimed for you/)
+    assert.equal(harness.tasks.find((t) => t.id === 'task-1')?.status, 'in_progress', 'backing task must be claimed automatically on wakeup')
   })
 })
 

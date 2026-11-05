@@ -32,10 +32,38 @@ export function roleGuidance(settings, role) {
 
 /**
  * Render the workflow protocol injected into every Team member system prompt.
+ * Tailors instructions by role to minimize token overhead while maximizing instruction following.
  * @param settings - effective plugin settings.
+ * @param role - optional member role ('lead', 'reviewer', 'worker', 'implementer', etc.)
  * @returns prompt section text.
  */
-export function buildPolicy(settings) {
+export function buildPolicy(settings, role = null) {
+  if (role && (role === 'implementer' || role === 'worker' || role === 'writer' || role === 'coder')) {
+    return `## Agent Team Workflow (Worker Protocol)
+
+You are an implementing teammate. Do NOT plan, delegate, or spawn. Work directly inside your assigned scope.
+
+1. Worktree & Scopes: Perform ALL file edits and test executions inside your assigned git worktree directory. Only touch files declared in your write scope.
+2. Direct Execution: Your task is already claimed for you upon dispatch. Do NOT call team_flow_status to check state or claim again. Directly edit files and verify with real shell commands.
+3. Reporting: When work is verified, call \`team_flow_report\` with: \`item_id\`, \`summary\`, \`files\`, \`commands\` (including integer exit_code), and \`evidence\`.
+4. Review & Respond: If your reviewer requests changes, fix the code in your worktree, run tests, and answer findings with \`team_flow_review_respond\`.
+5. Non-negotiable: Never edit files outside your declared scope or another member's worktree. Never edit .agentteam metadata files.`
+  }
+
+  if (role && (role === 'reviewer' || role === 'verifier' || role === 'auditor')) {
+    return `## Agent Team Workflow (Reviewer Protocol)
+
+You are an independent adversarial reviewer. Do NOT modify the author's code or files.
+
+1. Inspect Real Changes: When notified of a pending review, inspect the provided Git Diff and test exit codes. Re-run verification in the author's worktree if needed.
+2. Submit Verdict: Call \`team_flow_review_submit\` with:
+   - \`verdict\`: 'approve' (or 'approve_with_nits', 'request_changes', 'block')
+   - \`summary\`: One paragraph assessment
+   - \`evidence_checked\`: Mandatory list of commands/diffs/files you actually checked
+   - \`findings\`: If requesting changes, provide file, line, severity, and exact actionable critique.
+3. Independence: Never fix what you review; keep your role strictly adversarial and objective.`
+  }
+
   return `## Agent Team Workflow
 
 This Team runs the standard injected workflow: plan → parallel independent execution → mutual review → quality gates → convergence. The workflow board is authoritative. Call \`team_flow_status\` before acting; treat its \`next_actions\` list as your assignment and re-read it after every state change.
@@ -170,7 +198,7 @@ Do not modify anything outside this scope. Other members are editing their own s
 ${worktreeLine(item)}
 
 Dependencies: ${blockers}. Do not start until every dependency is approved (team_flow_status shows readiness).
-Backing shared task: ${item.taskId ?? '(none)'} — read it with team_task_get (or team_flow_status item_id="${item.id}" for the current revision), then claim it with team_task_update {task_id, expected_revision, action:"claim"}.
+Backing shared task: ${item.taskId ?? '(none)'} — automatically claimed upon dispatch (inspect details via team_task_get if needed). You may begin implementation immediately.
 
 # Independence rules
 - You start with a fresh context: you share the filesystem, the shared task board, and the workflow board, not the Lead's conversation. State assumptions you rely on.
@@ -195,12 +223,11 @@ You also review these items, because one member cannot be spawned twice: ${revie
 - If the work you find is outside the plan (a missing case, an extra example, a bug you spotted), create it with \`team_flow_item {action:"create", subject, write_scopes, definition_of_done}\` and keep your current item honest about the split. Do not silently expand your scope.
 
 # Required workflow
-1. Call team_flow_status and read your next_actions.
-2. Claim the backing shared task, then do the work.
-3. Verify by running the actual commands.
-4. Call team_flow_report with: summary, files (workspace-relative), commands [{command, exit_code, note}], evidence (quoted output or paths), open_questions, risks, deviation (what you did differently, or omit).
-5. A reviewer will inspect your work. If changes are requested, fix them and call team_flow_review_respond with one response per finding id (fixed | rebut | accepted_risk) plus evidence.
-6. When no action is assigned to you, read the channel again and stop. The Lead will message you.
+1. The backing task is already claimed for you. Work directly inside your assigned write scope and worktree.
+2. Verify by running the actual test/lint commands.
+3. Call team_flow_report with: summary, files (workspace-relative), commands [{command, exit_code, note}], evidence (quoted output or paths), open_questions, risks, deviation (what you did differently, or omit).
+4. A reviewer will inspect your work. If changes are requested, fix them and call team_flow_review_respond with one response per finding id (fixed | rebut | accepted_risk) plus evidence.
+5. When no action is assigned to you, stop. The Lead or Orchestrator will message you.
 
 # Communication
 - Message the Lead with send_message({target:"lead"}) or a peer by member name. Prefix [BLOCKER]/[QUESTION]/[HANDOFF] and the item id.
@@ -285,10 +312,11 @@ export function findingDigest(review) {
  * @param item - item under review.
  * @returns self-contained message text.
  */
-export function reviewRequestMessage(state, item) {
+export function reviewRequestMessage(state, item, diff = null) {
   const review = pendingReview(item)
   const report = item.report
   const wt = item.git?.worktreePath ? `\nWorktree path: ${item.git.worktreePath}` : ''
+  const diffSection = diff ? `\n\n# Code Changes (Diff)\n${diff}` : ''
   return `[REVIEW] ${item.id} "${item.subject}" is ready for your review (round ${review?.round ?? '?'}).${wt}
 
 Author: ${item.owner}
@@ -297,12 +325,12 @@ ${bullets(report?.files ?? [])}
 Commands reported:
 ${bullets((report?.commands ?? []).map((command) => `\`${command.command}\` → exit ${command.exitCode}`))}
 Author summary: ${report?.summary ?? '(missing)'}
-Author-declared risks: ${bullets(report?.risks ?? [], 'none')}
+Author-declared risks: ${bullets(report?.risks ?? [], 'none')}${diffSection}
 
 Definition of done:
 ${bullets(item.definitionOfDone)}
 
-Action: inspect the real files and evidence, then call team_flow_review_submit with a verdict, findings, and evidence_checked. Run id ${state.runId}.`
+Action: inspect the changes and evidence above, then call team_flow_review_submit with a verdict, findings, and evidence_checked. Run id ${state.runId}.`
 }
 
 /**

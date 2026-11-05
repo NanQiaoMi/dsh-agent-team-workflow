@@ -9,6 +9,7 @@
  * 3. autoCleanupRunWorktrees: Cleans up temporary worktrees when the run is finalized.
  */
 
+import { execFile } from 'node:child_process'
 import path from 'node:path'
 import * as G from './git.js'
 import * as W from './workflow.js'
@@ -253,4 +254,42 @@ export async function autoCleanupRunWorktrees({ cwd, state, agent, store }) {
   }
 
   return { ok: true, cleaned }
+}
+
+/**
+ * Compute compact diff summary (diffstat and head patch) for an item's worktree branch.
+ * @param options - `{ cwd, state, item, maxLines }`
+ * @returns Promise<string | null>
+ */
+export async function getWorktreeDiffSummary({ cwd, state, item, maxLines = 80 }) {
+  if (!state?.settings?.gitEnabled || !item?.git?.worktreeBranch || !state?.git?.branch) {
+    return null
+  }
+  return new Promise((resolve) => {
+    const baseBranch = state.git.branch
+    const wtBranch = item.git.worktreeBranch
+    execFile(
+      'git',
+      ['diff', '--stat', `${baseBranch}...${wtBranch}`],
+      { cwd, timeout: 5000, maxBuffer: 1024 * 1024, encoding: 'utf8' },
+      (statErr, statOut) => {
+        if (statErr || !statOut?.trim()) return resolve(null)
+        const stat = statOut.trim()
+        execFile(
+          'git',
+          ['diff', '-U2', `${baseBranch}...${wtBranch}`],
+          { cwd, timeout: 5000, maxBuffer: 2 * 1024 * 1024, encoding: 'utf8' },
+          (diffErr, diffOut) => {
+            if (diffErr || !diffOut?.trim()) {
+              return resolve(`Diff stat:\n${stat}`)
+            }
+            const lines = diffOut.trim().split('\n')
+            const capped = lines.slice(0, maxLines).join('\n')
+            const truncated = lines.length > maxLines ? `\n... (${lines.length - maxLines} more lines truncated)` : ''
+            return resolve(`Diff stat:\n${stat}\n\nDiff patch:\n\`\`\`diff\n${capped}${truncated}\n\`\`\``)
+          },
+        )
+      },
+    )
+  })
 }
