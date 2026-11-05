@@ -78,6 +78,10 @@ function createHarness(cwd) {
       const task = tasks.find((candidate) => candidate.id === request.taskId)
       if (task === undefined) throw new Error(`task ${request.taskId} not found`)
       if (task.revision !== request.expectedRevision) throw new Error(`stale revision on ${task.id}`)
+      // Mirror the native runtime rule: a task mutation needs its owner or the Lead.
+      if (request.action !== 'claim' && caller.id !== lead.id && task.ownerId !== caller.id) {
+        throw new Error('task mutation requires its owner or Team Lead')
+      }
       const ownerId = caller.id
       switch (request.action) {
         case 'claim':

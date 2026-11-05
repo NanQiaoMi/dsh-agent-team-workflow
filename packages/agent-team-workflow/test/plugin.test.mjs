@@ -11,7 +11,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -400,3 +400,10 @@ test('role-adaptive policy tailors prompt sections for implementer and reviewer'
   })
 })
 
+test('the applied plugin version matches package.json', async () => {
+  const indexSource = await readFile(new URL('../index.js', import.meta.url), 'utf8')
+  const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+  const match = /const VERSION = '([^']+)'/.exec(indexSource)
+  assert.ok(match !== null, 'index.js declares VERSION')
+  assert.equal(match[1], pkg.version, 'the applied-version log line must not drift from package.json')
+})

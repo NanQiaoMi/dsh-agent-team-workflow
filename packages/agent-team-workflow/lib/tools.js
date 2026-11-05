@@ -311,7 +311,12 @@ async function syncTaskReopen(ctx, agent, taskId) {
   try {
     const task = ctx.agentTeams.getTask(agent, taskId)
     if (task.status !== 'completed') return null
-    await ctx.agentTeams.updateTask(agent, { taskId, expectedRevision: task.revision, action: 'reopen' })
+    // The reviewer may reopen the item, but the native shared task only accepts
+    // mutations from its owner or the Team Lead. Run the reopen as the Lead so
+    // a request_changes round does not leave the backing task stuck completed.
+    const membership = ctx.agentTeams.tryMembership(agent)
+    const caller = membership !== undefined && membership !== null && membership.root !== undefined ? membership.root : agent
+    await ctx.agentTeams.updateTask(caller, { taskId, expectedRevision: task.revision, action: 'reopen' })
     return null
   } catch (error) {
     return `backing Team task ${taskId} was not reopened: ${error instanceof Error ? error.message : String(error)}`
