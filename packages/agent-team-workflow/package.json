@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-agent-team-workflow",
-  "version": "1.23.0",
+  "version": "1.23.1",
   "private": true,
   "description": "Injected Agent-Team workflow protocol for DeepSeek Harness: plan, parallel execution, mutual review, gates.",
   "type": "module",

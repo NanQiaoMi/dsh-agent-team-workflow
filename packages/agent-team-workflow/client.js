@@ -2236,7 +2236,8 @@ window.__ModuleLoader__.load({
 .atw-topo-col--active{border-color:color-mix(in oklab,var(--atw-success) 38%,var(--atw-hairline));background:color-mix(in oklab,var(--atw-success) 7%,var(--atw-paper));box-shadow:0 0 0 1px color-mix(in oklab,var(--atw-success) 22%,transparent)}
 .atw-topo-col--active .atw-topo-col-head{border-color:color-mix(in oklab,var(--atw-success) 40%,var(--atw-hairline))}
 .atw-topo-col--active .atw-dot{background:var(--atw-success);animation:atw-pulse 1.6s ease-in-out infinite}
-.atw-topo-col--inactive{opacity:.74}
+.atw-topo-col--inactive{opacity:.82}
+.atw-topo-col--inactive .atw-topo-col-head{opacity:1}
 .atw-topo-col--inactive:hover{opacity:1}
 .atw-badge--live{background:color-mix(in oklab,var(--atw-success) 14%,var(--atw-paper));color:var(--atw-success);font-size:10px;padding:1px 7px}
 .atw-card-flags .atw-rel-chip{font-size:10px;padding:1px 7px;max-width:150px;overflow:hidden;text-overflow:ellipsis}
