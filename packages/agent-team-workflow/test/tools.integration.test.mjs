@@ -1202,6 +1202,8 @@ test('git workflow end to end: prepare, commit, verify, push, PR, gate, merge', 
     assert.equal(typeof committed.item_git.sha, 'string')
     const verified = await byName(tools, 'team_flow_git').execute({ action: 'verify', item_id: 'W1' }, { agent: impl, signal: EXEC_SIGNAL })
     assert.equal(verified.item_git.verify.ok, true)
+    const reviewerVerified = await byName(tools, 'team_flow_git').execute({ action: 'verify', item_id: 'W1' }, { agent: rev, signal: EXEC_SIGNAL })
+    assert.equal(reviewerVerified.item_git.verify.ok, true, 'assigned reviewer can run verify on item')
     const pushed = await byName(tools, 'team_flow_git').execute({ action: 'push', item_id: 'W1' }, { agent: impl, signal: EXEC_SIGNAL })
     assert.equal(typeof pushed.run_git.pushedAt, 'string')
     const pr = await byName(tools, 'team_flow_git').execute({ action: 'pr', item_id: 'W1' }, { agent: impl, signal: EXEC_SIGNAL })

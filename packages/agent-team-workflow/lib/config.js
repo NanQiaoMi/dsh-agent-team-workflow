@@ -95,6 +95,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   autoWakeReviewers: true,
   /** Notify the Lead when all items in the plan are approved. */
   autoNotifyConverged: true,
+  /** Automatically evaluate quality gates and finalize run when all items are approved without manual Lead command. */
+  autoFinalize: false,
   /** Interval in seconds for the liveness watchdog timer (0 disables the timer). */
   watchdogIntervalSeconds: 30,
 })
@@ -241,6 +243,7 @@ export function resolveSettings(raw = {}) {
     autoWakeUnblocked: readBool(config.autoWakeUnblocked, DEFAULT_SETTINGS.autoWakeUnblocked),
     autoWakeReviewers: readBool(config.autoWakeReviewers, DEFAULT_SETTINGS.autoWakeReviewers),
     autoNotifyConverged: readBool(config.autoNotifyConverged, DEFAULT_SETTINGS.autoNotifyConverged),
+    autoFinalize: readBool(config.autoFinalize, DEFAULT_SETTINGS.autoFinalize),
     watchdogIntervalSeconds: clampInt(config.watchdogIntervalSeconds, DEFAULT_SETTINGS.watchdogIntervalSeconds, 0, 3600),
   })
 }
@@ -285,6 +288,7 @@ export function runSettings(settings) {
     autoWakeUnblocked: settings.autoWakeUnblocked,
     autoWakeReviewers: settings.autoWakeReviewers,
     autoNotifyConverged: settings.autoNotifyConverged,
+    autoFinalize: settings.autoFinalize,
     watchdogIntervalSeconds: settings.watchdogIntervalSeconds,
   }
 }

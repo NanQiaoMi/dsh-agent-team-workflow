@@ -266,3 +266,155 @@ test('orchestrator watchdog starts and stops cleanly', () => {
     assert.equal(orchestrator.isWatchdogRunning(), false)
   })
 })
+
+test('orchestrator wakes worker with structured findings when changes are requested', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const worker1 = { id: 'session-w1', session: { id: 'session-w1' } }
+    const rev1 = { id: 'session-rev', session: { id: 'session-rev' } }
+    harness.members.push(
+      { name: 'worker-1', role: 'teammate', id: worker1.id, status: 'inactive' },
+      { name: 'rev-1', role: 'teammate', id: rev1.id, status: 'inactive' },
+    )
+
+    const settings = resolveSettings({ autoOrchestrate: true })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const orchestrator = createOrchestrator({ ctx: harness.ctx, store, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test', orchestrator })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const reviewTool = tools.find((t) => t.name === 'team_flow_review_submit')
+
+    await planTool.execute(
+      {
+        objective: 'Rework test',
+        acceptance_criteria: ['Done'],
+        items: [
+          {
+            id: 'W1',
+            subject: 'Rework task',
+            owner: 'worker-1',
+            reviewers: ['rev-1'],
+            write_scopes: ['src/'],
+            definition_of_done: ['Do W1'],
+          },
+        ],
+      },
+      { agent: harness.lead, signal: new AbortController().signal },
+    )
+
+    await reportTool.execute(
+      {
+        item_id: 'W1',
+        summary: 'First draft',
+        files: ['src/index.js'],
+        commands: [{ command: 'npm test', exit_code: 0 }],
+        evidence: ['tests passed'],
+      },
+      { agent: worker1, signal: new AbortController().signal },
+    )
+
+    // Reviewer requests changes with specific findings
+    await reviewTool.execute(
+      {
+        item_id: 'W1',
+        verdict: 'request_changes',
+        summary: 'Please fix bugs',
+        findings: [
+          { id: 'F1', file: 'src/index.js', line: 42, severity: 'major', claim: 'Unhandled edge case in parsing' },
+        ],
+      },
+      { agent: rev1, signal: new AbortController().signal },
+    )
+
+    // Clear previous messages to verify orchestrator's wake-up message
+    harness.messages.length = 0
+
+    // Reconcile: should wake worker-1 with rework details
+    const res = await orchestrator.reconcile(harness.lead, { force: true })
+    assert.ok(res.actionsTaken.some((a) => a.type === 'wake-worker' && a.target === 'worker-1' && a.isRework === true))
+
+    const reworkMsg = harness.messages.find((m) => m.target === 'worker-1' && m.text.includes('requires rework'))
+    assert.ok(reworkMsg, 'worker must receive rework dispatch message')
+    assert.match(reworkMsg.text, /requires rework based on reviewer findings/)
+    assert.match(reworkMsg.text, /\[F1\]/)
+    assert.match(reworkMsg.text, /Unhandled edge case in parsing/)
+    assert.match(reworkMsg.text, /team_flow_review_respond/)
+  })
+})
+
+test('orchestrator auto-finalizes the run when autoFinalize is enabled and gates pass', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const worker1 = { id: 'session-w1', session: { id: 'session-w1' } }
+    const rev1 = { id: 'session-rev', session: { id: 'session-rev' } }
+    harness.members.push(
+      { name: 'worker-1', role: 'teammate', id: worker1.id, status: 'running' },
+      { name: 'rev-1', role: 'teammate', id: rev1.id, status: 'running' },
+    )
+
+    const settings = resolveSettings({ autoOrchestrate: true, autoFinalize: true })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const orchestrator = createOrchestrator({ ctx: harness.ctx, store, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test', orchestrator })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const reviewTool = tools.find((t) => t.name === 'team_flow_review_submit')
+
+    await planTool.execute(
+      {
+        objective: 'Auto finalize test',
+        acceptance_criteria: ['Fully automated'],
+        items: [
+          {
+            id: 'W1',
+            subject: 'Self closing task',
+            owner: 'worker-1',
+            reviewers: ['rev-1'],
+            write_scopes: ['src/'],
+            definition_of_done: ['Finished'],
+          },
+        ],
+      },
+      { agent: harness.lead, signal: new AbortController().signal },
+    )
+
+    await reportTool.execute(
+      {
+        item_id: 'W1',
+        summary: 'Completed cleanly',
+        files: ['src/index.js'],
+        commands: [{ command: 'npm test', exit_code: 0 }],
+        evidence: ['All green'],
+      },
+      { agent: worker1, signal: new AbortController().signal },
+    )
+
+    await reviewTool.execute(
+      {
+        item_id: 'W1',
+        verdict: 'approve',
+        summary: 'Approved with verified evidence',
+        evidence_checked: ['verified tests exit 0'],
+      },
+      { agent: rev1, signal: new AbortController().signal },
+    )
+
+    // Reconcile with autoFinalize: should automatically evaluate gate and finalize
+    const res = await orchestrator.reconcile(harness.lead, { force: true })
+    assert.equal(res.converged, true)
+    assert.equal(res.finalized, true)
+    assert.ok(res.actionsTaken.some((a) => a.type === 'auto-finalize'))
+
+    const state = await store.readState(harness.lead)
+    assert.equal(state.phase, 'finalized')
+    assert.ok(state.artifacts?.reportPath, 'reportPath must be populated')
+
+    const finalizeNotice = harness.messages.find((m) => m.target === 'lead' && m.text.includes('TEAM_FINALIZED'))
+    assert.ok(finalizeNotice, 'lead must receive TEAM_FINALIZED notice')
+    assert.match(finalizeNotice.text, /automatically finalized/)
+  })
+})
+
