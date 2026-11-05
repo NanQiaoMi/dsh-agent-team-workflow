@@ -520,7 +520,12 @@ export async function gitCommit(input = {}) {
     if (stagedFiles.length === 0) return fail('there is nothing to commit; the requested files have no staged changes')
 
     // `-- <files>` keeps the commit path-scoped even if something else was staged.
-    const committed = await git(input.exec, root, ['commit', '-m', message, '--', ...files])
+    // When resolving a merge conflict (MERGE_HEAD exists), git forbids pathspecs (`-- <files>`).
+    const isMerge = (await git(input.exec, root, ['rev-parse', '-q', '--verify', 'MERGE_HEAD'])).exitCode === 0
+    const commitArgs = isMerge
+      ? ['commit', '-m', message]
+      : ['commit', '-m', message, '--', ...files]
+    const committed = await git(input.exec, root, commitArgs)
     if (committed.exitCode !== 0) return fail(`git commit failed: ${tailOf(committed.stderr || committed.stdout, ERROR_TAIL)}`)
     const revision = await git(input.exec, root, ['rev-parse', 'HEAD'])
     const sha = revision.exitCode === 0 ? revision.stdout.trim() : null
@@ -640,7 +645,11 @@ export async function gitMerge(input = {}) {
       const conflicted = await hasConflicts(input.exec, root)
       if (conflicted) {
         // Never auto-resolve: abort so the worktree is left as it was.
-        await git(input.exec, root, ['merge', '--abort'])
+        const aborted = await git(input.exec, root, ['merge', '--abort'])
+        if (aborted.exitCode !== 0) {
+          // Squash merge does not set MERGE_HEAD; clean unmerged files with checkout HEAD -- .
+          await git(input.exec, root, ['checkout', 'HEAD', '--', '.'])
+        }
         return fail(`merge of "${branch}" into "${into}" has conflicts; resolve them manually (the merge was aborted)`)
       }
       return fail(`git merge failed: ${tailOf(result.stderr || result.stdout, ERROR_TAIL)}`)
@@ -894,5 +903,77 @@ export async function gitWorktreeList(input = {}) {
     return ok({ worktrees })
   } catch (error) {
     return fail(`gitWorktreeList failed: ${messageOf(error)}`)
+  }
+}
+
+/**
+ * Synchronize one worktree by merging updates from another branch (typically the run branch).
+ * Conflicting merges are aborted immediately, keeping the worktree clean, and returning
+ * the list of conflicted files so the caller can diagnose or report.
+ * @param input - `{ cwd, fromBranch, exec }`.
+ * @returns `{ ok, merged, upToDate, conflict, conflictedFiles, sha, fromBranch }`.
+ */
+export async function gitWorktreeSync(input = {}) {
+  try {
+    const cwd = textOf(input.cwd).trim()
+    if (cwd.length === 0) return fail('gitWorktreeSync needs a cwd (worktree repository path)')
+    const root = await repoRoot(input.exec, cwd)
+    if (root === null) return fail(`"${cwd}" is not a git repository`)
+    const fromBranch = safeRefName(input.fromBranch)
+    if (fromBranch === null) return fail(`"${textOf(input.fromBranch)}" is not a valid source branch name`)
+    if (!(await branchExists(input.exec, root, fromBranch))) {
+      return fail(`source branch "${fromBranch}" does not exist in this repository`)
+    }
+    const current = await currentBranch(input.exec, root)
+    if (current === fromBranch) {
+      return fail(`cannot sync branch "${fromBranch}" into itself`)
+    }
+
+    const merged = await git(input.exec, root, ['merge', '--no-edit', fromBranch])
+    if (merged.exitCode === 0) {
+      const output = `${merged.stdout}\n${merged.stderr}`
+      const upToDate = output.includes('Already up to date')
+      const revision = await git(input.exec, root, ['rev-parse', 'HEAD'])
+      const sha = revision.exitCode === 0 ? revision.stdout.trim() : null
+      return ok({
+        merged: !upToDate,
+        upToDate,
+        conflict: false,
+        conflictedFiles: [],
+        fromBranch,
+        sha,
+      })
+    }
+
+    const conflicted = await hasConflicts(input.exec, root)
+    if (conflicted) {
+      const filesResult = await git(input.exec, root, ['diff', '--name-only', '--diff-filter=U'])
+      const conflictedFiles = filesResult.exitCode === 0
+        ? filesResult.stdout.split('\n').map((l) => l.trim()).filter((l) => l.length > 0)
+        : []
+      const abortOnConflict = input.abortOnConflict === true
+      if (abortOnConflict) {
+        await git(input.exec, root, ['merge', '--abort'])
+      }
+      return fail(
+        `sync from "${fromBranch}" has conflicts in [${conflictedFiles.join(', ')}]${abortOnConflict ? '; merge was aborted' : '; resolve conflicts and commit'}`,
+        { conflict: true, conflictedFiles, fromBranch, upToDate: false, merged: false, mergeInProgress: !abortOnConflict },
+      )
+    }
+
+    return fail(`git merge --no-edit "${fromBranch}" failed: ${tailOf(merged.stderr || merged.stdout, ERROR_TAIL)}`, {
+      conflict: false,
+      conflictedFiles: [],
+      fromBranch,
+      upToDate: false,
+      merged: false,
+    })
+  } catch (error) {
+    return fail(`gitWorktreeSync failed: ${messageOf(error)}`, {
+      conflict: false,
+      conflictedFiles: [],
+      upToDate: false,
+      merged: false,
+    })
   }
 }

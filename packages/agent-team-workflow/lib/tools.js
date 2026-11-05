@@ -1726,7 +1726,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['status', 'prepare', 'commit', 'verify', 'push', 'pr', 'review', 'merge', 'worktree_add', 'worktree_remove', 'worktree_list'], description: 'Git/PR action.' },
+          action: { type: 'string', enum: ['status', 'prepare', 'commit', 'verify', 'push', 'pr', 'review', 'merge', 'worktree_add', 'worktree_remove', 'worktree_list', 'worktree_sync'], description: 'Git/PR action.' },
           item_id: { type: 'string', description: 'Work item id for commit/verify/review/merge (status/pr may omit).' },
           message: { type: 'string', description: 'commit: optional commit message; merge: merge message.' },
           files: { type: 'array', items: { type: 'string' }, description: 'commit: explicit files; defaults to the report files.' },
@@ -1734,6 +1734,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           method: { type: 'string', enum: ['squash', 'merge', 'no-ff'], description: 'merge: merge strategy (default squash for gh, no-ff locally).' },
           title: { type: 'string', description: 'pr: optional pull-request title.' },
           body: { type: 'string', description: 'pr: optional pull-request body.' },
+          abort_on_conflict: { type: 'boolean', description: 'worktree_sync: abort merge immediately if conflict occurs.' },
         },
         required: ['action'],
         additionalProperties: false,
@@ -1747,6 +1748,10 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           run_git: {},
           item_git: {},
           detail: {},
+          merged: { type: 'boolean' },
+          up_to_date: { type: 'boolean' },
+          conflict: { type: 'boolean' },
+          conflicted_files: { type: 'array', items: { type: 'string' } },
           warnings: { type: 'array', items: { type: 'string' } },
         },
         required: ['action'],
@@ -1850,6 +1855,48 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             return current
           })
           return { action, item_id: target.id, detail: result, warnings }
+        }
+        if (action === 'worktree_sync') {
+          const target = requireItem()
+          requireOwner(target)
+          if (!target.git?.worktreePath) {
+            throw new Error(`item "${target.id}" has no worktreePath; worktree must be provisioned first`)
+          }
+          const fromBranch = state.git?.branch
+          if (typeof fromBranch !== 'string' || fromBranch.length === 0) {
+            throw new Error('no run branch recorded to sync from')
+          }
+          const syncResult = await G.gitWorktreeSync({
+            cwd: target.git.worktreePath,
+            fromBranch,
+            abortOnConflict: args.abort_on_conflict === true,
+          })
+          if (syncResult.ok !== true) {
+            if (syncResult.conflict) {
+              warnings.push(`Merge conflict detected with ${fromBranch} in files: ${syncResult.conflictedFiles.join(', ')}`)
+              return {
+                action,
+                item_id: target.id,
+                merged: false,
+                up_to_date: false,
+                conflict: true,
+                conflicted_files: syncResult.conflictedFiles,
+                detail: syncResult,
+                warnings,
+              }
+            }
+            throw new Error(`worktree sync failed: ${syncResult.error}`)
+          }
+          return {
+            action,
+            item_id: target.id,
+            merged: syncResult.merged,
+            up_to_date: syncResult.upToDate,
+            conflict: false,
+            conflicted_files: [],
+            detail: syncResult,
+            warnings,
+          }
         }
         if (action === 'prepare') {
           requireLead(membership, 'team_flow_git prepare')

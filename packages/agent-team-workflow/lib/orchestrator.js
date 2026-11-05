@@ -191,13 +191,46 @@ export function createOrchestrator({ ctx, store, settings }) {
       }
     }
 
-    // 3. Check team convergence
+    // 3. Check escalated items and wake Lead for arbitration
+    for (const item of state.items) {
+      if (item.status === ITEM_STATUS.ESCALATED) {
+        if (options.force || !shouldThrottle(teamId, 'arbitrate-escalation', 'lead', item.id)) {
+          const leadMember = members.find((m) => m.role === 'lead') ?? { name: 'lead' }
+          const reviewCount = item.reviews?.length ?? 0
+          const reason = item.escalation?.reason ?? 'Maximum rework rounds exceeded or unresolvable blocker'
+          const msg = `[LEAD_ARBITRATION_REQUIRED] Task ${item.id} "${item.subject}" is ESCALATED (after ${reviewCount} review rounds).\nReason: ${reason}.\nPlease inspect the item with team_flow_status { item_id: "${item.id}" } and intervene via team_flow_repair or reassign.`
+          const ok = await sendNotice(root, leadMember.name, msg)
+          if (ok) {
+            actionsTaken.push({ type: 'wake-arbitration', target: leadMember.name, itemId: item.id })
+          }
+        }
+      }
+    }
+
+    // 4. Check worktree auto-merge conflicts and notify Lead and Worker
+    for (const item of state.items) {
+      if (item.status === ITEM_STATUS.APPROVED && item.git?.worktreeMergeError) {
+        if (options.force || !shouldThrottle(teamId, 'worktree-conflict', 'lead', item.id)) {
+          const leadMember = members.find((m) => m.role === 'lead') ?? { name: 'lead' }
+          const workerName = item.owner ?? 'worker'
+          const msg = `[AUTO_DISPATCH] Task ${item.id} "${item.subject}" is APPROVED but encountered a merge conflict during auto-merge into branch "${state.git?.branch ?? ''}".\nError: ${item.git.worktreeMergeError}\nAction required: Worker or Lead can run team_flow_git { action: "worktree_sync", item_id: "${item.id}" } to pull updates and resolve conflicts.`
+          await sendNotice(root, leadMember.name, msg)
+          if (workerName !== leadMember.name && memberMap.has(workerName)) {
+            await sendNotice(root, workerName, msg)
+          }
+          actionsTaken.push({ type: 'notify-worktree-conflict', itemId: item.id, error: item.git.worktreeMergeError })
+        }
+      }
+    }
+
+    // 5. Check team convergence
     const allApproved = state.items.length > 0 && state.items.every((it) => it.status === ITEM_STATUS.APPROVED)
+    const allApprovedAndMerged = allApproved && state.items.every((it) => !it.git?.worktreeMergeError)
     const converged = allApproved || state.phase === RUN_PHASE.CONVERGED
 
     if (converged && state.phase !== RUN_PHASE.FINALIZED) {
-      // Auto-finalize if configured and all items are approved
-      if (settings.autoFinalize && allApproved) {
+      // Auto-finalize if configured and all items are approved and merged cleanly
+      if (settings.autoFinalize && allApprovedAndMerged) {
         let nativeTasks = []
         try {
           nativeTasks = ctx.agentTeams.listTasks(root).map((task) => ({ id: task.id, status: task.status, revision: task.revision }))
