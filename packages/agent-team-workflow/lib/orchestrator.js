@@ -142,7 +142,8 @@ export function createOrchestrator({ ctx, store, settings }) {
               const m = memberMap.get(revName)
               if (m && m.status === 'inactive') {
                 if (options.force || !shouldThrottle(teamId, 'wake-reviewer', revName, item.id)) {
-                  const msg = `[AUTO_DISPATCH] Item ${item.id} "${item.subject}" is awaiting your review. Please inspect evidence and call team_flow_review_submit.`
+                  const wt = item.git?.worktreePath ? ` Worktree: ${item.git.worktreePath}.` : ''
+                  const msg = `[AUTO_DISPATCH] Item ${item.id} "${item.subject}" is awaiting your review.${wt} Please inspect evidence and call team_flow_review_submit.`
                   const ok = await sendNotice(root, revName, msg)
                   if (ok) {
                     actionsTaken.push({ type: 'wake-reviewer', target: revName, itemId: item.id })

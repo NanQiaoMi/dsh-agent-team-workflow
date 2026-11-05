@@ -223,7 +223,10 @@ You also review these items, because one member cannot be spawned twice: ${revie
  */
 export function renderReviewerBrief(state, reviewer, items) {
   const scope = items
-    .map((item) => `- ${item.id} — "${item.subject}" (owner: ${item.owner}; scope: ${item.writeScopes.join(', ') || 'n/a'})`)
+    .map((item) => {
+      const wt = item.git?.worktreePath ? `; worktree: ${item.git.worktreePath}` : ''
+      return `- ${item.id} — "${item.subject}" (owner: ${item.owner}; scope: ${item.writeScopes.join(', ') || 'n/a'}${wt})`
+    })
     .join('\n')
   const dod = items.map((item) => `### ${item.id}\nDefinition of done:\n${bullets(item.definitionOfDone)}`).join('\n\n')
   const prompt = `You are teammate "${reviewer}" in an Agent Team. Your Team Lead is "lead". You are an independent reviewer, not an implementer.
@@ -241,7 +244,7 @@ ${dod}
 
 # Review protocol
 1. Call team_flow_status. It lists the reviews currently assigned to you and the exact next actions.
-2. For each assigned item: read the author's report (files, commands with exit codes, evidence, risks) and then read the actual files. Re-run cheap verification yourself when practical; treat unverified claims as unverified.
+2. For each assigned item: read the author's report (files, commands with exit codes, evidence, risks) and then read the actual files (in the item's worktree if worktree isolation is active). Re-run cheap verification yourself when practical; treat unverified claims as unverified.
 3. Check at minimum: definition-of-done coverage; correctness and edge cases; scope discipline (did the author touch files outside its scope); quality of evidence; missing tests; interface and contract consistency; silent placeholders or TODO stubs; unstated risk.
 4. Submit with team_flow_review_submit: verdict (approve | approve_with_nits | request_changes | block), a summary, findings [{id, severity: blocker|major|minor|nit, file, line, claim, suggestion}], and evidence_checked (what you actually inspected).
 5. A non-approving verdict must carry at least one finding, and every finding must name a file (and line when possible) plus a concrete claim. Blockers need a reproduction or a precise reasoning chain, never taste.
@@ -285,7 +288,8 @@ export function findingDigest(review) {
 export function reviewRequestMessage(state, item) {
   const review = pendingReview(item)
   const report = item.report
-  return `[REVIEW] ${item.id} "${item.subject}" is ready for your review (round ${review?.round ?? '?'}).
+  const wt = item.git?.worktreePath ? `\nWorktree path: ${item.git.worktreePath}` : ''
+  return `[REVIEW] ${item.id} "${item.subject}" is ready for your review (round ${review?.round ?? '?'}).${wt}
 
 Author: ${item.owner}
 Files reported:
