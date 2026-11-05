@@ -394,10 +394,15 @@ function reportView(item) {
 
 /**
  * Build every tool definition for one plugin instance.
- * @param options - `{ ctx, settings, store, version }`.
+ * @param options - `{ ctx, settings, store, version, tokenUsage?, orchestrator? }`.
  * @returns array of ToolDefinition-compatible objects.
  */
-export function buildTools({ ctx, settings, store, version, tokenUsage = () => null }) {
+export function buildTools({ ctx, settings, store, version, tokenUsage = () => null, orchestrator = null }) {
+  function triggerOrchestrator(agent) {
+    if (orchestrator && typeof orchestrator.reconcile === 'function') {
+      void orchestrator.reconcile(agent).catch(() => {})
+    }
+  }
   const definitions = [
     // ---------------------------------------------------------------- plan
     {
@@ -686,6 +691,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           'Then call wait_agent and re-read team_flow_status after each change; do not do the workers\' edits yourself.',
           ...validation.warnings,
         ]
+        triggerOrchestrator(agent)
         return {
           run_id: state.runId,
           phase: state.phase,
@@ -921,6 +927,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           members: [],
           artifacts: {},
         })
+        triggerOrchestrator(agent)
         return {
           ...reportView(item),
           status: item.status,
@@ -1060,6 +1067,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           members: [],
           artifacts: {},
         })
+        triggerOrchestrator(agent)
         return {
           item_id: item.id,
           verdict: outcome.review.verdict,
@@ -1164,6 +1172,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           members: [],
           artifacts: {},
         })
+        triggerOrchestrator(agent)
         return {
           item_id: item.id,
           item_status: item.status,
@@ -1598,6 +1607,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           members: [],
           artifacts: {},
         })
+        triggerOrchestrator(agent)
         return {
           item_id: item.id,
           action,
@@ -2479,6 +2489,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           if (failure === null) notifications.push(outcome.handoff.by)
           else warnings.push(failure)
         }
+        triggerOrchestrator(agent)
         return {
           item_id: item.id,
           action,
