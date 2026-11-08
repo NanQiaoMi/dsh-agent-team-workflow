@@ -1310,6 +1310,9 @@ export function buildSnapshot(input) {
   return {
     ok: true,
     version: SNAPSHOT_VERSION,
+    // Monotonic board revision (state.rev): clients use it as an ETag and for
+    // "has anything changed since N?" deltas without comparing whole payloads.
+    rev: state !== null && Number.isInteger(state.rev) ? state.rev : 0,
     generatedAt: isoOf(source.now) ?? new Date().toISOString(),
     sessionId,
     run,

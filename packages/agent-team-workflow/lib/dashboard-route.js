@@ -14,8 +14,10 @@ import { settleExpiredProposals } from './workflow.js'
 export const SNAPSHOT_PATH = '/api/agent-team-workflow.snapshot'
 
 /** Build one JSON response with the live-fact cache policy. */
-function jsonResponse(status, payload) {
-  return Response.json(payload, { status, headers: { 'cache-control': 'no-store' } })
+function jsonResponse(status, payload, etag = null) {
+  const headers = { 'cache-control': 'no-store' }
+  if (typeof etag === 'string') headers.etag = etag
+  return Response.json(payload, { status, headers })
 }
 
 /** @returns a 400 response for one malformed request. */
@@ -29,12 +31,26 @@ function badRequest(message) {
  * @returns the route disposer.
  */
 export function registerDashboardRoute({ connection, ctx, store, settings }) {
+  // One-entry-per-session response cache: a 1.2s poll on an unchanged board
+  // should not re-serialize the whole snapshot, and If-None-Match turns it
+  // into a bodyless 304.
+  const cache = new Map()
   return connection.fetch.register({
     path: SNAPSHOT_PATH,
     methods: ['GET'],
     requestBody: 'buffered',
-    fetch: (request) => handleSnapshotRequest({ request, ctx, store, settings }),
+    fetch: (request) => handleSnapshotRequest({ request, ctx, store, settings, cache }),
   })
+}
+
+/** @returns an ETag for one session at one revision. */
+function etagFor(sessionId, rev) {
+  return `"atw-${sessionId}-${rev}"`
+}
+
+/** @returns a 304 response that reuses the entity tag. */
+function notModified(etag) {
+  return new Response(null, { status: 304, headers: { etag, 'cache-control': 'no-store' } })
 }
 
 /**
@@ -42,7 +58,7 @@ export function registerDashboardRoute({ connection, ctx, store, settings }) {
  * @param options - request plus the plugin's context, store, and settings.
  * @returns a `Response` that never rejects.
  */
-async function handleSnapshotRequest({ request, ctx, store, settings }) {
+async function handleSnapshotRequest({ request, ctx, store, settings, cache }) {
   try {
     if (request.method !== 'GET') {
       return jsonResponse(405, { ok: false, error: 'the live board snapshot only supports GET' })
@@ -100,6 +116,18 @@ async function handleSnapshotRequest({ request, ctx, store, settings }) {
     diagnostics.boardSource = state === null ? 'missing' : settings.writeArtifacts ? 'file' : 'memory'
 
     const artifacts = artifactPaths({ agent, store, settings, state })
+    const rev = state !== null && Number.isInteger(state.rev) ? state.rev : 0
+    const etag = etagFor(sessionId, rev)
+    const ifNoneMatch = request.headers?.get?.('if-none-match') ?? null
+    if (ifNoneMatch !== null && ifNoneMatch.split(',').map((part) => part.trim()).includes(etag)) {
+      return notModified(etag)
+    }
+    if (cache instanceof Map) {
+      const cached = cache.get(sessionId)
+      if (cached !== undefined && cached.rev === rev) {
+        return jsonResponse(200, JSON.parse(cached.body), etag)
+      }
+    }
     const snapshot = buildSnapshot({
       state,
       sessionId,
@@ -114,7 +142,15 @@ async function handleSnapshotRequest({ request, ctx, store, settings }) {
     })
     // The request's session id is authoritative: the board's team id is the
     // Lead's session, which would be wrong for a teammate polling its own view.
-    return jsonResponse(200, { ok: true, ...snapshot, version: SNAPSHOT_VERSION, sessionId })
+    const payload = { ok: true, ...snapshot, version: SNAPSHOT_VERSION, sessionId }
+    if (cache instanceof Map) {
+      cache.set(sessionId, { rev, body: JSON.stringify(payload) })
+      if (cache.size > 32) {
+        const first = cache.keys().next().value
+        if (first !== undefined) cache.delete(first)
+      }
+    }
+    return jsonResponse(200, payload, etag)
   } catch (error) {
     ctx.logger?.warn?.(`agent-team-workflow: live board snapshot failed: ${messageOf(error)}`)
     return jsonResponse(500, { ok: false, error: 'the live board snapshot failed; retry after the next change' })

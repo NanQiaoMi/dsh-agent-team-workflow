@@ -47,7 +47,14 @@ You are an implementing teammate. Do NOT plan, delegate, or spawn. Work directly
 2. Direct Execution: Your task is already claimed for you upon dispatch. Do NOT call team_flow_status to check state or claim again. Directly edit files and verify with real shell commands.
 3. Reporting: When work is verified, call \`team_flow_report\` with: \`item_id\`, \`summary\`, \`files\`, \`commands\` (including integer exit_code), and \`evidence\`.
 4. Review & Respond: If your reviewer requests changes, fix the code in your worktree, run tests, and answer findings with \`team_flow_review_respond\`.
-5. Non-negotiable: Never edit files outside your declared scope or another member's worktree. Never edit .agentteam metadata files.`
+5. Non-negotiable: Never edit files outside your declared scope or another member's worktree. Never edit .agentteam metadata files.
+
+Peer & communication rules:
+- The Team channel is the coordination surface: ask with team_flow_talk (kind:"question"), answer with kind:"answer" + reply_to, and claim/announce work through the tools.
+- After reporting, invite a peer reviewer with team_flow_work {action:"request_review", item_id, reviewer?}; accept invitations only when independent.
+- Disagreements about a definition of done or scope go through team_flow_decide proposals and votes, never silent deviation.
+- If work outside the plan appears, create it with team_flow_item instead of expanding your scope.
+- Message the Lead with send_message({target:"lead"}) or a peer by name, prefixing [BLOCKER]/[QUESTION]/[HANDOFF] and the item id.`
   }
 
   if (role && (role === 'reviewer' || role === 'verifier' || role === 'auditor')) {
@@ -61,7 +68,13 @@ You are an independent adversarial reviewer. Do NOT modify the author's code or 
    - \`summary\`: One paragraph assessment
    - \`evidence_checked\`: Mandatory list of commands/diffs/files you actually checked
    - \`findings\`: If requesting changes, provide file, line, severity, and exact actionable critique.
-3. Independence: Never fix what you review; keep your role strictly adversarial and objective.`
+3. Independence: Never fix what you review; keep your role strictly adversarial and objective.
+
+Peer & communication rules:
+- Clarify with the author in the channel (team_flow_talk), keep the thread on the board, and vote on proposals that affect your reviewed items.
+- Accept peer review invitations only when independent; never review your own work.
+- Create a follow-up item (team_flow_item) for out-of-scope findings instead of fixing them yourself.
+- Message the Lead with [BLOCKER] for hard disagreements instead of approving under pressure.`
   }
 
   return `## Agent Team Workflow
@@ -96,6 +109,11 @@ Non-negotiable rules:
 }
 
 /** @returns a bullet list, or one placeholder line when empty. */
+function clipText(value, max) {
+  const text = String(value ?? '')
+  return text.length > max ? `${text.slice(0, max)}…` : text
+}
+
 function bullets(values, empty = '(none)') {
   if (!Array.isArray(values) || values.length === 0) return `- ${empty}`
   return values.map((value) => `- ${value}`).join('\n')
@@ -213,14 +231,7 @@ You also review these items, because one member cannot be spawned twice: ${revie
 - Never edit a reviewed author's files and never fix what you review; keep your author and reviewer roles separate in your own reasoning.
 - When team_flow_status shows a pending review assigned to you, follow the review protocol: inspect the real files and the author's evidence, then call team_flow_review_submit with a verdict, severity-tagged findings (file + line + claim), and evidence_checked.
 `}
-# Peer collaboration duties (workflow v2)
-- Before acting, call \`team_flow_read\` (and \`team_flow_status\`); the channel may already answer your question or contain a review invitation for you.
-- Ask the peer who owns a dependency or interface directly with \`team_flow_talk {target:"<member>", kind:"question", item_id:"${item.id}"}\`; answer questions addressed to you with \`kind:"answer", reply_to:"<message id>"\`. Do not ask the Lead to relay peer questions.
-- If your definition of done or scope is wrong, do not silently deviate: open a proposal with \`team_flow_decide {action:"propose", kind:"dod|scope", item_id:"${item.id}", text}\` and let the affected peers vote. Accepted dod proposals amend your item automatically.
-- After reporting, invite a peer reviewer: \`team_flow_work {action:"request_review", item_id:"${item.id}", reviewer:"<member>"}\` (omit reviewer for an open invitation). If a peer invites you to review, accept with \`{action:"take_review"}\` only if you can be independent.
-- Discuss findings with your reviewer in the channel before rework; wording of a disagreement and its evidence belong on the board.
-- If you cannot finish, release the item (\`team_flow_work {action:"release"}\`) or offer a handoff to another peer.
-- If the work you find is outside the plan (a missing case, an extra example, a bug you spotted), create it with \`team_flow_item {action:"create", subject, write_scopes, definition_of_done}\` and keep your current item honest about the split. Do not silently expand your scope.
+Before acting call team_flow_read/team_flow_status; peer, proposal, review-invite and item-creation rules are in TEAM_POLICY.
 
 # Required workflow
 1. The backing task is already claimed for you. Work directly inside your assigned write scope and worktree.
@@ -229,10 +240,7 @@ You also review these items, because one member cannot be spawned twice: ${revie
 4. A reviewer will inspect your work. If changes are requested, fix them and call team_flow_review_respond with one response per finding id (fixed | rebut | accepted_risk) plus evidence.
 5. When no action is assigned to you, stop. The Lead or Orchestrator will message you.
 
-# Communication
-- Message the Lead with send_message({target:"lead"}) or a peer by member name. Prefix [BLOCKER]/[QUESTION]/[HANDOFF] and the item id.
-- Raise a real blocker with team_flow_escalate instead of idling silently.
-- Do not send a "done" message instead of reporting: the report tool is the deliverable.`
+Do not send a "done" message instead of reporting: the report tool is the deliverable.`
   return {
     name: item.owner,
     description: `${item.role} for ${item.id}: ${item.subject}`.slice(0, 200),
@@ -278,18 +286,7 @@ ${dod}
 6. Independence: never modify the author's files, never fix the code you review, never let the author's summary stand in for your own inspection. You have a fresh context on purpose.
 7. After submitting you go idle; the Lead or author will notify you for the next round. Do not poll.
 
-# Peer collaboration
-- Clarify with the author in the channel: \`team_flow_talk {target:"<author>", kind:"question", item_id, finding_id?}\`, then \`kind:"answer"\` when the author answers you. Keep the thread on the board instead of only in direct messages.
-- If the item's definition of done is wrong, open a \`dod\` proposal with \`team_flow_decide\` and vote on proposals that affect your reviewed items; do not approve work measured against a definition you believe is wrong.
-- If a peer invites you to review another item, accept with \`team_flow_work {action:"take_review", item_id}\`; never review your own work.
-- If your review uncovers work outside every item's scope, create a follow-up item with \`team_flow_item\` (or open a \`scope\` proposal if it changes an existing item) instead of fixing it yourself.
-- Proposal deadlines and quorums are enforced: vote on anything that affects you before it auto-settles.
-- The Lead only arbitrates; do not escalate a disagreement that peers can settle on the board.
-
-# Communication
-- Message the author with send_message({target:"<author>"}) if you need a clarification, prefixing [QUESTION] and the item id.
-- Message the Lead with [BLOCKER] for a hard disagreement instead of approving under pressure.
-- Round budget per item is ${state.settings.maxReviewRounds}; a request_changes starts a new author→reviewer round, so write findings that can be resolved in one iteration.`
+Peer, proposal and communication rules are in TEAM_POLICY; round budget per item is ${state.settings.maxReviewRounds}.`
   return {
     name: reviewer,
     description: `Independent reviewer for ${items.map((item) => item.id).join(', ') || 'assigned items'}`.slice(0, 200),
@@ -299,11 +296,16 @@ ${dod}
 }
 
 /** @returns a compact findings digest for a peer notification. */
-export function findingDigest(review) {
+export function findingDigest(review, maxFindings = 8) {
   if (review.findings.length === 0) return '- (no findings)'
-  return review.findings
-    .map((finding) => `- ${finding.id} [${finding.severity}] ${finding.file ?? '(no file)'}${finding.line ? `:${finding.line}` : ''} — ${finding.claim}`)
-    .join('\n')
+  const findings = review.findings.slice(0, maxFindings)
+  const lines = findings.map((finding) => {
+    const claim = String(finding.claim ?? '')
+    const clipped = claim.length > 400 ? `${claim.slice(0, 400)}…` : claim
+    return `- ${finding.id} [${finding.severity}] ${finding.file ?? '(no file)'}${finding.line ? `:${finding.line}` : ''} — ${clipped}`
+  })
+  if (review.findings.length > maxFindings) lines.push(`- … ${review.findings.length - maxFindings} more finding(s); read the review record for the rest.`)
+  return lines.join('\n')
 }
 
 /**
@@ -324,8 +326,8 @@ Files reported:
 ${bullets(report?.files ?? [])}
 Commands reported:
 ${bullets((report?.commands ?? []).map((command) => `\`${command.command}\` → exit ${command.exitCode}`))}
-Author summary: ${report?.summary ?? '(missing)'}
-Author-declared risks: ${bullets(report?.risks ?? [], 'none')}${diffSection}
+Author summary: ${clipText(report?.summary ?? '(missing)', 900)}
+Author-declared risks: ${bullets((report?.risks ?? []).slice(0, 3).map((risk) => clipText(risk, 200)), 'none')}${diffSection}
 
 Definition of done:
 ${bullets(item.definitionOfDone)}
@@ -343,12 +345,12 @@ Action: inspect the changes and evidence above, then call team_flow_review_submi
 export function changesRequestedMessage(state, item, review) {
   return `[REVIEW] ${item.id} "${item.subject}" — verdict: ${review.verdict} (round ${review.round}) by ${review.reviewer}.
 
-Reviewer summary: ${review.summary || '(none)'}
+Reviewer summary: ${clipText(review.summary || '(none)', 700)}
 
 Findings:
 ${findingDigest(review)}
 
-Evidence the reviewer checked: ${bullets(review.evidenceChecked, 'not declared')}
+Evidence the reviewer checked: ${bullets((review.evidenceChecked ?? []).slice(0, 5).map((entry) => clipText(entry, 240)), 'not declared')}
 
 Action: fix what is valid, then call team_flow_review_respond with one response per finding id (fixed | rebut | accepted_risk) and the evidence for each. A rebutted blocker is escalated to the Lead. Run id ${state.runId}.`
 }

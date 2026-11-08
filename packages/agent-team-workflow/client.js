@@ -4465,6 +4465,14 @@ window.__ModuleLoader__.load({
       const snapshotRef = React.useRef(null)
       /** Current in-flight poll, so a refresh can supersede it. */
       const loadRef = React.useRef(null)
+      /** Entity tag of the last snapshot, for If-None-Match/304 polling. */
+      const etagRef = React.useRef('')
+      /** Consecutive unchanged polls; drives the adaptive backoff. */
+      const idleTicksRef = React.useRef(0)
+      /** Earliest timestamp of the next automatic poll. */
+      const nextPollAtRef = React.useRef(0)
+      /** Base poll cadence (ms), overridable through run settings. */
+      const basePollRef = React.useRef(POLL_MS)
       /** Marker-id seat: stable per mount, unique across mounted boards. */
       const markerRef = React.useRef(null)
       const copyTimerRef = React.useRef(null)
@@ -4528,6 +4536,7 @@ window.__ModuleLoader__.load({
           if (disposed) return
           if (!force && paused) return
           if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+          if (!force && Date.now() < nextPollAtRef.current) return
           if (controller !== null) {
             try {
               controller.abort()
@@ -4539,19 +4548,44 @@ window.__ModuleLoader__.load({
           const signal = controller.signal
           try {
             const url = SNAPSHOT_PATH + '?session=' + encodeURIComponent(sessionId)
+            const headers = { accept: 'application/json' }
+            if (etagRef.current !== '') headers['if-none-match'] = etagRef.current
             const response = await fetch(url, {
               credentials: 'same-origin',
-              headers: { accept: 'application/json' },
+              headers,
               signal,
             })
-            if (!response || response.ok !== true) {
-              throw new Error('HTTP ' + String(response && response.status !== undefined ? response.status : '?'))
+            if (!response) throw new Error('snapshot unavailable')
+            const status = response.status !== undefined ? response.status : 200
+            // 304: the board did not change; keep the current snapshot and
+            // back off instead of downloading the same JSON again.
+            if (status === 304) {
+              idleTicksRef.current += 1
+              nextPollAtRef.current = Date.now() + pollDelay(idleTicksRef.current)
+              return
+            }
+            if (response.ok !== true && status !== 200) {
+              throw new Error('HTTP ' + String(status))
             }
             const data = await response.json()
             if (disposed) return
             if (!data || typeof data !== 'object' || data.ok !== true) {
               throw new Error(str(data && data.error, 'snapshot unavailable'))
             }
+            const nextEtag = response.headers && typeof response.headers.get === 'function' ? response.headers.get('etag') : null
+            if (typeof nextEtag === 'string' && nextEtag.length > 0) etagRef.current = nextEtag
+            const previousRev = snapshotRef.current && isRecord(snapshotRef.current.run) ? snapshotRef.current.rev : null
+            const nextRev = typeof data.rev === 'number' ? data.rev : null
+            if (previousRev !== null && nextRev !== null && previousRev === nextRev) {
+              idleTicksRef.current += 1
+            } else {
+              idleTicksRef.current = 0
+            }
+            const settings = isRecord(data.run) && isRecord(data.run.settings) ? data.run.settings : null
+            if (settings !== null && Number.isFinite(settings.boardPollMs) && settings.boardPollMs >= 500) {
+              basePollRef.current = settings.boardPollMs
+            }
+            nextPollAtRef.current = Date.now() + pollDelay(idleTicksRef.current)
             snapshotRef.current = data
             setSnapshot(data)
             setError(null)
@@ -4559,11 +4593,22 @@ window.__ModuleLoader__.load({
           } catch (cause) {
             if (disposed) return
             if (cause && cause.name === 'AbortError') return
+            nextPollAtRef.current = Date.now() + Math.max(basePollRef.current, 2000)
             setError({ message: messageOf(cause) })
           }
         }
 
+        /** @returns adaptive poll delay: 1x base, 3s, then 5s when idle. */
+        const pollDelay = (idleTicks) => {
+          const base = basePollRef.current
+          if (idleTicks >= 10) return Math.max(base, 5000)
+          if (idleTicks >= 3) return Math.max(base, 3000)
+          return base
+        }
+
         loadRef.current = () => {
+          nextPollAtRef.current = 0
+          idleTicksRef.current = 0
           void load(true)
         }
         void load(false)

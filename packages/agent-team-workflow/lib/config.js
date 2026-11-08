@@ -99,6 +99,14 @@ export const DEFAULT_SETTINGS = Object.freeze({
   autoFinalize: false,
   /** Interval in seconds for the liveness watchdog timer (0 disables the timer). */
   watchdogIntervalSeconds: 30,
+  /** Default model-facing status projection: `full` (compatible) or `brief` (token-efficient). */
+  statusView: 'full',
+  /** Maximum diff lines attached to a review/wake notification. */
+  reviewDiffLines: 30,
+  /** Maximum diff bytes attached to a review/wake notification. */
+  reviewDiffBytes: 3072,
+  /** Base board poll interval in milliseconds; clients back off when nothing changes. */
+  boardPollMs: 1200,
 })
 
 function clampInt(value, fallback, min, max) {
@@ -245,6 +253,10 @@ export function resolveSettings(raw = {}) {
     autoNotifyConverged: readBool(config.autoNotifyConverged, DEFAULT_SETTINGS.autoNotifyConverged),
     autoFinalize: readBool(config.autoFinalize, DEFAULT_SETTINGS.autoFinalize),
     watchdogIntervalSeconds: clampInt(config.watchdogIntervalSeconds, DEFAULT_SETTINGS.watchdogIntervalSeconds, 0, 3600),
+    statusView: readString(config.statusView, DEFAULT_SETTINGS.statusView, 16) === 'brief' ? 'brief' : 'full',
+    reviewDiffLines: clampInt(config.reviewDiffLines, DEFAULT_SETTINGS.reviewDiffLines, 0, 500),
+    reviewDiffBytes: clampInt(config.reviewDiffBytes, DEFAULT_SETTINGS.reviewDiffBytes, 0, 65536),
+    boardPollMs: clampInt(config.boardPollMs, DEFAULT_SETTINGS.boardPollMs, 500, 60000),
   })
 }
 
@@ -290,5 +302,6 @@ export function runSettings(settings) {
     autoNotifyConverged: settings.autoNotifyConverged,
     autoFinalize: settings.autoFinalize,
     watchdogIntervalSeconds: settings.watchdogIntervalSeconds,
+    boardPollMs: settings.boardPollMs,
   }
 }
