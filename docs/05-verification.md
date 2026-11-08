@@ -219,3 +219,5 @@ report→review→gate→finalize」，或直接在空目录里调用 `team_flow
 3. **`register()` 不校验 `parameters`**：裸 JSON Schema 注册时，参数校验必须自己写在 `execute` 里（本包的 `team_flow_*` 都做了显式校验）。
 4. **`Config` 可以不导出**：插件行仍能挂载，配置由插件自行收敛；代价是 `Config.listConfigs` 显示 `absent`、无安装期校验。
 5. **任务板的 `complete` 不检查依赖就绪**：`claim` 检查 `taskReady`，`complete` 只要求 `in_progress`；所以"完成顺序"必须由治理层自己保证（本包用 DAG + gate）。
+
+> 消耗与效率优化见 [`40-cost-efficiency-plan.md`](40-cost-efficiency-plan.md)（2026-11-09 基线+路线图）。
