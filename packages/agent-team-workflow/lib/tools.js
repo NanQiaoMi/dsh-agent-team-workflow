@@ -323,6 +323,15 @@ async function syncTaskReopen(ctx, agent, taskId) {
   }
 }
 
+/** Build a bounded diff for review notifications (settings-controlled). */
+async function reviewDiffFor({ ctx, cwd, state, item, settings }) {
+  const raw = await getWorktreeDiffSummary({ cwd, state, item, maxLines: settings.reviewDiffLines }).catch(() => null)
+  if (raw === null) return null
+  const limit = settings.reviewDiffBytes
+  if (!Number.isFinite(limit) || limit <= 0) return ''
+  return raw.length > limit ? `${raw.slice(0, limit)}\n… (diff truncated to ${limit} bytes)` : raw
+}
+
 /** Truncate one model-supplied string before it enters the board. */
 function clip(value, max) {
   const text = String(value ?? '')
@@ -733,6 +742,15 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
         type: 'object',
         properties: {
           item_id: { type: 'string', description: 'Optional work item id; when given, its full report and review records are included.' },
+          view: {
+            type: 'string',
+            enum: ['brief', 'full'],
+            description: 'Projection: brief (default per config; action-oriented, bounded) or full (legacy, larger).',
+          },
+          since_rev: {
+            type: 'integer',
+            description: 'Last rev you saw; when the board is unchanged this returns a tiny {unchanged:true} answer.',
+          },
         },
         additionalProperties: false,
       },
@@ -817,6 +835,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             settings,
           }
         }
+        const requestedView = args.view === 'brief' || args.view === 'full' ? args.view : settings.statusView
         const status = W.buildStatus(state, {
           me: { name: membership.name, role: membership.role },
           role: membership.role,
@@ -825,6 +844,8 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           artifacts,
           tasksById,
           detailItemId,
+          view: requestedView,
+          sinceRev: Number.isInteger(args.since_rev) ? args.since_rev : undefined,
         })
         return { ...status, workflow_version: W.WORKFLOW_VERSION, artifacts, settings }
       },
@@ -932,7 +953,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             syncWarnings.push(`reviewer "${outcome.nextReviewer}" is not in the roster; spawn it with the reviewer prompt from team_flow_plan, then the author can re-report or the Lead can re-notify.`)
           } else if (settings.autoNotify) {
             const cwd = store.workingDir(agent)
-            const diff = await getWorktreeDiffSummary({ cwd, state, item }).catch(() => null)
+            const diff = await reviewDiffFor({ ctx, cwd, state, item, settings })
             const failure = await sendPeer(ctx, agent, outcome.nextReviewer, reviewRequestMessage(state, item, diff), exec.signal)
             if (failure === null) notified.push(outcome.nextReviewer)
             else syncWarnings.push(failure)
@@ -1081,7 +1102,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           if (!isLiveMember(ctx, agent, outcome.nextReviewer)) syncWarnings.push(`next reviewer "${outcome.nextReviewer}" is not in the roster`)
           else if (settings.autoNotify) {
             const cwd = store.workingDir(agent)
-            const diff = await getWorktreeDiffSummary({ cwd, state, item }).catch(() => null)
+            const diff = await reviewDiffFor({ ctx, cwd, state, item, settings })
             const failure = await sendPeer(ctx, agent, outcome.nextReviewer, reviewRequestMessage(state, item, diff), exec.signal)
             if (failure === null) notified.push(outcome.nextReviewer)
             else syncWarnings.push(failure)
@@ -1188,7 +1209,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           if (!isLiveMember(ctx, agent, outcome.nextReviewer)) syncWarnings.push(`reviewer "${outcome.nextReviewer}" is not in the roster`)
           else if (settings.autoNotify) {
             const cwd = store.workingDir(agent)
-            const diff = await getWorktreeDiffSummary({ cwd, state, item }).catch(() => null)
+            const diff = await reviewDiffFor({ ctx, cwd, state, item, settings })
             const failure = await sendPeer(ctx, agent, outcome.nextReviewer, reviewRequestMessage(state, item, diff), exec.signal)
             if (failure === null) notified.push(outcome.nextReviewer)
             else syncWarnings.push(failure)

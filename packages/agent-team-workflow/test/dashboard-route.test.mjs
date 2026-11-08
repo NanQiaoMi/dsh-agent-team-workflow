@@ -260,3 +260,36 @@ test('the snapshot settles expired proposals and persists the decision', () => {
     assert.equal(persisted.proposals[0].status, 'accepted', 'settlement is persisted so other members agree')
   })
 })
+
+test('revalidates with ETag/304 and re-fetches after a revision change', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings: SETTINGS })
+    await seedRun(harness, store)
+    const connection = createConnectionDouble()
+    registerDashboardRoute({ connection, ctx: harness.ctx, store, settings: SETTINGS })
+    const route = connection.registered[0]
+    const first = await route.fetch(new Request(`http://localhost${SNAPSHOT_PATH}?session=session-lead`))
+    assert.equal(first.status, 200)
+    const etag = first.headers.get('etag')
+    assert.match(etag, /^"atw-session-lead-\d+"$/)
+    const firstPayload = await first.json()
+    assert.equal(typeof firstPayload.rev, 'number')
+
+    const revalidated = await route.fetch(new Request(`http://localhost${SNAPSHOT_PATH}?session=session-lead`, {
+      headers: { 'if-none-match': etag },
+    }))
+    assert.equal(revalidated.status, 304)
+    assert.equal(revalidated.headers.get('etag'), etag)
+    assert.equal(await revalidated.text(), '')
+
+    // A new revision must invalidate the old tag.
+    const state = await store.readState(harness.lead)
+    await store.writeState(harness.lead, state)
+    const changed = await route.fetch(new Request(`http://localhost${SNAPSHOT_PATH}?session=session-lead`, {
+      headers: { 'if-none-match': etag },
+    }))
+    assert.equal(changed.status, 200)
+    assert.notEqual(changed.headers.get('etag'), etag)
+  })
+})

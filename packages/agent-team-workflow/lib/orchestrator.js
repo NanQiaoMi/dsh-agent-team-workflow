@@ -21,7 +21,7 @@ import { autoCleanupRunWorktrees, getWorktreeDiffSummary } from './worktree-mana
  * @param options - `{ ctx, store, settings }`
  * @returns orchestrator interface.
  */
-export function createOrchestrator({ ctx, store, settings }) {
+export function createOrchestrator({ ctx, store, settings, tokenUsage = () => null }) {
   if (!settings?.autoOrchestrate) {
     return {
       reconcile: async () => ({ actionsTaken: [], converged: false }),
@@ -34,6 +34,10 @@ export function createOrchestrator({ ctx, store, settings }) {
   // Cooldown map: key = `${teamId}:${action}:${target}:${itemId}` -> timestamp
   const cooldowns = new Map()
   const COOLDOWN_MS = 30_000
+  // Last state revision an action was sent for, so a slow member that still
+  // reports `inactive` is not woken again and again while its turn is queued.
+  const sentForRev = new Map()
+  const lastRevByTeam = new Map()
 
   function shouldThrottle(teamId, action, target, itemId = '') {
     const key = `${teamId}:${action}:${target}:${itemId}`
@@ -42,6 +46,55 @@ export function createOrchestrator({ ctx, store, settings }) {
     if (now - last < COOLDOWN_MS) return true
     cooldowns.set(key, now)
     return false
+  }
+
+  /** @returns whether this exact notice was already sent for the same revision. */
+  function alreadySentForRev(teamId, action, target, itemId, rev) {
+    const key = `${teamId}:${action}:${target}:${itemId}`
+    const previous = sentForRev.get(key)
+    return previous !== undefined && previous === rev
+  }
+
+  /** Remember that one notice went out for this revision/member/action. */
+  function markSentForRev(teamId, action, target, itemId, rev) {
+    sentForRev.set(`${teamId}:${action}:${target}:${itemId}`, rev)
+    // A bounded map is enough: one entry per (team, action, target, item) and
+    // teams/items are bounded by the run size.
+    if (sentForRev.size > 5000) {
+      const first = sentForRev.keys().next().value
+      if (first !== undefined) sentForRev.delete(first)
+    }
+    lastRevByTeam.set(teamId, rev)
+  }
+
+  /**
+   * Read the Host token-meter projection for every member. Used by the
+   * autonomous finalize path and the live budget breaker; a missing projection
+   * yields null and never blocks the run.
+   */
+  function readUsage(members) {
+    const read = typeof tokenUsage === 'function' ? tokenUsage() : null
+    if (typeof read !== 'function') return null
+    const usage = { capturedAt: new Date().toISOString(), members: {}, totals: { uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 } }
+    for (const member of members) {
+      if (member.agent === undefined || member.agent === null) continue
+      let raw = null
+      try {
+        raw = read(member.agent)
+      } catch {
+        raw = null
+      }
+      if (raw === null || raw === undefined) continue
+      const totals = raw.totals !== undefined && raw.totals !== null && typeof raw.totals === 'object' ? raw.totals : raw
+      usage.members[member.name] = {
+        uncachedInputTokens: Number.isFinite(totals.uncachedInputTokens) ? totals.uncachedInputTokens : 0,
+        outputTokens: Number.isFinite(totals.outputTokens) ? totals.outputTokens : 0,
+        cacheReadTokens: Number.isFinite(totals.cacheReadTokens) ? totals.cacheReadTokens : 0,
+        cacheWriteTokens: Number.isFinite(totals.cacheWriteTokens) ? totals.cacheWriteTokens : 0,
+      }
+      for (const key of Object.keys(usage.totals)) usage.totals[key] += Number.isFinite(totals[key]) ? totals[key] : 0
+    }
+    return usage
   }
 
   async function sendNotice(root, target, message) {
@@ -80,19 +133,54 @@ export function createOrchestrator({ ctx, store, settings }) {
       return { actionsTaken: [], converged: false }
     }
 
-    if (state.phase === RUN_PHASE.FINALIZED) {
-      return { actionsTaken: [], converged: false }
+    if (state.phase === RUN_PHASE.FINALIZED || state.phase === RUN_PHASE.ABORTED) {
+      return { actionsTaken: [], converged: false, skipped: 'inactive-run' }
     }
 
     const teamId = state.teamId ?? root.id
     const actionsTaken = []
     let members = []
     try {
-      members = ctx.agentTeams.listMembers(root)
+      members = ctx.agentTeams.listMembers(root).map((member) => ({
+        ...member,
+        agent: (() => {
+          try {
+            return ctx.agents?.get?.(member.id)
+          } catch {
+            return undefined
+          }
+        })(),
+      }))
     } catch {
       members = []
     }
     const memberMap = new Map(members.map((m) => [m.name, m]))
+    const stateRev = Number.isInteger(state.rev) ? state.rev : 0
+    lastRevByTeam.set(teamId, stateRev)
+
+    // Live budget breaker: sampling the projection is cheap and lets the team
+    // stop spending before the gate, instead of only failing at finalize.
+    const sampledUsage = readUsage(members)
+    if (sampledUsage !== null && (settings.tokenBudgetPerMember > 0 || settings.tokenBudgetPerRun > 0)) {
+      const total = (totals) => ['uncachedInputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'].reduce((sum, key) => sum + (Number.isFinite(totals?.[key]) ? totals[key] : 0), 0)
+      const violations = []
+      if (settings.tokenBudgetPerRun > 0 && total(sampledUsage.totals) > settings.tokenBudgetPerRun) {
+        violations.push(`run used ${total(sampledUsage.totals)} tokens (budget ${settings.tokenBudgetPerRun})`)
+      }
+      if (settings.tokenBudgetPerMember > 0) {
+        for (const [name, totals] of Object.entries(sampledUsage.members)) {
+          if (total(totals) > settings.tokenBudgetPerMember) violations.push(`member "${name}" used ${total(totals)} tokens (budget ${settings.tokenBudgetPerMember})`)
+        }
+      }
+      if (violations.length > 0) {
+        if (!alreadySentForRev(teamId, 'budget-alert', 'lead', '', stateRev)) {
+          const leadMember = members.find((m) => m.role === 'lead') ?? { name: 'lead' }
+          await sendNotice(root, leadMember.name, `[BUDGET] ${violations.join('; ')}. Automatic wakes are paused at this revision; inspect team_flow_status {view:"full"} and either raise the budget or stop the run.`)
+          markSentForRev(teamId, 'budget-alert', leadMember.name, '', stateRev)
+        }
+        return { actionsTaken: [{ type: 'budget-paused' }], converged: false, budgetExceeded: true }
+      }
+    }
 
     // Set of approved item IDs
     const approvedIds = new Set(
@@ -110,7 +198,7 @@ export function createOrchestrator({ ctx, store, settings }) {
             const m = memberMap.get(item.owner)
             // If worker is currently inactive, wake it up!
             if (m && m.status === 'inactive') {
-              if (options.force || !shouldThrottle(teamId, 'wake-worker', item.owner, item.id)) {
+              if (options.force || (!shouldThrottle(teamId, 'wake-worker', item.owner, item.id) && !alreadySentForRev(teamId, 'wake-worker', item.owner, item.id, stateRev))) {
                 // Auto-claim backing shared task if pending
                 if (item.taskId) {
                   try {
@@ -147,6 +235,7 @@ export function createOrchestrator({ ctx, store, settings }) {
 
                 const ok = await sendNotice(root, item.owner, msg)
                 if (ok) {
+                  markSentForRev(teamId, 'wake-worker', item.owner, item.id, stateRev)
                   actionsTaken.push({ type: 'wake-worker', target: item.owner, itemId: item.id, isRework })
                 }
               }
@@ -172,15 +261,19 @@ export function createOrchestrator({ ctx, store, settings }) {
             if (revName && memberMap.has(revName)) {
               const m = memberMap.get(revName)
               if (m && m.status === 'inactive') {
-                if (options.force || !shouldThrottle(teamId, 'wake-reviewer', revName, item.id)) {
+                if (options.force || (!shouldThrottle(teamId, 'wake-reviewer', revName, item.id) && !alreadySentForRev(teamId, 'wake-reviewer', revName, item.id, stateRev))) {
                   const cwd = store.workingDir(root)
-                  const diff = await getWorktreeDiffSummary({ cwd, state, item }).catch(() => null)
+                  const rawDiff = await getWorktreeDiffSummary({ cwd, state, item, maxLines: settings.reviewDiffLines }).catch(() => null)
+                  const diff = rawDiff !== null && settings.reviewDiffBytes > 0 && rawDiff.length > settings.reviewDiffBytes
+                    ? `${rawDiff.slice(0, settings.reviewDiffBytes)}\n… (diff truncated to ${settings.reviewDiffBytes} bytes)`
+                    : rawDiff
                   const wt = item.git?.worktreePath ? ` Worktree: ${item.git.worktreePath}.` : ''
                   const diffSummary = diff ? `\n\n${diff}` : ''
                   const roundInfo = item.reviews?.length ? ` (Round ${item.reviews.length + 1})` : ''
                   const msg = `[AUTO_DISPATCH] Item ${item.id} "${item.subject}"${roundInfo} is awaiting your review.${wt}${diffSummary}\n\nPlease inspect the changes and evidence above and call team_flow_review_submit.`
                   const ok = await sendNotice(root, revName, msg)
                   if (ok) {
+                    markSentForRev(teamId, 'wake-reviewer', revName, item.id, stateRev)
                     actionsTaken.push({ type: 'wake-reviewer', target: revName, itemId: item.id })
                   }
                 }
@@ -194,13 +287,14 @@ export function createOrchestrator({ ctx, store, settings }) {
     // 3. Check escalated items and wake Lead for arbitration
     for (const item of state.items) {
       if (item.status === ITEM_STATUS.ESCALATED) {
-        if (options.force || !shouldThrottle(teamId, 'arbitrate-escalation', 'lead', item.id)) {
+        if (options.force || (!shouldThrottle(teamId, 'arbitrate-escalation', 'lead', item.id) && !alreadySentForRev(teamId, 'arbitrate-escalation', 'lead', item.id, stateRev))) {
           const leadMember = members.find((m) => m.role === 'lead') ?? { name: 'lead' }
           const reviewCount = item.reviews?.length ?? 0
           const reason = item.escalation?.reason ?? 'Maximum rework rounds exceeded or unresolvable blocker'
           const msg = `[LEAD_ARBITRATION_REQUIRED] Task ${item.id} "${item.subject}" is ESCALATED (after ${reviewCount} review rounds).\nReason: ${reason}.\nPlease inspect the item with team_flow_status { item_id: "${item.id}" } and intervene via team_flow_repair or reassign.`
           const ok = await sendNotice(root, leadMember.name, msg)
           if (ok) {
+            markSentForRev(teamId, 'arbitrate-escalation', leadMember.name, item.id, stateRev)
             actionsTaken.push({ type: 'wake-arbitration', target: leadMember.name, itemId: item.id })
           }
         }
@@ -238,11 +332,30 @@ export function createOrchestrator({ ctx, store, settings }) {
           nativeTasks = []
         }
         const now = new Date().toISOString()
+        const usage = readUsage(members)
         const gate = evaluateGates(state, { settings: state.settings, members, nativeTasks, overrides: [], now })
+        // The autonomous path must capture usage exactly like team_flow_gate
+        // does, otherwise live budgets and the board's usage panel are blind.
+        if (usage !== null) gate.usage = usage
+        if (usage !== null) {
+          const tokenTotal = (totals) => ['uncachedInputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'].reduce((sum, key) => sum + (Number.isFinite(totals?.[key]) ? totals[key] : 0), 0)
+          const budget = { perMember: state.settings.tokenBudgetPerMember, perRun: state.settings.tokenBudgetPerRun }
+          if (budget.perMember > 0) {
+            for (const [name, totals] of Object.entries(usage.members)) {
+              const used = tokenTotal(totals)
+              if (used > budget.perMember) gate.teamFailures.push(`member "${name}" used ${used} tokens (budget ${budget.perMember})`)
+            }
+          }
+          if (budget.perRun > 0 && tokenTotal(usage.totals) > budget.perRun) {
+            gate.teamFailures.push(`run used ${tokenTotal(usage.totals)} tokens (budget ${budget.perRun})`)
+          }
+          if (gate.teamFailures.length > 0) gate.pass = false
+        }
         if (gate.pass) {
           let reportPath = null
           await store.mutateState(root, async (current) => {
             current.gate = gate
+            if (usage !== null) current.usage = usage
             current.updatedAt = now
             current.phase = RUN_PHASE.FINALIZED
             current.finalizedAt = now
@@ -290,11 +403,12 @@ export function createOrchestrator({ ctx, store, settings }) {
       }
 
       if (settings.autoNotifyConverged && !state.convergedNotified) {
-        if (options.force || !shouldThrottle(teamId, 'converge-notice', 'lead')) {
+        if (options.force || (!shouldThrottle(teamId, 'converge-notice', 'lead') && !alreadySentForRev(teamId, 'converge-notice', 'lead', '', stateRev))) {
           const leadMember = members.find((m) => m.role === 'lead') ?? { name: 'lead' }
           const msg = `[TEAM_CONVERGED] All ${state.items.length} work items have been approved! The team has converged. Please run team_flow_gate {finalize: true} to verify final quality gates and produce the final delivery report.`
           const ok = await sendNotice(root, leadMember.name, msg)
           if (ok) {
+            markSentForRev(teamId, 'converge-notice', leadMember.name, '', stateRev)
             actionsTaken.push({ type: 'notify-converged', target: leadMember.name })
             try {
               await store.mutateState(root, (s) => {

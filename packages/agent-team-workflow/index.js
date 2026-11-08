@@ -33,13 +33,13 @@ export const name = 'agent-team-workflow'
 /** Services this plugin needs; the plugin stays inactive without Agent Teams. */
 export const inject = ['agents', 'agentTeams', 'tools', 'systemPrompt', 'workingDirectory']
 
-const VERSION = '1.23.1'
+const VERSION = '1.24.0'
 
 /** Shared tool list, built once per plugin instance. */
 export function apply(ctx, config = {}) {
   const settings = resolveSettings(config)
   const store = createStore({ ctx, settings })
-  const orchestrator = createOrchestrator({ ctx, store, settings })
+  const orchestrator = createOrchestrator({ ctx, store, settings, tokenUsage: () => tokenUsage })
   const tools = buildTools({ ctx, settings, store, version: VERSION, tokenUsage: () => tokenUsage, orchestrator })
   const policy = buildPolicy(settings)
   const installed = new Map()

@@ -34,6 +34,10 @@ jobs:
       # installation. It is intentionally excluded here; CI still runs the
       # other 14 offline suites (engine, dashboard, client contract, git,
       # orchestrator, worktree engine, scope guard, ...).
+      - name: payload budgets
+        working-directory: packages/agent-team-workflow
+        run: node bench/measure-payloads.mjs --check
+
       - name: agent-team-workflow offline tests
         working-directory: packages/agent-team-workflow
         run: |
@@ -51,4 +55,5 @@ jobs:
             test/tool-guard.test.mjs \
             test/scope-guard.test.mjs \
             test/orchestrator.test.mjs \
-            test/worktree-engine.test.mjs
+            test/worktree-engine.test.mjs \
+            test/efficiency.test.mjs

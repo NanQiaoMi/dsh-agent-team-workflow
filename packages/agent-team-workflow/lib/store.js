@@ -157,6 +157,11 @@ export function createStore({ ctx, settings }) {
    */
   async function writeState(agent, state) {
     const path = statePath(agent)
+    // Monotonic revision for cheap change detection: tools, the board route
+    // and clients can ask "has anything changed since rev N?" without diffing
+    // the whole board. Every persisted mutation increments it exactly once.
+    state.rev = Number.isInteger(state.rev) && state.rev > 0 ? state.rev + 1 : 1
+    state.updatedAt = typeof state.updatedAt === 'string' ? state.updatedAt : new Date().toISOString()
     memoryStates.set(path, cloneJson(state))
     summaries.set(path, summarize(state))
     if (!settings.writeArtifacts) return

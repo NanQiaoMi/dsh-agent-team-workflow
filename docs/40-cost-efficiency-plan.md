@@ -298,3 +298,45 @@ turns ≈ Σ_member ( spawn + status_calls + work_turns + review_turns + rework_
 4. `docs/05`/`README` 更新。
 
 预计改动：`lib/workflow.js`（+150 行）、`lib/tools.js`（±80 行）、`lib/config.js`（+3 设置）、新增 bench/test（~200 行）；风险低、可独立回滚。
+
+
+---
+
+## 10. 实施结果（v1.24.0，2026-11-09）
+
+第一轮实现已覆盖 P0/P1 的主要无风险项；以下数字在同一真实 run 的 72KB state 上实测（compact JSON 字节）：
+
+| 对象 | 基线 | v1.24.0 | 变化 |
+|---|---:|---:|---:|
+| `team_flow_status` 默认（full，兼容） | 18,125 | 18,125 | 0 |
+| `status(view:"brief", since_rev=上次)` | — | **4,654** | **-74%** |
+| `status(view:"brief")` 首次（含 mission） | — | 6,044 | -67% |
+| 未变化时 `since_rev=rev` | — | **311** | -98% |
+| `status(item_id)` 详情 | 37,565 | 37,565（长文本已裁剪） | 上限受控 |
+| worker spawn brief | 5,654 | **4,122–4,255** | -27% |
+| reviewer spawn brief | 4,621 | **3,362–3,382** | -28% |
+| `reviewRequestMessage` | 4,347 | **3,635** | -16% |
+| `changesRequestedMessage` | 7,582 | **4,403–4,611** | **-40%** |
+| `approvedMessage` | 1,583 | 1,591 | 0 |
+| worker/reviewer policy（缓存前缀） | 937 / 755 | 1,669 / 1,226 | 规则上移，静态缓存 |
+| review diff | ≤80 行 | ≤30 行 / 3KB 字节（可配） | -60%~ |
+| 看板轮询 | 1.2s 全量 47.7KB | 1.2s + ETag/304 + 3s/5s 自适应 | 稳态 ≈0 body |
+| 看板快照 | 47.7KB | 47.7KB（rev/ETag/304、服务端缓存） | 304 时 0 body |
+
+已实现：
+
+- `state.rev` 单调修订 + `since_rev` 未变化快速路径（311B）；
+- `buildStatus` 三档投影（full / brief / 未变化）+ 长文本裁剪（report ≤1200B、review summary ≤800B、finding ≤400B）；
+- `team_flow_status` 新参数 `view` / `since_rev`；`statusView` 配置（默认 `full` 保持兼容，profile 可开 `brief`）；
+- 通知/评审 diff 限行限量（`reviewDiffLines` / `reviewDiffBytes`），`changesRequested` findings/evidence 截断；
+- brief 压缩：静态 peer/communication 规则移入系统 policy（缓存前缀），worker/reviewer brief 减少 ~28%；
+- orchestrator：按 `state.rev` 去重唤醒（同一 revision 同一动作不重复发）、review diff 限量、**autoFinalize 采集 token usage**、活预算熔断（超预算暂停自动唤醒并通知 Lead）；
+- 看板 route：`ETag`/`If-None-Match` → **304**，按 session+rev 缓存序列化结果；客户端 `If-None-Match`、304 处理、1.2s→3s→5s 自适应退避、`boardPollMs` 可配；
+- 回归测试：`test/efficiency.test.mjs`（4 例）+ route ETag/304 用例 + `bench/measure-payloads.mjs --check`（CI 预算门禁）。
+
+尚未实现 / 后续（P2 剩余，需单独评估）：
+
+- 快照 `sections`/`since_rev` delta 与客户端合并（当前 304 已覆盖稳态；大 run 首次加载仍全量）；
+- 事件/协作面板虚拟化与抽屉按需拉取（member-route 仍是 drawer 打开时逐 tick 刷新）；
+- 长 run 归档（events/channel 已分别上限 200/60，state 增长主要来自 items/report 全文，待按需分页）；
+- 角色 provider 成本路由的 A/B 模板（Host 不支持 per-member reasoning effort，只能换 provider）。

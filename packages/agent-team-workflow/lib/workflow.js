@@ -1079,6 +1079,22 @@ export function nextActions(state, input) {
  */
 export function buildStatus(state, input) {
   settleExpiredProposals(state, { now: input.now, settings: input.settings, members: input.members })
+  const view = input.view === 'brief' ? 'brief' : 'full'
+  const sinceRev = Number.isInteger(input.sinceRev) ? input.sinceRev : null
+  if (view === 'brief' && sinceRev !== null && state.rev === sinceRev) {
+    // Fast path for "anything new since my last read?": a few dozen bytes
+    // instead of the whole board. next_actions stays available because it is
+    // the authoritative assignment, not free-form history.
+    return {
+      workflow_version: state.workflowVersion,
+      run_id: state.runId,
+      rev: state.rev,
+      phase: state.phase,
+      unchanged: true,
+      next_actions: nextActions(state, { ...input, me: input.me.name }),
+    }
+  }
+  if (view === 'brief') return buildBriefStatus(state, input, { sinceRev })
   const me = input.me
   const items = state.items.map((item) => {
     const pending = pendingReview(item)
@@ -1126,9 +1142,10 @@ export function buildStatus(state, input) {
         ? {
             // Detailed records get their own keys: overwriting the compact
             // `reviews` summary with the raw array would break every reader
-            // that asks for the counters.
-            report: item.report,
-            review_records: item.reviews,
+            // that asks for the counters. Strings are bounded so one long
+            // report cannot flood a model context with megabytes.
+            report: trimReport(item.report),
+            review_records: trimReviews(item.reviews),
           }
         : {}),
     }
@@ -1145,6 +1162,7 @@ export function buildStatus(state, input) {
   return {
     workflow_version: state.workflowVersion,
     run_id: state.runId,
+    rev: state.rev,
     phase: state.phase,
     objective: state.objective.length > 400 ? `${state.objective.slice(0, 400)}…` : state.objective,
     acceptance_criteria: state.acceptanceCriteria,
@@ -1179,6 +1197,151 @@ export function buildStatus(state, input) {
         channel_tail: state.channel.slice(-10).map((message) => ({ id: message.id, at: message.at, from: message.from, to: message.to, kind: message.kind, text: message.text.slice(0, 300), item_id: message.refs?.itemId ?? null })),
       }
     })(),
+    next_actions: nextActions(state, { ...input, me: me.name }),
+  }
+}
+
+
+
+/** Bound one string for a model-facing record. */
+function clipText(value, max) {
+  if (value === null || value === undefined) return null
+  const text = String(value)
+  return text.length > max ? `${text.slice(0, max)}…` : text
+}
+
+/** @returns a bounded copy of one work report (shape preserved). */
+export function trimReport(report) {
+  if (report === null || report === undefined || typeof report !== 'object') return report ?? null
+  return {
+    ...report,
+    summary: clipText(report.summary, 1200),
+    evidence: Array.isArray(report.evidence) ? report.evidence.slice(0, 8).map((entry) => clipText(entry, 400)) : [],
+    openQuestions: Array.isArray(report.openQuestions) ? report.openQuestions.slice(0, 5).map((entry) => clipText(entry, 300)) : [],
+    risks: Array.isArray(report.risks) ? report.risks.slice(0, 5).map((entry) => clipText(entry, 300)) : [],
+    deviation: clipText(report.deviation, 800),
+    commands: Array.isArray(report.commands)
+      ? report.commands.map((command) => ({ ...command, command: clipText(command.command, 300), note: clipText(command.note, 200) }))
+      : [],
+  }
+}
+
+/** @returns bounded review records (all rounds kept, long prose clipped). */
+export function trimReviews(reviews) {
+  if (!Array.isArray(reviews)) return []
+  return reviews.map((review) => ({
+    ...review,
+    summary: clipText(review.summary, 800),
+    findings: Array.isArray(review.findings)
+      ? review.findings.map((finding) => ({ ...finding, claim: clipText(finding.claim, 400), suggestion: clipText(finding.suggestion, 300) }))
+      : [],
+    evidenceChecked: Array.isArray(review.evidenceChecked) ? review.evidenceChecked.slice(0, 6).map((entry) => clipText(entry, 300)) : [],
+  }))
+}
+
+/**
+ * Compact status projection (`view: "brief"`).
+ *
+ * Keeps the fields a member needs to act on its next step — ids, status,
+ * reviewer/round counters, pending findings, scope and next_actions — and
+ * drops mission prose, settings, full reports and the channel backlog. The
+ * mission block is returned only on the first read (no/since_rev=0), and a
+ * repeated read with the same revision collapses to a ~50-byte `unchanged`
+ * answer before this function is even called.
+ */
+export function buildBriefStatus(state, input, options = {}) {
+  settleExpiredProposals(state, { now: input.now, settings: input.settings, members: input.members })
+  const me = input.me
+  const sinceRev = Number.isInteger(options.sinceRev) ? options.sinceRev : null
+  const firstRead = sinceRev === null || sinceRev <= 0
+  const items = state.items.map((item) => {
+    const pending = pendingReview(item)
+    const latest = item.reviews.filter((review) => review.status !== 'pending').at(-1) ?? null
+    const openFindings = unresolvedFindings(item)
+    return {
+      id: item.id,
+      subject: item.subject,
+      owner: item.owner,
+      role: item.role,
+      status: item.status,
+      task_id: item.taskId,
+      reviewers: item.reviewers,
+      write_scopes: item.writeScopes,
+      blocked_by: item.blockedBy,
+      reported: item.report !== null,
+      reassignment: item.assignment ?? 'lead',
+      rework_rounds: reworkRounds(item),
+      submitted_rounds: submittedRounds(item),
+      max_rounds: input.settings.maxReviewRounds,
+      pending_reviewer: pending?.reviewer ?? item.pendingReviewer ?? null,
+      verdicts: item.reviews
+        .filter((review) => review.status === 'submitted')
+        .map((review) => ({ reviewer: review.reviewer, verdict: review.verdict, round: review.round })),
+      latest_review_summary: clipText(latest?.summary ?? null, 240),
+      open_findings: openFindings.length,
+      // Rework needs the exact findings; only include them when they matter.
+      findings:
+        item.status === ITEM_STATUS.CHANGES_REQUESTED || item.status === ITEM_STATUS.ESCALATED
+          ? openFindings.slice(0, 6).map((finding) => ({
+              id: finding.id,
+              severity: finding.severity,
+              file: finding.file ?? null,
+              line: finding.line ?? null,
+              claim: clipText(finding.claim, 300),
+            }))
+          : undefined,
+      report_summary: item.report === null ? null : clipText(item.report.summary, 320),
+      plan_status: item.plan === null || item.plan === undefined ? null : item.plan.status,
+      git_worktree: item.git?.worktreePath ?? null,
+    }
+  })
+  const counts = {
+    total: state.items.length,
+    approved: state.items.filter((item) => item.status === ITEM_STATUS.APPROVED).length,
+    pending: state.items.filter((item) => item.status === ITEM_STATUS.PENDING || item.status === ITEM_STATUS.RUNNING).length,
+    in_review: state.items.filter((item) => item.status === ITEM_STATUS.IN_REVIEW).length,
+    changes_requested: state.items.filter((item) => item.status === ITEM_STATUS.CHANGES_REQUESTED).length,
+    escalated: state.items.filter((item) => item.status === ITEM_STATUS.ESCALATED).length,
+  }
+  const summary = collaborationSummary(state, { me: me.name, role: input.role, members: input.members ?? [] })
+  const usage = state.usage ?? null
+  return {
+    workflow_version: state.workflowVersion,
+    run_id: state.runId,
+    rev: state.rev,
+    phase: state.phase,
+    ...(firstRead
+      ? { objective: state.objective, acceptance_criteria: state.acceptanceCriteria, constraints: state.constraints }
+      : {}),
+    me: { name: me.name, role: input.role },
+    counts,
+    items,
+    escalations: state.escalations.slice(-8).map((escalation) => ({
+      id: escalation.id,
+      kind: escalation.kind,
+      subject: clipText(escalation.subject, 160),
+      blocking: escalation.blocking,
+      item_id: escalation.itemId,
+      resolved: escalation.resolved,
+    })),
+    ...(usage === null || usage === undefined
+      ? {}
+      : { usage_totals: usage.totals ?? null }),
+    collaboration: {
+      open_queue: summary.open_queue,
+      review_invites: summary.review_invites,
+      handoffs_to_me: summary.handoffs_to_me,
+      proposals_awaiting_vote: summary.proposals_awaiting_vote,
+      questions_to_me: summary.questions_to_me,
+      channel_tail: state.channel.slice(-3).map((message) => ({
+        id: message.id,
+        from: message.from,
+        to: message.to,
+        kind: message.kind,
+        text: clipText(message.text, 160),
+        item_id: message.refs?.itemId ?? null,
+      })),
+    },
     next_actions: nextActions(state, { ...input, me: me.name }),
   }
 }
