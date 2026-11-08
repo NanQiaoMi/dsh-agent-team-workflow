@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node ${{ matrix.node }} / ${{ runner.os }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: tool-guard-kit tests
+        working-directory: packages/tool-guard-kit
+        run: node --test test/*.test.mjs
+
+      # `tools.integration.test.mjs` validates tool results with the DSH runtime
+      # JSON-Schema validator, which only exists inside a local DSH Desktop
+      # installation. It is intentionally excluded here; CI still runs the
+      # other 14 offline suites (engine, dashboard, client contract, git,
+      # orchestrator, worktree engine, scope guard, ...).
+      - name: agent-team-workflow offline tests
+        working-directory: packages/agent-team-workflow
+        run: |
+          node --test \
+            test/engine.test.mjs \
+            test/collaboration.test.mjs \
+            test/plugin.test.mjs \
+            test/dashboard.test.mjs \
+            test/dashboard-route.test.mjs \
+            test/client.contract.test.mjs \
+            test/git.test.mjs \
+            test/hooks.test.mjs \
+            test/member-route.test.mjs \
+            test/transcript.test.mjs \
+            test/tool-guard.test.mjs \
+            test/scope-guard.test.mjs \
+            test/orchestrator.test.mjs \
+            test/worktree-engine.test.mjs
