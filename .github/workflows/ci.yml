@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   test:
-    name: node ${{ matrix.node }} / ${{ runner.os }}
+    name: node ${{ matrix.node }} / ubuntu-latest
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
