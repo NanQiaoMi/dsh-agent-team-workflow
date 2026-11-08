@@ -334,9 +334,21 @@ turns ≈ Σ_member ( spawn + status_calls + work_turns + review_turns + rework_
 - 看板 route：`ETag`/`If-None-Match` → **304**，按 session+rev 缓存序列化结果；客户端 `If-None-Match`、304 处理、1.2s→3s→5s 自适应退避、`boardPollMs` 可配；
 - 回归测试：`test/efficiency.test.mjs`（4 例）+ route ETag/304 用例 + `bench/measure-payloads.mjs --check`（CI 预算门禁）。
 
+本轮同时完成（P2 API 层）：
+
+- 快照 `sections=core`（去掉 events/collaboration 重面板）与 `since_rev` delta 快速路径（未变化直接返回 `{unchanged:true}`，不构建快照），route 缓存按 `session+sections+rev` 分区；
+- 角色 provider 成本路由建议（Host 只能换 provider，不能按成员调 reasoning effort）：
+
+```yaml
+roles:
+  implementer: { provider: <cheap-fast-provider>, prompt: "..." }
+  reviewer:    { provider: <cheap-fast-provider>, prompt: "..." }
+  verifier:    { provider: <cheap-fast-provider> }
+  # Lead/plan/gate 使用默认强模型，不配置 roles.lead
+```
+
 尚未实现 / 后续（P2 剩余，需单独评估）：
 
-- 快照 `sections`/`since_rev` delta 与客户端合并（当前 304 已覆盖稳态；大 run 首次加载仍全量）；
+- 客户端合并 `sections=core`/delta 到 UI 渲染（服务端已支持，客户端仍拉全量以兼容事件/协作面板）；
 - 事件/协作面板虚拟化与抽屉按需拉取（member-route 仍是 drawer 打开时逐 tick 刷新）；
-- 长 run 归档（events/channel 已分别上限 200/60，state 增长主要来自 items/report 全文，待按需分页）；
-- 角色 provider 成本路由的 A/B 模板（Host 不支持 per-member reasoning effort，只能换 provider）。
+- 长 run 归档（events/channel 已分别上限 200/60，state 增长主要来自 items/report 全文，待按需分页）。
