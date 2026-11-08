@@ -293,3 +293,26 @@ test('revalidates with ETag/304 and re-fetches after a revision change', () => {
     assert.notEqual(changed.headers.get('etag'), etag)
   })
 })
+
+test('supports sections=core and the since_rev delta fast path', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings: SETTINGS })
+    await seedRun(harness, store)
+    const connection = createConnectionDouble()
+    registerDashboardRoute({ connection, ctx: harness.ctx, store, settings: SETTINGS })
+    const route = connection.registered[0]
+
+    const full = await (await route.fetch(new Request(`http://localhost${SNAPSHOT_PATH}?session=session-lead`))).json()
+    assert.ok(Array.isArray(full.run.events))
+
+    const core = await (await route.fetch(new Request(`http://localhost${SNAPSHOT_PATH}?session=session-lead&sections=core`))).json()
+    assert.deepEqual(core.run.events, [])
+    assert.deepEqual(core.run.collaboration.channel_tail, [])
+
+    const state = await store.readState(harness.lead)
+    const delta = await (await route.fetch(new Request(`http://localhost${SNAPSHOT_PATH}?session=session-lead&since_rev=${state.rev}`))).json()
+    assert.equal(delta.unchanged, true)
+    assert.equal(delta.rev, state.rev)
+  })
+})

@@ -66,6 +66,9 @@ async function handleSnapshotRequest({ request, ctx, store, settings, cache }) {
     const url = new URL(request.url, 'http://dashboard.invalid')
     const sessionId = url.searchParams.get('session') ?? ''
     if (!/^[A-Za-z0-9._-]{1,160}$/.test(sessionId)) return badRequest('a valid ?session=<sessionId> query parameter is required')
+    const sections = url.searchParams.get('sections') === 'core' ? 'core' : 'full'
+    const sinceRevRaw = url.searchParams.get('since_rev')
+    const sinceRev = sinceRevRaw !== null && /^\d+$/.test(sinceRevRaw) ? Number.parseInt(sinceRevRaw, 10) : null
     const agent = ctx.agents.get(sessionId)
     if (agent === undefined) return jsonResponse(404, { ok: false, error: 'that session is not live right now' })
 
@@ -122,8 +125,14 @@ async function handleSnapshotRequest({ request, ctx, store, settings, cache }) {
     if (ifNoneMatch !== null && ifNoneMatch.split(',').map((part) => part.trim()).includes(etag)) {
       return notModified(etag)
     }
+    // Delta fast path: the caller already saw this revision. This is the
+    // lowest-cost answer for long-poll style clients; no snapshot is built.
+    if (sinceRev !== null && sinceRev === rev) {
+      return jsonResponse(200, { ok: true, rev, unchanged: true, sessionId }, etag)
+    }
+    const cacheKey = `${sessionId}:${sections}`
     if (cache instanceof Map) {
-      const cached = cache.get(sessionId)
+      const cached = cache.get(cacheKey)
       if (cached !== undefined && cached.rev === rev) {
         return jsonResponse(200, JSON.parse(cached.body), etag)
       }
@@ -143,8 +152,13 @@ async function handleSnapshotRequest({ request, ctx, store, settings, cache }) {
     // The request's session id is authoritative: the board's team id is the
     // Lead's session, which would be wrong for a teammate polling its own view.
     const payload = { ok: true, ...snapshot, version: SNAPSHOT_VERSION, sessionId }
+    // `sections=core` keeps the board chrome (run/team/counts) but drops the
+    // replay panels; clients that render those panels ask for the full view.
+    if (sections === 'core' && payload.run !== null && typeof payload.run === 'object') {
+      payload.run = { ...payload.run, events: [], collaboration: { open_queue: [], review_invites: [], handoffs_to_me: [], proposals_awaiting_vote: [], questions_to_me: [], proposals_open: [], channel_tail: [] } }
+    }
     if (cache instanceof Map) {
-      cache.set(sessionId, { rev, body: JSON.stringify(payload) })
+      cache.set(cacheKey, { rev, body: JSON.stringify(payload) })
       if (cache.size > 32) {
         const first = cache.keys().next().value
         if (first !== undefined) cache.delete(first)

@@ -15,7 +15,7 @@
 | V6 | 最终组合配置进入 profile 121 | `dsh --profile 121 --dump-config` 输出含本行与配置 | ✅ 已验证 |
 | V7 | **最终代码代**在运行中的 Desktop 里 live 跑一次完整团队流程 | 重启 DSH 后真实 run（4 成员 / 2 项 / 约 5 分钟） | ✅ **已验证**，见 [`08-live-run.md`](08-live-run.md) 与 [`evidence/live-run/`](evidence/live-run/) |
 | V10 | 对等协作层（workflow v2） | 离线测试 39 例（collaboration 14 + tools 19 + 相关 engine/plugin）：认领/释放、评审邀请与接受、交接、提案投票/平票/Lead 仲裁、阻断提案拦截、频道与摘要、v1 板自动升级；快照 v2 与客户端面板 26+17 例 | ✅ 全绿（113/113） |
-| V33 | v1.24.0：消耗与效率优化第一轮 | `state.rev`+brief/since 状态投影、brief/通知压缩、唤醒去重、autoFinalize usage、活预算、快照 ETag/304、客户端自适应轮询；新增 efficiency/bench 预算门禁；247/247 | ✅ 247/247 + kit 9/9；bench `--check` 全过 |
+| V33 | v1.24.0：消耗与效率优化第一轮 | `state.rev`+brief/since 状态投影、brief/通知压缩、唤醒去重、autoFinalize usage、活预算、快照 ETag/304、客户端自适应轮询；新增 efficiency/bench 预算门禁；248/248 | ✅ 248/248 + kit 9/9；bench `--check` 全过 |
 | V32 | v1.16.0：运行时写范围守卫 | `enforceWriteScopes`：write/edit/str_replace 越界即时拒绝；reviewer 无 item 即禁止写；fail-open；新增 scope-guard 4 例 + 装配断言；总 224/224 | ✅ 224/224 + kit 9/9；见 [`31`](31-runtime-scope-guard.md) |
 | V31 | v1.15.0：事件流独占整行 | 事件流移出三列、独占全宽行；过滤单行；四列日志布局 + 两行详情；门禁/升级两列在下 | ✅ 客户端 40/40；预览 [`events-row-preview.png`](evidence/dashboard/events-row-preview.png) |
 | V30 | v1.14.0：六人以上拓扑密排 | 列宽 218–330；列头换行、名字省略号、徽章不裁切；上下文移入 title；列按内容收紧；工单评审角标省略号 | ✅ 客户端 40/40；预览 [`topology-6members-preview.png`](evidence/dashboard/topology-6members-preview.png) |
