@@ -1,5 +1,8 @@
 # Agent Team Workflow Kit（DSH）
 
+[![CI](https://github.com/NanQiaoMi/dsh-agent-team-workflow/actions/workflows/ci.yml/badge.svg)](https://github.com/NanQiaoMi/dsh-agent-team-workflow/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 在 **DeepSeek Harness** 上落地的一套通用 Agent Team 架构 + 可安装插件。
 
 它给 DSH 原生 Agent Teams 补上缺失的**治理层**：注入式标准工作流（plan → 并行独立执行 → 相互审阅 → 质量门禁 → 收敛）、评审轮次状态机、写范围纪律、证据强制与归档报告。
