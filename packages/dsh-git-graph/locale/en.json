@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Git Graph Visualizer",
+    "description": "Interactive dynamic Git commit DAG graph, branch tree, and working tree status pill in chat."
+  }
+}
