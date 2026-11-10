@@ -8,6 +8,7 @@
  */
 
 import { SNAPSHOT_VERSION, buildSnapshot } from './dashboard.js'
+import { listContracts, lookupStructure } from './devkit.js'
 import { settleExpiredProposals } from './workflow.js'
 
 /** Exact Fetch path the Web view polls. Connection requires the `/api/` channel. */
@@ -137,6 +138,28 @@ async function handleSnapshotRequest({ request, ctx, store, settings, cache }) {
         return jsonResponse(200, JSON.parse(cached.body), etag)
       }
     }
+
+    let devkit = null
+    try {
+      const cwd = store.workingDir(agent)
+      if (cwd) {
+        const [manifestRes, contractsList] = await Promise.all([
+          lookupStructure(cwd, { action: 'modules' }).catch(() => null),
+          listContracts(cwd).catch(() => []),
+        ])
+        if (manifestRes?.found || (Array.isArray(contractsList) && contractsList.length > 0)) {
+          devkit = {
+            project: manifestRes?.project ?? null,
+            runtime: manifestRes?.runtime ?? null,
+            modules: manifestRes?.modules ?? {},
+            contracts: contractsList ?? [],
+          }
+        }
+      }
+    } catch {
+      /* devkit lookup is best effort */
+    }
+
     const snapshot = buildSnapshot({
       state,
       sessionId,
@@ -145,6 +168,7 @@ async function handleSnapshotRequest({ request, ctx, store, settings, cache }) {
         members,
         tasks,
       },
+      devkit,
       artifacts,
       now: new Date().toISOString(),
       diagnostics,
