@@ -85,8 +85,8 @@ const budgets = {
   'policy.reviewer': 1800,
   'policy.lead': 6200,
   'tools.lead': 25000,
-  'tools.worker': 14000,
-  'tools.reviewer': 8500,
+  'tools.worker': 15000,
+  'tools.reviewer': 9000,
   'tools.verifier': 5000,
 }
 

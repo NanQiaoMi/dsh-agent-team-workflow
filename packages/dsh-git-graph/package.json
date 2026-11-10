@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-git-graph",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Real-time interactive Git commit DAG & branch visualizer plugin for DeepSeek Harness (DSH).",
   "type": "module",
@@ -30,7 +30,9 @@
       "immediately": true,
       "inject": [
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-conversation"
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-session"
       ]
     }
   },

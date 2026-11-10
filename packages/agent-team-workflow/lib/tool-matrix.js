@@ -24,6 +24,8 @@ export const ROLE_TOOL_MATRIX = Object.freeze({
     'team_flow_review_respond',
     'team_flow_escalate',
     'team_flow_git',
+    'team_dev_lookup',
+    'team_dev_contract',
   ],
   implementer: [
     'team_flow_report',
@@ -36,6 +38,8 @@ export const ROLE_TOOL_MATRIX = Object.freeze({
     'team_flow_decide',
     'team_flow_escalate',
     'team_flow_status',
+    'team_dev_lookup',
+    'team_dev_contract',
   ],
   reviewer: [
     'team_flow_review_submit',
@@ -44,12 +48,15 @@ export const ROLE_TOOL_MATRIX = Object.freeze({
     'team_flow_read',
     'team_flow_decide',
     'team_flow_status',
+    'team_dev_lookup',
+    'team_dev_contract',
   ],
   verifier: [
     'team_flow_git',
     'team_flow_read',
     'team_flow_talk',
     'team_flow_status',
+    'team_dev_lookup',
   ],
 })
 

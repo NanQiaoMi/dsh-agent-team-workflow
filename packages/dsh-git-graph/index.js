@@ -12,7 +12,7 @@ import { getGitSnapshot } from './lib/git-engine.js'
 
 export const name = 'dsh-git-graph'
 
-export const inject = ['tools', 'connection']
+export const inject = ['tools', 'agents', 'workingDirectory']
 
 /** Standard Schema compliant Config (zero-import) */
 export const Config = {
@@ -94,9 +94,18 @@ export function apply(ctx, config = {}) {
   }
 
   // 1. Register HTTP snapshot route via Connection service
-  ctx.effect(() => {
-    return registerGitGraphRoute({ connection: ctx.connection, ctx })
-  }, 'git-graph.route')
+  // Use ctx.inject to support both immediate and asynchronous connection readiness
+  if (ctx.connection?.fetch?.register) {
+    ctx.effect(() => {
+      return registerGitGraphRoute({ connection: ctx.connection, ctx })
+    }, 'git-graph: snapshot route direct')
+  } else if (typeof ctx.inject === 'function') {
+    ctx.inject(['connection'], (scope) => {
+      scope.effect(() => {
+        return registerGitGraphRoute({ connection: scope.connection, ctx })
+      }, 'git-graph: snapshot route dynamic')
+    })
+  }
 
   // 2. Register tools for the model
   ctx.effect(() => {
@@ -194,18 +203,27 @@ export function apply(ctx, config = {}) {
     return () => {
       for (const d of disposers.reverse()) d()
     }
-  }, 'git-graph.tools')
+  }, 'git-graph: tools')
 
   // 3. Inject system prompt section if available
-  if (resolved.injectPrompt && ctx.systemPrompt?.section) {
-    ctx.effect(() => {
-      return ctx.systemPrompt.section({
+  const registerPrompt = (promptService) => {
+    if (resolved.injectPrompt && promptService?.section) {
+      return promptService.section({
         name: 'git:status-helper',
-        order: ctx.systemPrompt.getSectionOrder ? ctx.systemPrompt.getSectionOrder('STRUCTURED_OUTPUT') - 10 : 9800,
+        order: promptService.getSectionOrder ? promptService.getSectionOrder('STRUCTURED_OUTPUT') - 10 : 9800,
         text: () => {
           return `[Git Graph Visualizer active: You can call git_graph_status and git_graph_inspect to view branches and commit trees. The developer has an interactive visual Git Graph in the chat interface.]`
         },
       })
-    }, 'git-graph.prompt')
+    }
+    return () => {}
+  }
+
+  if (ctx.systemPrompt?.section) {
+    ctx.effect(() => registerPrompt(ctx.systemPrompt), 'git-graph: prompt direct')
+  } else if (typeof ctx.inject === 'function') {
+    ctx.inject(['systemPrompt'], (scope) => {
+      scope.effect(() => registerPrompt(scope.systemPrompt), 'git-graph: prompt dynamic')
+    })
   }
 }

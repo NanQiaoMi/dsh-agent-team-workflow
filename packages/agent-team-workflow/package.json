@@ -1,13 +1,17 @@
 {
   "name": "@local/dsh-agent-team-workflow",
-  "version": "1.26.0",
+  "version": "1.27.0",
   "private": true,
   "description": "Injected Agent-Team workflow protocol for DeepSeek Harness: plan, parallel execution, mutual review, gates.",
   "type": "module",
   "main": "index.js",
+  "bin": {
+    "scan-devkit": "./bin/scan-devkit.mjs"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
+    "./devkit": "./lib/devkit.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg",
     "./package.json": "./package.json"
@@ -15,8 +19,10 @@
   "files": [
     "index.js",
     "client.js",
+    "bin/*.mjs",
     "lib/*.js",
     "lib/**/*.js",
+    "lib/templates/*.json",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",

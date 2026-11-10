@@ -11,6 +11,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { runSettings } from './config.js'
+import {
+  ensureDevkit,
+  listContracts,
+  lookupStructure,
+  publishContract,
+  readContract,
+  validateContract,
+} from './devkit.js'
 import * as G from './git.js'
 import { fireHooks } from './hooks.js'
 import { computeUsage } from './telemetry.js'
@@ -880,6 +888,16 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           open_questions: { type: 'array', items: { type: 'string' }, description: 'Anything still unresolved, including assumptions you need confirmed.' },
           risks: { type: 'array', items: { type: 'string' }, description: 'Known risks, residual defects, or follow-up work.' },
           deviation: { type: 'string', description: 'Any deviation from the brief (scope, approach, DoD) and why.' },
+          handoff_packet: {
+            type: 'object',
+            description: 'Optional machine-readable handoff packet for downstream items or consumers.',
+            properties: {
+              contract_id: { type: 'string', description: 'Registered contract id.' },
+              entry: { type: 'string', description: 'Primary entry point file path.' },
+              exports: { type: 'array', items: { type: 'string' }, description: 'Exported symbol names.' },
+              notes: { type: 'string', description: 'Usage notes for downstream items.' },
+            },
+          },
         },
         required: ['item_id', 'summary', 'files'],
       },
@@ -893,6 +911,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           commands: { type: 'array', items: {} },
           review_round: {},
           reviewer: {},
+          handoff_packet: {},
           scope_warnings: { type: 'array', items: { type: 'string' } },
           sequence_warnings: { type: 'array', items: { type: 'string' } },
           sync_warnings: { type: 'array', items: { type: 'string' } },
@@ -910,6 +929,14 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           note: command?.note === undefined ? null : String(command.note),
         }))
         const files = (Array.isArray(args.files) ? args.files : []).map((file) => W.normalizePath(file)).filter((file) => file.length > 0)
+        const handoffPacket = args.handoff_packet && typeof args.handoff_packet === 'object'
+          ? {
+              contract_id: args.handoff_packet.contract_id ? String(args.handoff_packet.contract_id).trim() : null,
+              entry: args.handoff_packet.entry ? String(args.handoff_packet.entry).trim() : null,
+              exports: (Array.isArray(args.handoff_packet.exports) ? args.handoff_packet.exports : []).map((e) => String(e).trim()).filter(Boolean),
+              notes: args.handoff_packet.notes ? clip(String(args.handoff_packet.notes).trim(), 1000) : null,
+            }
+          : null
         const report = {
           summary: clip(String(args.summary ?? '').trim(), 4000),
           files,
@@ -943,7 +970,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             }
           }
 
-          const applied = W.applyReport(current, { itemId: item.id, caller: membership.name, report, now, settings: current.settings })
+          const applied = W.applyReport(current, { itemId: item.id, caller: membership.name, report, handoffPacket, now, settings: current.settings })
           outcome = applied
           return current
         })
@@ -988,6 +1015,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           status: item.status,
           review_round: outcome.review?.round ?? null,
           reviewer: outcome.nextReviewer,
+          handoff_packet: item.handoffPacket ?? null,
           scope_warnings: scopeWarnings,
           sequence_warnings: item.report?.sequenceWarnings ?? [],
           sync_warnings: syncWarnings,
@@ -2842,6 +2870,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             pending_reviewer: W.pendingReview(found)?.reviewer ?? null,
             review_requests: found.reviewRequests ?? [],
             handoffs: found.handoffs ?? [],
+            handoff_packet: found.handoffPacket ?? null,
             definition_of_done: found.definitionOfDone,
             open_proposals: W.openBlockingProposals(state, found.id).map((proposal) => proposal.id),
           }
@@ -2892,6 +2921,135 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           next_actions: W.nextActions(state, { me: { name: membership.name, role: membership.role }, role: membership.role, members, settings: state.settings }),
           warnings: [],
         }
+      },
+    },
+
+    // -------------------------------------------------------------- dev_lookup
+    {
+      name: 'team_dev_lookup',
+      description:
+        'Fast zero-grep structural query against the local codebase manifest, modules, contracts, or task templates.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['modules', 'module', 'commands', 'contracts', 'templates', 'search'],
+            description: 'What to look up (default: "modules").',
+          },
+          module: {
+            type: 'string',
+            description: 'Module name or path when action is "module".',
+          },
+          export_name: {
+            type: 'string',
+            description: 'Symbol name when searching for an exported function or class.',
+          },
+          refresh: {
+            type: 'boolean',
+            description: 'Force re-scan of codebase manifest if disk changes occurred.',
+          },
+        },
+        additionalProperties: false,
+      },
+      output: jsonOutput({
+        type: 'object',
+        properties: {
+          found: { type: 'boolean' },
+          project: { type: 'string' },
+          runtime: {},
+          modules: {},
+          module: { type: 'string' },
+          details: {},
+          commands: {},
+          contracts: { type: 'array', items: {} },
+          archetypes: {},
+          symbol: { type: 'string' },
+          matches: { type: 'array', items: {} },
+          error: { type: 'string' },
+          available_modules: { type: 'array', items: { type: 'string' } },
+        },
+      }),
+      async execute(args, exec) {
+        const { agent } = resolveCaller(ctx, exec, 'team_dev_lookup')
+        const cwd = store.workingDir(agent)
+        if (args.refresh) {
+          await ensureDevkit(cwd, { refresh: true })
+        }
+        return await lookupStructure(cwd, args)
+      },
+    },
+
+    // -------------------------------------------------------------- dev_contract
+    {
+      name: 'team_dev_contract',
+      description:
+        'Manage standard interface contracts: read, publish, list, or validate exports against a contract.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['list', 'read', 'publish', 'validate'],
+            description: 'Contract operation.',
+          },
+          contract_id: {
+            type: 'string',
+            description: 'Unique contract ID (e.g. devkit-api-contract).',
+          },
+          contract: {
+            type: 'object',
+            description: 'Contract definition when publishing ($id, title, version, methods, mock).',
+          },
+          exports: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'List of exported symbol names when validating against a contract.',
+          },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+      output: jsonOutput({
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean' },
+          contract_id: { type: 'string' },
+          path: { type: 'string' },
+          contract: {},
+          contracts: { type: 'array', items: {} },
+          validation: {},
+          error: { type: 'string' },
+        },
+      }),
+      async execute(args, exec) {
+        const { agent } = resolveCaller(ctx, exec, 'team_dev_contract')
+        const cwd = store.workingDir(agent)
+        const action = String(args.action ?? '').toLowerCase().trim()
+
+        if (action === 'list') {
+          const contracts = await listContracts(cwd)
+          return { ok: true, contracts }
+        }
+        if (action === 'read') {
+          if (!args.contract_id) throw new Error('team_dev_contract { action: "read" } requires contract_id')
+          const contract = await readContract(cwd, args.contract_id)
+          if (!contract) return { ok: false, error: `contract "${args.contract_id}" not found` }
+          return { ok: true, contract }
+        }
+        if (action === 'publish') {
+          if (!args.contract) throw new Error('team_dev_contract { action: "publish" } requires contract definition object')
+          const published = await publishContract(cwd, args.contract)
+          return { ok: true, contract_id: published.contractId, path: published.path }
+        }
+        if (action === 'validate') {
+          if (!args.contract_id) throw new Error('team_dev_contract { action: "validate" } requires contract_id')
+          const contract = await readContract(cwd, args.contract_id)
+          if (!contract) return { ok: false, error: `contract "${args.contract_id}" not found` }
+          const validation = validateContract(contract, args.exports ?? [])
+          return { ok: validation.ok, contract_id: args.contract_id, validation }
+        }
+        throw new Error(`unknown action "${action}"; use list, read, publish, or validate`)
       },
     },
   ]
