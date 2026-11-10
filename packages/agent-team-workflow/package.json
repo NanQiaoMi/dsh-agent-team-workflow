@@ -6,6 +6,7 @@
   "type": "module",
   "main": "index.js",
   "bin": {
+    "agent-team-dev": "./bin/agent-team-dev.mjs",
     "scan-devkit": "./bin/scan-devkit.mjs"
   },
   "exports": {

@@ -221,7 +221,8 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
                     .map((it) => {
                       const hp = it.handoffPacket
                       const parts = [`Item ${it.id}`]
-                      if (hp.contract_id) parts.push(`contract: ${hp.contract_id}`)
+                      const cid = hp.contract_id ?? hp.contractId
+                      if (cid) parts.push(`contract: ${cid}`)
                       if (hp.entry) parts.push(`entry: ${hp.entry}`)
                       if (Array.isArray(hp.exports) && hp.exports.length > 0) parts.push(`exports: ${hp.exports.join(', ')}`)
                       if (hp.notes) parts.push(`notes: ${hp.notes}`)
