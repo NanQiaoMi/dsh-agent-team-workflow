@@ -94,17 +94,22 @@ export function apply(ctx, config = {}) {
   }
 
   // 1. Register HTTP snapshot route via Connection service
-  // Use ctx.inject to support both immediate and asynchronous connection readiness
-  if (ctx.connection?.fetch?.register) {
-    ctx.effect(() => {
-      return registerGitGraphRoute({ connection: ctx.connection, ctx })
-    }, 'git-graph: snapshot route direct')
-  } else if (typeof ctx.inject === 'function') {
+  // Cordis rule: Never access ctx.connection directly on parent ctx without inject.
+  // ctx.inject(['connection'], (scope) => ...) safely defers or executes when connection service is ready.
+  if (typeof ctx.inject === 'function') {
     ctx.inject(['connection'], (scope) => {
       scope.effect(() => {
-        return registerGitGraphRoute({ connection: scope.connection, ctx })
-      }, 'git-graph: snapshot route dynamic')
+        if (scope.connection?.fetch?.register) {
+          return registerGitGraphRoute({ connection: scope.connection, ctx })
+        }
+        return () => {}
+      }, 'git-graph: snapshot route')
     })
+  } else if (ctx.connection?.fetch?.register) {
+    // Fallback for non-Cordis simple mock contexts in tests
+    ctx.effect(() => {
+      return registerGitGraphRoute({ connection: ctx.connection, ctx })
+    }, 'git-graph: snapshot route mock')
   }
 
   // 2. Register tools for the model
@@ -219,11 +224,14 @@ export function apply(ctx, config = {}) {
     return () => {}
   }
 
-  if (ctx.systemPrompt?.section) {
-    ctx.effect(() => registerPrompt(ctx.systemPrompt), 'git-graph: prompt direct')
-  } else if (typeof ctx.inject === 'function') {
+  // 3. Register system prompt section if service available
+  // Cordis rule: Never access ctx.systemPrompt directly on parent ctx without inject.
+  if (typeof ctx.inject === 'function') {
     ctx.inject(['systemPrompt'], (scope) => {
-      scope.effect(() => registerPrompt(scope.systemPrompt), 'git-graph: prompt dynamic')
+      scope.effect(() => registerPrompt(scope.systemPrompt), 'git-graph: prompt')
     })
+  } else if (ctx.systemPrompt?.section) {
+    // Fallback for non-Cordis simple mock contexts in tests
+    ctx.effect(() => registerPrompt(ctx.systemPrompt), 'git-graph: prompt mock')
   }
 }

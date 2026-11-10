@@ -9,6 +9,10 @@ function createMockContext() {
   const routes = []
 
   const ctx = {
+    inject(deps, cb) {
+      // In Cordis, ctx.inject creates a scoped context with the injected dependencies
+      cb(ctx)
+    },
     connection: {
       fetch: {
         register(route) {
@@ -127,4 +131,45 @@ test('disposers cleanly unwind registered resources', () => {
   assert.equal(mock.tools.length, 0)
   assert.equal(mock.routes.length, 0)
   assert.equal(mock.sections.length, 0)
+})
+
+test('Cordis Context Proxy safety: apply never accesses un-injected properties on context', () => {
+  const mock = createMockContext()
+
+  // Mimic Cordis Context Proxy: accessing undeclared services throws 'cannot get property "X" without inject'
+  const declaredInject = new Set(['tools', 'agents', 'workingDirectory'])
+  const allowedCoreProps = new Set(['inject', 'effect', 'reflect'])
+
+  function createCordisProxy(underlying, scopedInject = new Set()) {
+    return new Proxy(underlying, {
+      get(target, prop) {
+        if (typeof prop === 'symbol' || allowedCoreProps.has(prop)) {
+          if (prop === 'inject') {
+            return (deps, cb) => {
+              const childInject = new Set([...scopedInject, ...deps])
+              const scopedCtx = createCordisProxy(underlying, childInject)
+              return cb(scopedCtx)
+            }
+          }
+          return target[prop]
+        }
+        if (declaredInject.has(prop) || scopedInject.has(prop)) {
+          return target[prop]
+        }
+        // Throws exactly what Cordis throws
+        throw new Error(`cannot get property "${String(prop)}" without inject`)
+      },
+    })
+  }
+
+  const cordisCtx = createCordisProxy(mock.ctx, declaredInject)
+
+  // Must not throw "cannot get property 'connection' without inject"
+  assert.doesNotThrow(() => {
+    apply(cordisCtx, {})
+  }, 'apply must adhere to Cordis injection protocol and never throw on un-injected context properties')
+
+  assert.equal(mock.routes.length, 1)
+  assert.equal(mock.sections.length, 1)
+  assert.equal(mock.tools.length, 2)
 })
