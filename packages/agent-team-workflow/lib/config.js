@@ -107,6 +107,12 @@ export const DEFAULT_SETTINGS = Object.freeze({
   reviewDiffBytes: 3072,
   /** Base board poll interval in milliseconds; clients back off when nothing changes. */
   boardPollMs: 1200,
+  /** Legacy mode: register all 17 tools to every member regardless of role. */
+  legacyAllTools: false,
+  /** Filter registered tools by role to reduce model prompt schema overhead. */
+  roleToolScoping: true,
+  /** Pre-flight check in team_flow_report: fail fast on non-zero exit codes. */
+  preReportCheck: true,
 })
 
 function clampInt(value, fallback, min, max) {
@@ -257,6 +263,9 @@ export function resolveSettings(raw = {}) {
     reviewDiffLines: clampInt(config.reviewDiffLines, DEFAULT_SETTINGS.reviewDiffLines, 0, 500),
     reviewDiffBytes: clampInt(config.reviewDiffBytes, DEFAULT_SETTINGS.reviewDiffBytes, 0, 65536),
     boardPollMs: clampInt(config.boardPollMs, DEFAULT_SETTINGS.boardPollMs, 500, 60000),
+    legacyAllTools: readBool(config.legacyAllTools, DEFAULT_SETTINGS.legacyAllTools),
+    roleToolScoping: readBool(config.roleToolScoping, DEFAULT_SETTINGS.roleToolScoping),
+    preReportCheck: readBool(config.preReportCheck, DEFAULT_SETTINGS.preReportCheck),
   })
 }
 
@@ -303,5 +312,8 @@ export function runSettings(settings) {
     autoFinalize: settings.autoFinalize,
     watchdogIntervalSeconds: settings.watchdogIntervalSeconds,
     boardPollMs: settings.boardPollMs,
+    legacyAllTools: settings.legacyAllTools,
+    roleToolScoping: settings.roleToolScoping,
+    preReportCheck: settings.preReportCheck,
   }
 }

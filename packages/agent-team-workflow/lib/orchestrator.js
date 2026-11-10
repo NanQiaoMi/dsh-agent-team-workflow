@@ -228,9 +228,12 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
                   const findingsDigest = findings.length > 0
                     ? findings.map((f, i) => `  ${i + 1}. [${f.id ?? `F${i + 1}`}] (${f.severity ?? 'issue'}): ${f.file ? `${f.file}:${f.line ?? ''} ` : ''}${f.claim ?? f.comment ?? ''}`).join('\n')
                     : '  (Reviewer requested changes; please inspect review record in status.)'
-                  msg = `[AUTO_DISPATCH] Task ${item.id} "${item.subject}" requires rework based on reviewer findings (Round ${latestReview?.round ?? '?'}).${wt}\nReviewer findings:\n${findingsDigest}\n\nPlease address these findings inside your worktree, run tests, and call team_flow_review_respond with one response per finding id (fixed | rebut | accepted_risk) and updated evidence.`
+                  msg = `[AUTO_DISPATCH] Task ${item.id} "${item.subject}" requires rework based on reviewer findings (Round ${latestReview?.round ?? '?'}).${wt}\nReviewer findings:\n${findingsDigest}\n\nDo NOT call team_flow_status (findings are self-contained above). Address these findings inside your worktree, run real tests, and call team_flow_review_respond with one response per finding id (fixed | rebut | accepted_risk) and updated evidence.`
                 } else {
-                  msg = `[AUTO_DISPATCH] Task ${item.id} "${item.subject}" is ready and unblocked.${wt} The backing task has been automatically claimed for you. Declared write scopes: ${scopes}. Start work directly inside your worktree (do not call team_flow_status or claim again), and call team_flow_report when done.`
+                  const dod = Array.isArray(item.definitionOfDone) && item.definitionOfDone.length > 0
+                    ? ` Definition of done:\n${item.definitionOfDone.map((d) => `  - ${d}`).join('\n')}`
+                    : ''
+                  msg = `[AUTO_DISPATCH] Task ${item.id} "${item.subject}" is ready and unblocked.${wt} The backing task has been automatically claimed for you. Declared write scopes: ${scopes}.${dod}\n\nDo NOT call team_flow_status or claim again. Start work directly inside your worktree, verify with real commands, and call team_flow_report when done.`
                 }
 
                 const ok = await sendNotice(root, item.owner, msg)
@@ -270,7 +273,8 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
                   const wt = item.git?.worktreePath ? ` Worktree: ${item.git.worktreePath}.` : ''
                   const diffSummary = diff ? `\n\n${diff}` : ''
                   const roundInfo = item.reviews?.length ? ` (Round ${item.reviews.length + 1})` : ''
-                  const msg = `[AUTO_DISPATCH] Item ${item.id} "${item.subject}"${roundInfo} is awaiting your review.${wt}${diffSummary}\n\nPlease inspect the changes and evidence above and call team_flow_review_submit.`
+                  const reportSummary = item.report?.summary ? `\nAuthor summary: ${item.report.summary.slice(0, 300)}` : ''
+                  const msg = `[AUTO_DISPATCH] Item ${item.id} "${item.subject}"${roundInfo} is awaiting your review.${wt}${reportSummary}${diffSummary}\n\nDo NOT call team_flow_status. Inspect the changes and evidence in the worktree, run verify if needed, and call team_flow_review_submit.`
                   const ok = await sendNotice(root, revName, msg)
                   if (ok) {
                     markSentForRev(teamId, 'wake-reviewer', revName, item.id, stateRev)

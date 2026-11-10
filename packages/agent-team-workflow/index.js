@@ -27,13 +27,14 @@ import { installToolSandbox } from '../tool-guard-kit/index.js'
 import { teamSubjectResolver } from './lib/tool-guard.js'
 import { scopeGuardReason } from './lib/scope-guard.js'
 import { createOrchestrator } from './lib/orchestrator.js'
+import { filterToolsByRole, resolveAllowedToolNames } from './lib/tool-matrix.js'
 
 export const name = 'agent-team-workflow'
 
 /** Services this plugin needs; the plugin stays inactive without Agent Teams. */
 export const inject = ['agents', 'agentTeams', 'tools', 'systemPrompt', 'workingDirectory']
 
-const VERSION = '1.24.1'
+const VERSION = '1.25.0'
 
 /** Shared tool list, built once per plugin instance. */
 export function apply(ctx, config = {}) {
@@ -76,7 +77,25 @@ export function apply(ctx, config = {}) {
     const membership = ctx.agentTeams.tryMembership(agent)
     if (membership === undefined) return
     const policy = buildPolicy(settings, membership.role)
-    installed.set(agent, install(agent, ctx, { settings, tools, store, policy }))
+
+    // Inspect cached state to see if member has reviewer duties in any planned item
+    const duties = []
+    try {
+      const state = store.cachedState(agent)
+      if (state && Array.isArray(state.items)) {
+        const isReviewer = state.items.some((item) =>
+          Array.isArray(item.reviewers) && item.reviewers.some((r) => (typeof r === 'string' ? r : r?.name) === membership.name)
+        )
+        if (isReviewer) duties.push('reviewer')
+      }
+    } catch {
+      /* cachedState is best-effort */
+    }
+
+    const allowedNames = resolveAllowedToolNames({ role: membership.role, duties, settings })
+    const scopedTools = filterToolsByRole(tools, allowedNames)
+
+    installed.set(agent, install(agent, ctx, { settings, tools: scopedTools, store, policy }))
     // Warm the prompt-context summary so the first step already sees the run
     // instead of waiting for the member to call a tool. Best effort: a missing
     // or unreadable board is not an installation failure.

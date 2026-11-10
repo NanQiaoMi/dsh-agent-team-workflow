@@ -927,6 +927,21 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             throw new Error(`item "${item.id}" belongs to "${item.owner}"; only its owner may report it. If the owner is stuck, message it or escalate.`)
           }
           if (item.status === W.ITEM_STATUS.APPROVED) throw new Error(`item "${item.id}" is already approved; do not report it again`)
+
+          if (settings.preReportCheck !== false) {
+            const failedCommands = commands.filter((c) => Number.isInteger(c.exitCode) && c.exitCode !== 0)
+            if (failedCommands.length > 0 && !args.deviation) {
+              const summary = failedCommands.map((c) => `"${c.command}" (exit code ${c.exitCode})`).join(', ')
+              throw new Error(`team_flow_report rejected: verification command failed: ${summary}. Fix the failing command(s) before reporting, or explain the failure in "deviation".`)
+            }
+            if (settings.strictScopes) {
+              const outside = files.filter((f) => item.writeScopes.length > 0 && !item.writeScopes.some((s) => W.pathInScope(f, s)))
+              if (outside.length > 0 && !args.deviation) {
+                throw new Error(`team_flow_report rejected: modified files outside declared writeScopes (${outside.join(', ')}). In strictScopes mode, revert outside files or explain in "deviation".`)
+              }
+            }
+          }
+
           const applied = W.applyReport(current, { itemId: item.id, caller: membership.name, report, now, settings: current.settings })
           outcome = applied
           return current

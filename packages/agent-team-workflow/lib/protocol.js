@@ -79,7 +79,7 @@ Peer & communication rules:
 
   return `## Agent Team Workflow
 
-This Team runs the standard injected workflow: plan → parallel independent execution → mutual review → quality gates → convergence. The workflow board is authoritative. Call \`team_flow_status\` before acting; treat its \`next_actions\` list as your assignment and re-read it after every state change.
+This Team runs the standard injected workflow: plan → parallel independent execution → mutual review → quality gates → convergence. The workflow board is authoritative. Proceed directly with tasks assigned upon dispatch; call \`team_flow_status\` only when diagnosing blocked or unexpected states.
 
 Phases and ownership:
 - **Plan (Lead only).** \`team_flow_plan\` turns the objective into work items. Each item carries an owner, a disjoint write scope, a definition of done, dependencies, and at least one independent reviewer. Planning refuses circular dependencies, self-review, and write-scope overlap inside one execution wave.
@@ -102,7 +102,7 @@ Peer collaboration (workflow v2):
 Non-negotiable rules:
 - **Independence.** Work only inside your declared write scope. Reviewers never edit the author's files and never fix what they review. Every member reasons from its own context and its own evidence; state assumptions instead of relying on another member's conversation.
 - **Evidence over assertion.** A claim without a path, command, exit code, or quoted output is not verification. Unknowns go in \`open_questions\` and \`risks\`, not into a confident summary.
-- **Communication.** Use \`send_message\` with a self-contained message; prefix \`[BLOCKER]\`, \`[QUESTION]\`, \`[REVIEW]\`, or \`[HANDOFF]\` and the item id. A successful send does not mean the peer has processed it, so re-read \`team_flow_status\` after a reply. Never assume a peer's silent agreement.
+- **Communication.** Use \`send_message\` with a self-contained message; prefix \`[BLOCKER]\`, \`[QUESTION]\`, \`[REVIEW]\`, or \`[HANDOFF]\` and the item id. A successful send does not mean the peer has processed it. Never assume a peer's silent agreement.
 - **Escalate instead of stalling.** Use \`team_flow_escalate\` for a genuine blocker, conflicting requirements, a scope change, or exhausted review rounds. The Lead must resolve blocking escalations before the gate can pass.
 - **Board hygiene.** The plugin owns the \`.agentteam\` artifact directory; never edit \`state.json\` or the report by hand. Use the tools so every transition is auditable.
 - **No unilateral scope creep.** If the work needs files outside your scope, escalate \`scope_change\` rather than editing them.`
@@ -147,7 +147,7 @@ ${bullets(state.constraints)}
 ${queue}
 
 # How you get work
-1. Call team_flow_read and team_flow_status; both show the open queue and your next_actions.
+1. Call team_flow_read to inspect the open queue and claimable items.
 2. Claim one item that matches your ability and its dependencies are approved: \`team_flow_work {action:"claim", item_id:"<id>"}\`. Claiming also claims the shared task. Do not claim two items in the same wave.
 3. Do the work inside the item's declared write scope, verify with real commands, then call team_flow_report exactly like an assigned item (summary, files, commands with integer exit_code, evidence, risks).
 4. If you cannot finish, release it (\`{action:"release", item_id}\`) so a peer can take it, or offer a handoff.
@@ -215,7 +215,7 @@ ${bullets(item.writeScopes, 'no explicit scope (stay minimal and say what you to
 Do not modify anything outside this scope. Other members are editing their own scopes concurrently; overlapping edits corrupt the run.
 ${worktreeLine(item)}
 
-Dependencies: ${blockers}. Do not start until every dependency is approved (team_flow_status shows readiness).
+Dependencies: ${blockers}. Do not start until dependencies are approved (Orchestrator dispatches when unblocked).
 Backing shared task: ${item.taskId ?? '(none)'} — automatically claimed upon dispatch (inspect details via team_task_get if needed). You may begin implementation immediately.
 
 # Independence rules
@@ -229,9 +229,9 @@ ${reviewing.length === 0 ? '' : `
 # Additional duty: independent reviewer
 You also review these items, because one member cannot be spawned twice: ${reviewing.join(', ')}.
 - Never edit a reviewed author's files and never fix what you review; keep your author and reviewer roles separate in your own reasoning.
-- When team_flow_status shows a pending review assigned to you, follow the review protocol: inspect the real files and the author's evidence, then call team_flow_review_submit with a verdict, severity-tagged findings (file + line + claim), and evidence_checked.
+- When notified of a pending review assigned to you, follow the review protocol: inspect the real files and the author's evidence, then call team_flow_review_submit with a verdict, severity-tagged findings (file + line + claim), and evidence_checked.
 `}
-Before acting call team_flow_read/team_flow_status; peer, proposal, review-invite and item-creation rules are in TEAM_POLICY.
+Peer, proposal, review-invite and item-creation rules are in TEAM_POLICY; team_flow_status is available for diagnosis if needed.
 
 # Required workflow
 1. The backing task is already claimed for you. Work directly inside your assigned write scope and worktree.
@@ -278,7 +278,7 @@ ${scope || '- none yet'}
 ${dod}
 
 # Review protocol
-1. Call team_flow_status. It lists the reviews currently assigned to you and the exact next actions.
+1. Inspect the author's report (files, commands with exit codes, evidence, risks) and the actual files in the worktree. Call team_flow_status only if diagnosing issues.
 2. For each assigned item: read the author's report (files, commands with exit codes, evidence, risks) and then read the actual files (in the item's worktree if worktree isolation is active). Re-run cheap verification yourself when practical; treat unverified claims as unverified.
 3. Check at minimum: definition-of-done coverage; correctness and edge cases; scope discipline (did the author touch files outside its scope); quality of evidence; missing tests; interface and contract consistency; silent placeholders or TODO stubs; unstated risk.
 4. Submit with team_flow_review_submit: verdict (approve | approve_with_nits | request_changes | block), a summary, findings [{id, severity: blocker|major|minor|nit, file, line, claim, suggestion}], and evidence_checked (what you actually inspected).
