@@ -4436,6 +4436,22 @@ window.__ModuleLoader__.load({
       return 'atw-flow-arrow-' + String(markerSequence)
     }
 
+    /** Merge delta patches into a baseline snapshot without full re-serialization. */
+    function mergeSnapshotDelta(base, delta) {
+      if (!isRecord(base) || !isRecord(delta)) return base
+      const next = { ...base, rev: typeof delta.rev === 'number' ? delta.rev : base.rev }
+      if (isRecord(delta.run) && isRecord(base.run)) {
+        const nextRun = { ...base.run, ...delta.run }
+        if (Array.isArray(delta.changedItems) && Array.isArray(base.run.items)) {
+          const itemsMap = new Map(base.run.items.map((it) => [it.id, it]))
+          for (const item of delta.changedItems) itemsMap.set(item.id, item)
+          nextRun.items = [...itemsMap.values()]
+        }
+        next.run = nextRun
+      }
+      return next
+    }
+
     function DashboardView(props) {
       const source = props && typeof props === 'object' ? props : {}
       const sessionId = source.sessionId === null || source.sessionId === undefined ? '' : String(source.sessionId)
@@ -4547,7 +4563,9 @@ window.__ModuleLoader__.load({
           controller = new AbortController()
           const signal = controller.signal
           try {
-            const url = SNAPSHOT_PATH + '?session=' + encodeURIComponent(sessionId)
+            const previousRev = snapshotRef.current && typeof snapshotRef.current.rev === 'number' ? snapshotRef.current.rev : null
+            const sinceParam = previousRev !== null ? '&since_rev=' + encodeURIComponent(previousRev) : ''
+            const url = SNAPSHOT_PATH + '?session=' + encodeURIComponent(sessionId) + sinceParam
             const headers = { accept: 'application/json' }
             if (etagRef.current !== '') headers['if-none-match'] = etagRef.current
             const response = await fetch(url, {
@@ -4574,7 +4592,26 @@ window.__ModuleLoader__.load({
             }
             const nextEtag = response.headers && typeof response.headers.get === 'function' ? response.headers.get('etag') : null
             if (typeof nextEtag === 'string' && nextEtag.length > 0) etagRef.current = nextEtag
-            const previousRev = snapshotRef.current && isRecord(snapshotRef.current.run) ? snapshotRef.current.rev : null
+
+            // Delta fast path: { ok: true, rev, unchanged: true }
+            if (data.unchanged === true) {
+              idleTicksRef.current += 1
+              nextPollAtRef.current = Date.now() + pollDelay(idleTicksRef.current)
+              return
+            }
+
+            // Delta patch merging if provided
+            if (data.delta && isRecord(snapshotRef.current)) {
+              const merged = mergeSnapshotDelta(snapshotRef.current, data.delta)
+              snapshotRef.current = merged
+              setSnapshot(merged)
+              setError(null)
+              setLastUpdated(Date.now())
+              idleTicksRef.current = 0
+              nextPollAtRef.current = Date.now() + pollDelay(idleTicksRef.current)
+              return
+            }
+
             const nextRev = typeof data.rev === 'number' ? data.rev : null
             if (previousRev !== null && nextRev !== null && previousRev === nextRev) {
               idleTicksRef.current += 1

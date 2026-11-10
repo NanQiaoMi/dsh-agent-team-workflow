@@ -141,6 +141,9 @@ test('the board client sends If-None-Match, handles 304 and backs off', async ()
   assert.match(source, /pollDelay/)
   assert.match(source, /idleTicksRef/)
   assert.match(source, /const POLL_MS = 1200/)
+  assert.match(source, /since_rev/)
+  assert.match(source, /data\.unchanged === true/)
+  assert.match(source, /mergeSnapshotDelta/)
 })
 
 test('role-scoped tools drop schema size significantly', () => {
@@ -246,6 +249,88 @@ test('pre-report gate rejects non-zero exit codes fail-fast unless deviation exp
     )
     assert.equal(success.reported, true)
     assert.equal(success.status, 'in_review')
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('nit tolerance rejects request_changes with pure nits to prevent wasted rework loops', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'atw-nit-gate-'))
+  try {
+    const lead = { id: 'session-lead', session: { id: 'session-lead' } }
+    const impl = { id: 'session-impl', session: { id: 'session-impl' } }
+    const rev = { id: 'session-rev', session: { id: 'session-rev' } }
+    const members = [
+      { name: 'lead', role: 'lead', id: lead.id, status: 'running' },
+      { name: 'impl', role: 'implementer', id: impl.id, status: 'running' },
+      { name: 'rev', role: 'reviewer', id: rev.id, status: 'running' },
+    ]
+    const ctx = {
+      agents: { list: () => [lead, impl, rev] },
+      agentTeams: {
+        tryMembership: (agent) => {
+          const m = members.find((cand) => cand.id === agent.id)
+          return m ? { root: lead, id: m.id, name: m.name, role: m.role } : undefined
+        },
+        membership: (agent) => {
+          const m = members.find((cand) => cand.id === agent.id)
+          return { root: lead, id: m.id, name: m.name, role: m.role }
+        },
+        listMembers: () => members,
+        listTasks: () => [],
+        createTask: async (_caller, req) => ({ id: 'task-1', revision: 1, status: 'pending', ...req }),
+        updateTask: async () => ({}),
+      },
+      workingDirectory: { get: () => cwd, defaultDirectory: cwd },
+    }
+    const settings = resolveSettings({ writeArtifacts: false, nitTolerance: true })
+    const store = createStore({ ctx, settings })
+    const tools = buildTools({ ctx, settings, store, version: '1.25.1', orchestrator: {} })
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const reviewTool = tools.find((t) => t.name === 'team_flow_review_submit')
+
+    await planTool.execute(
+      {
+        objective: 'Test nit tolerance',
+        acceptance_criteria: ['Check review verdicts'],
+        items: [{ id: 'W1', subject: 'Work', owner: 'impl', write_scopes: ['src/'], definition_of_done: ['Done'], reviewers: ['rev'] }],
+      },
+      { agent: lead, signal: new AbortController().signal },
+    )
+
+    await reportTool.execute(
+      { item_id: 'W1', summary: 'Implemented', files: ['src/a.js'], commands: [{ command: 'true', exit_code: 0 }] },
+      { agent: impl, signal: new AbortController().signal },
+    )
+
+    // 1. request_changes with ONLY nit findings must be rejected
+    await assert.rejects(
+      reviewTool.execute(
+        {
+          item_id: 'W1',
+          verdict: 'request_changes',
+          summary: 'Looks good overall, just minor cosmetic nit',
+          findings: [{ id: 'F1', severity: 'nit', claim: 'Typo in comment' }],
+          evidence_checked: ['read src/a.js'],
+        },
+        { agent: rev, signal: new AbortController().signal },
+      ),
+      /all findings have "nit" severity.*approve_with_nits/,
+    )
+
+    // 2. approve_with_nits with nit findings succeeds
+    const approved = await reviewTool.execute(
+      {
+        item_id: 'W1',
+        verdict: 'approve_with_nits',
+        summary: 'Ship it with non-blocking typo observation',
+        findings: [{ id: 'F1', severity: 'nit', claim: 'Typo in comment' }],
+        evidence_checked: ['read src/a.js'],
+      },
+      { agent: rev, signal: new AbortController().signal },
+    )
+    assert.equal(approved.item_status, 'approved')
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }
