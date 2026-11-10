@@ -1,13 +1,14 @@
 /**
- * @local/dsh-git-graph - Client UI Plugin (Enhanced Animation & Interactive Visuals)
+ * @local/dsh-git-graph - Client UI Plugin (Professional Git Graph View & Animations)
  *
  * Registers:
  * 1. `conversation.input.dock` -> Interactive Git Status Icon, Pulse Badge, Mini-Timeline & Flyout
  * 2. `conversation.view` -> Full-fidelity Interactive Git Tree DAG Graph View with:
- *    - 新增 (New Commits / Added files): Staggered entry, draw-in lines, green glow.
- *    - 修改 (Modifications / Working Changes): Amber breathing aura, reactive count pulse.
- *    - 合并 (Merge Commits / Convergences): Animated flowing dash stream, double-ring nodes, hover lineage.
- *    - 视图增强: 紧凑/标准密度切换、多维度分支与工作区筛选、悬浮卡片、分组变更折叠、一键指令抽屉。
+ *    - Professional Tabular Row Layout: Zero-drift natural document flow aligned with SVG graph.
+ *    - Tight, subway-style Bezier tracks without bulging loops.
+ *    - Full-width table by default, drawer slides in on demand.
+ *    - Multi-dimensional filters (All / Current Branch / Dirty Changes).
+ *    - SVG node animations: New entry stagger, amber dirty aura, flowing merge particle streams.
  *
  * Zero external require (strictly only `require('react')`).
  * Uses DSH host theme tokens (`--dsw-alias-*`) and self-contained styles.
@@ -27,7 +28,8 @@ window.__ModuleLoader__.load({
 
     const NS = 'dsh-git-graph'
     const SNAPSHOT_PATH = '/api/git-graph.snapshot'
-    const DEFAULT_POLL_MS = 2000
+    const DEFAULT_POLL_MS = 2500
+    const ROW_HEIGHT = 38
 
     // -------------------------------------------------------------------------
     // Localization Dictionaries (Strict 100% Key Parity)
@@ -56,6 +58,7 @@ window.__ModuleLoader__.load({
       'graph.headBadge': 'HEAD',
       'graph.mergeBadge': 'MERGE',
       'graph.newBadge': 'NEW',
+      'graph.workingBadge': 'WORKING',
       'graph.author': '作者: {name}',
       'graph.date': '时间: {time}',
       'graph.parents': '父提交:',
@@ -76,10 +79,11 @@ window.__ModuleLoader__.load({
       'graph.filterAll': '全部提交',
       'graph.filterBranch': '当前分支',
       'graph.filterDirty': '仅工作区',
-      'graph.densityNormal': '标准视图',
-      'graph.densityCompact': '紧凑视图',
-      'graph.recentCommits': '最近提交',
       'graph.copyPath': '复制路径',
+      'graph.colCommit': '提交描述与分支',
+      'graph.colAuthor': '作者',
+      'graph.colDate': '时间',
+      'graph.colSha': '哈希',
     }
 
     const en = {
@@ -106,6 +110,7 @@ window.__ModuleLoader__.load({
       'graph.headBadge': 'HEAD',
       'graph.mergeBadge': 'MERGE',
       'graph.newBadge': 'NEW',
+      'graph.workingBadge': 'WORKING',
       'graph.author': 'Author: {name}',
       'graph.date': 'Date: {time}',
       'graph.parents': 'Parents:',
@@ -126,17 +131,18 @@ window.__ModuleLoader__.load({
       'graph.filterAll': 'All Commits',
       'graph.filterBranch': 'Current Branch',
       'graph.filterDirty': 'Working Changes',
-      'graph.densityNormal': 'Normal View',
-      'graph.densityCompact': 'Compact View',
-      'graph.recentCommits': 'Recent Commits',
       'graph.copyPath': 'Copy Path',
+      'graph.colCommit': 'Commit Description & Refs',
+      'graph.colAuthor': 'Author',
+      'graph.colDate': 'Date',
+      'graph.colSha': 'SHA',
     }
 
     // -------------------------------------------------------------------------
-    // Custom Hooks (with State-Change Animation Detection)
+    // Custom Hooks
     // -------------------------------------------------------------------------
 
-    /** Fetch live Git snapshot with automatic diff & state transition tracking */
+    /** Fetch live Git snapshot with automatic state transition tracking */
     function useGitSnapshot(sessionId, pollMs = DEFAULT_POLL_MS) {
       const [snapshot, setSnapshot] = useState(null)
       const [loading, setLoading] = useState(true)
@@ -148,7 +154,7 @@ window.__ModuleLoader__.load({
 
       const refresh = useCallback(async () => {
         try {
-          const url = `${SNAPSHOT_PATH}?session=${encodeURIComponent(sessionId || '')}&limit=80`
+          const url = `${SNAPSHOT_PATH}?session=${encodeURIComponent(sessionId || '')}&limit=100`
           const res = await fetch(url, {
             credentials: 'same-origin',
             headers: { accept: 'application/json' },
@@ -271,8 +277,8 @@ window.__ModuleLoader__.load({
         'svg',
         {
           viewBox: '0 0 16 16',
-          width: props.size || 13,
-          height: props.size || 13,
+          width: props.size || 12,
+          height: props.size || 12,
           fill: 'currentColor',
           style: props.style,
           className: props.className,
@@ -292,8 +298,8 @@ window.__ModuleLoader__.load({
         'svg',
         {
           viewBox: '0 0 16 16',
-          width: props.size || 12,
-          height: props.size || 12,
+          width: props.size || 11,
+          height: props.size || 11,
           fill: 'currentColor',
           style: props.style,
           className: props.className,
@@ -301,24 +307,6 @@ window.__ModuleLoader__.load({
         },
         h('path', {
           d: 'M4.427 6.427l3.396 3.396a.25.25 0 00.354 0l3.396-3.396A.25.25 0 0011.396 6H4.604a.25.25 0 00-.177.427z',
-        })
-      )
-    }
-
-    function LayoutDensityIcon(props) {
-      return h(
-        'svg',
-        {
-          viewBox: '0 0 16 16',
-          width: props.size || 13,
-          height: props.size || 13,
-          fill: 'currentColor',
-          style: props.style,
-          className: props.className,
-          'aria-hidden': 'true',
-        },
-        h('path', {
-          d: 'M1.5 3.25a.75.75 0 01.75-.75h11.5a.75.75 0 010 1.5H2.25a.75.75 0 01-.75-.75zm0 4.75a.75.75 0 01.75-.75h11.5a.75.75 0 010 1.5H2.25A.75.75 0 011.5 8zm0 4.75a.75.75 0 01.75-.75h11.5a.75.75 0 010 1.5H2.25a.75.75 0 01-.75-.75z',
         })
       )
     }
@@ -347,7 +335,7 @@ window.__ModuleLoader__.load({
     }
 
     // -------------------------------------------------------------------------
-    // Component: GitDock (Conversation Composer Dock Item with Pulse & Flyout)
+    // Component: GitDock (Conversation Composer Dock Item)
     // -------------------------------------------------------------------------
 
     function GitDock(props) {
@@ -356,7 +344,7 @@ window.__ModuleLoader__.load({
         const sessionId = source.sessionId || ''
         const tr = makeTr(source.t, zh)
 
-        const { snapshot, loading, error, refresh, dirtyPulse } = useGitSnapshot(sessionId, 2000)
+        const { snapshot, loading, error, refresh, dirtyPulse } = useGitSnapshot(sessionId, 2500)
         const [flyoutOpen, setFlyoutOpen] = useState(false)
         const [copiedText, setCopiedText] = useState('')
         const [isRefreshing, setIsRefreshing] = useState(false)
@@ -375,8 +363,7 @@ window.__ModuleLoader__.load({
           refresh().finally(() => setTimeout(() => setIsRefreshing(false), 500))
         }
 
-        // Safe status values
-        const status = (snapshot && snapshot.status) || {}
+        const status = snapshot?.status || {}
         const isGitRepo = Boolean(snapshot?.isGitRepo)
         const branch = status.headBranch || 'Git'
         const isDirty = Boolean(status.isDirty)
@@ -384,13 +371,11 @@ window.__ModuleLoader__.load({
         const ahead = status.ahead || 0
         const behind = status.behind || 0
 
-        // Extract recent commits (top 3, non-working tree)
         const recentCommits = useMemo(() => {
           if (!snapshot?.graph?.nodes) return []
           return snapshot.graph.nodes.filter((n) => !n.isWorkingTree).slice(0, 3)
         }, [snapshot])
 
-        // Loading state
         if (loading && !snapshot) {
           return h(
             'div',
@@ -404,7 +389,6 @@ window.__ModuleLoader__.load({
           )
         }
 
-        // Offline / route not ready state
         if (error && !snapshot) {
           return h(
             'div',
@@ -423,7 +407,6 @@ window.__ModuleLoader__.load({
           )
         }
 
-        // Not a git repository
         if (snapshot && !isGitRepo) {
           return h(
             'div',
@@ -462,7 +445,6 @@ window.__ModuleLoader__.load({
             behind > 0 && h('span', { className: 'dsh-gg-dock-behind' }, `↓${behind}`)
           ),
 
-          // Quick Flyout Popover with animated drop and mini timeline
           flyoutOpen &&
             h(
               'div',
@@ -505,7 +487,6 @@ window.__ModuleLoader__.load({
               h(
                 'div',
                 { className: 'dsh-gg-flyout-body' },
-                // HEAD Status Row
                 h(
                   'div',
                   { className: 'dsh-gg-flyout-status-row' },
@@ -522,7 +503,6 @@ window.__ModuleLoader__.load({
                   )
                 ),
 
-                // Uncommitted changes box
                 isDirty &&
                   h(
                     'div',
@@ -548,7 +528,6 @@ window.__ModuleLoader__.load({
                     )
                   ),
 
-                // Recent Commits Mini Timeline
                 recentCommits.length > 0 &&
                   h(
                     'div',
@@ -557,7 +536,7 @@ window.__ModuleLoader__.load({
                     h(
                       'div',
                       { className: 'dsh-gg-mini-timeline-list' },
-                      recentCommits.map((c, i) =>
+                      recentCommits.map((c) =>
                         h(
                           'div',
                           {
@@ -612,7 +591,7 @@ window.__ModuleLoader__.load({
     }
 
     // -------------------------------------------------------------------------
-    // Component: GitGraphView (Full Conversation View Tab with Rich Visuals)
+    // Component: GitGraphView (Full View Table with Pixel-Perfect Alignment)
     // -------------------------------------------------------------------------
 
     function GitGraphView(props) {
@@ -630,10 +609,9 @@ window.__ModuleLoader__.load({
         const [copyNotice, setCopyNotice] = useState('')
         const [isManualRefreshing, setIsManualRefreshing] = useState(false)
         const [filterMode, setFilterMode] = useState('all') // 'all' | 'branch' | 'dirty'
-        const [density, setDensity] = useState('normal') // 'normal' | 'compact'
         const [expandedGroups, setExpandedGroups] = useState({ staged: true, unstaged: true, untracked: true })
 
-        // View switch reuses conversation scrollport: normalize scrollTop to 0 on mount
+        // Normalize scrollport on mount
         useEffect(() => {
           const node = rootRef.current
           if (!node || !node.parentElement) return
@@ -667,7 +645,6 @@ window.__ModuleLoader__.load({
           setExpandedGroups((prev) => ({ ...prev, [key]: !prev[key] }))
         }
 
-        // Current branch and status
         const status = snapshot?.status || {}
         const currentBranch = status.headBranch || 'main'
 
@@ -676,7 +653,6 @@ window.__ModuleLoader__.load({
           if (!snapshot?.graph?.nodes) return []
           let list = snapshot.graph.nodes
 
-          // Filter by Mode
           if (filterMode === 'branch') {
             list = list.filter(
               (n) =>
@@ -689,7 +665,6 @@ window.__ModuleLoader__.load({
             list = list.filter((n) => n.isWorkingTree || n.isHead)
           }
 
-          // Search query filter
           if (searchQuery.trim()) {
             const q = searchQuery.toLowerCase()
             list = list.filter(
@@ -774,25 +749,14 @@ window.__ModuleLoader__.load({
           )
         }
 
-        // Safe status and graph attributes
         const nodes = filteredNodes || []
         const connections = snapshot.graph?.connections || []
-        const totalWidth = Math.max(snapshot.graph?.totalWidth || 120, 160)
-        const totalHeight = snapshot.graph?.totalHeight || (nodes.length + 1) * 40
+        const maxLane = snapshot.graph?.maxLane ?? 0
+        const graphColWidth = Math.max(18 * 2 + (maxLane + 1) * 18, 56)
+        const totalHeight = nodes.length * ROW_HEIGHT
         const isDirty = Boolean(status.isDirty)
         const totalChanged = status.totalChanged || 0
 
-        // Density scaling factor
-        const isCompact = density === 'compact'
-        const scaleY = isCompact ? 0.72 : 1.0
-        const rowHeight = isCompact ? 26 : 36
-
-        // Hovered node details for quick tooltip card
-        const hoveredNode = hoveredNodeHash
-          ? nodes.find((n) => n.hash === hoveredNodeHash)
-          : null
-
-        // Group files for working changes drawer
         const files = status.files || []
         const stagedFiles = files.filter((f) => f.staged || (f.xy && f.xy[0] && f.xy[0] !== ' ' && f.xy[0] !== '?'))
         const unstagedFiles = files.filter((f) => !f.staged && f.xy && f.xy[1] && f.xy[1] !== ' ' && f.xy[1] !== '?')
@@ -801,7 +765,7 @@ window.__ModuleLoader__.load({
         return h(
           'div',
           { ref: rootRef, className: 'dsh-gg-container' },
-          // Top Toolbar with filter pills and density switcher
+          // Top Toolbar
           h(
             'div',
             { className: 'dsh-gg-toolbar' },
@@ -814,7 +778,7 @@ window.__ModuleLoader__.load({
               isDirty &&
                 h('span', { className: `dsh-gg-dirty-chip ${dirtyPulse ? 'pulse' : ''}` }, `${totalChanged} uncommitted`),
 
-              // Filter Tabs (All / Current Branch / Working)
+              // Filter Tabs
               h(
                 'div',
                 { className: 'dsh-gg-filter-tabs' },
@@ -852,7 +816,6 @@ window.__ModuleLoader__.load({
             h(
               'div',
               { className: 'dsh-gg-toolbar-right' },
-              // Search input
               h('input', {
                 type: 'text',
                 className: 'dsh-gg-search-input',
@@ -860,20 +823,6 @@ window.__ModuleLoader__.load({
                 value: searchQuery,
                 onChange: (e) => setSearchQuery(e.target.value),
               }),
-
-              // Density Switcher
-              h(
-                'button',
-                {
-                  type: 'button',
-                  className: `dsh-gg-btn icon ${isCompact ? 'active' : ''}`,
-                  onClick: () => setDensity(isCompact ? 'normal' : 'compact'),
-                  title: isCompact ? tr('graph.densityNormal') : tr('graph.densityCompact'),
-                },
-                h(LayoutDensityIcon, { size: 14 })
-              ),
-
-              // Manual Refresh button
               h(
                 'button',
                 {
@@ -887,25 +836,48 @@ window.__ModuleLoader__.load({
             )
           ),
 
-          // Main Two-Column Layout: Left DAG Graph, Right Details Drawer
+          // Main Layout Area
           h(
             'div',
             { className: 'dsh-gg-main' },
-            // Left: Graph Scroll Area
+            // Table Scroll Area
             h(
               'div',
-              { className: 'dsh-gg-graph-area' },
+              { className: 'dsh-gg-table-scroll' },
+              // Table Header
               h(
                 'div',
-                { className: 'dsh-gg-svg-wrap', style: { width: totalWidth, minHeight: totalHeight * scaleY } },
+                { className: 'dsh-gg-table-header' },
+                h('div', { className: 'col-graph-hdr', style: { width: graphColWidth } }, 'Graph'),
+                h('div', { className: 'col-msg-hdr' }, tr('graph.colCommit')),
+                h('div', { className: 'col-author-hdr' }, tr('graph.colAuthor')),
+                h('div', { className: 'col-date-hdr' }, tr('graph.colDate')),
+                h('div', { className: 'col-sha-hdr' }, tr('graph.colSha'))
+              ),
+
+              // Table Body (Rows + Aligned SVG Overlay)
+              h(
+                'div',
+                { className: 'dsh-gg-table-body', style: { minHeight: totalHeight } },
+                // 1. Precise Aligned SVG Canvas
                 h(
                   'svg',
                   {
-                    className: 'dsh-gg-svg-layer',
-                    width: totalWidth,
-                    height: totalHeight * scaleY,
+                    className: 'dsh-gg-svg-canvas',
+                    style: {
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: graphColWidth,
+                      height: totalHeight,
+                      pointerEvents: 'auto',
+                      overflow: 'visible',
+                      zIndex: 3,
+                    },
+                    width: graphColWidth,
+                    height: totalHeight,
                   },
-                  // Gradients and glow filters
+                  // Defs: Gradients and Glow filters
                   h(
                     'defs',
                     null,
@@ -914,492 +886,457 @@ window.__ModuleLoader__.load({
                       { id: 'dsh-gg-merge-grad', x1: '0%', y1: '0%', x2: '100%', y2: '100%' },
                       h('stop', { offset: '0%', stopColor: '#c084fc' }),
                       h('stop', { offset: '100%', stopColor: '#38bdf8' })
-                    ),
-                    h(
-                      'linearGradient',
-                      { id: 'dsh-gg-head-grad', x1: '0%', y1: '0%', x2: '100%', y2: '100%' },
-                      h('stop', { offset: '0%', stopColor: '#f43f5e' }),
-                      h('stop', { offset: '100%', stopColor: '#fb923c' })
-                    ),
-                    h(
-                      'filter',
-                      { id: 'dsh-gg-glow', x: '-40%', y: '-40%', width: '180%', height: '180%' },
-                      h('feGaussianBlur', { stdDeviation: '2.5', result: 'blur' }),
-                      h('feMerge', null, h('feMergeNode', { in: 'blur' }), h('feMergeNode', { in: 'SourceGraphic' }))
                     )
                   ),
 
-                  // Transform container for density scaling
-                  h(
-                    'g',
-                    { transform: scaleY !== 1 ? `scale(1, ${scaleY})` : undefined },
-                    // Render Connection Curves with Dynamic Animations
-                    connections.map((conn, idx) => {
-                      const isHoverRelated =
-                        hoveredNodeHash &&
-                        (conn.fromHash === hoveredNodeHash || conn.toHash === hoveredNodeHash)
-                      const isMerge = conn.isMerge
+                  // Connection paths
+                  connections.map((conn, idx) => {
+                    const isHoverRelated =
+                      hoveredNodeHash &&
+                      (conn.fromHash === hoveredNodeHash || conn.toHash === hoveredNodeHash)
+                    const isMerge = conn.isMerge
 
-                      return h(
-                        'g',
-                        { key: `conn-group-${idx}` },
-                        // Base path
+                    return h(
+                      'g',
+                      { key: `conn-${idx}` },
+                      h('path', {
+                        d: conn.path,
+                        stroke: conn.color || 'var(--dsw-alias-border-l1)',
+                        strokeWidth: isHoverRelated ? 3 : isMerge ? 2.2 : 2,
+                        strokeDasharray: isMerge ? '4,4' : 'none',
+                        className: `dsh-gg-conn-path ${isMerge ? 'is-merge-flow' : ''} ${isHoverRelated ? 'is-hover-highlight' : ''}`,
+                        fill: 'none',
+                        opacity: isHoverRelated ? 1 : hoveredNodeHash ? 0.25 : 0.85,
+                      }),
+                      isMerge &&
                         h('path', {
                           d: conn.path,
-                          stroke: conn.color || 'var(--dsw-alias-border-l1)',
-                          strokeWidth: isHoverRelated ? 3.2 : isMerge ? 2.2 : 2,
-                          strokeDasharray: isMerge ? '5,4' : 'none',
-                          className: `dsh-gg-conn-path ${isMerge ? 'is-merge-flow' : ''} ${isHoverRelated ? 'is-hover-highlight' : ''}`,
+                          stroke: '#fff',
+                          strokeWidth: 1.4,
+                          strokeDasharray: '3, 8',
+                          className: 'dsh-gg-merge-particle-stream',
                           fill: 'none',
-                          opacity: isHoverRelated ? 1 : hoveredNodeHash ? 0.25 : 0.85,
-                        }),
-                        // For merge connections: animated flowing dash particles
-                        isMerge &&
-                          h('path', {
-                            d: conn.path,
-                            stroke: '#fff',
-                            strokeWidth: 1.6,
-                            strokeDasharray: '4, 10',
-                            className: 'dsh-gg-merge-particle-stream',
-                            fill: 'none',
-                            opacity: isHoverRelated ? 0.95 : 0.65,
-                          })
-                      )
-                    }),
+                          opacity: isHoverRelated ? 0.95 : 0.6,
+                        })
+                    )
+                  }),
 
-                    // Render Node Points with Rich State Animations
-                    nodes.map((node, nIdx) => {
-                      const isSelected = selectedNode?.hash === node.hash
-                      const isHovered = hoveredNodeHash === node.hash
-                      const isNewlyAdded = newHashes.has(node.hash)
-                      const isWorking = node.isWorkingTree
-                      const isMerge = node.isMerge
-                      const isHead = node.isHead
+                  // Node dots
+                  nodes.map((node, nIdx) => {
+                    const isSelected = selectedNode?.hash === node.hash
+                    const isHovered = hoveredNodeHash === node.hash
+                    const isNewlyAdded = newHashes.has(node.hash)
+                    const isWorking = node.isWorkingTree
+                    const isMerge = node.isMerge
+                    const isHead = node.isHead
 
-                      return h(
-                        'g',
-                        {
-                          key: `node-${node.hash}`,
-                          className: `dsh-gg-node-dot ${isSelected ? 'is-selected' : ''} ${isHovered ? 'is-hovered' : ''} ${isNewlyAdded ? 'is-new' : ''}`,
-                          onClick: () => setSelectedNode(node),
-                          onMouseEnter: () => setHoveredNodeHash(node.hash),
-                          onMouseLeave: () => setHoveredNodeHash(null),
-                          style: {
-                            cursor: 'pointer',
-                            animationDelay: `${Math.min(nIdx * 20, 350)}ms`,
-                          },
+                    return h(
+                      'g',
+                      {
+                        key: `dot-${node.hash}`,
+                        className: `dsh-gg-node-dot ${isSelected ? 'is-selected' : ''} ${isHovered ? 'is-hovered' : ''} ${isNewlyAdded ? 'is-new' : ''}`,
+                        onClick: () => setSelectedNode(node),
+                        onMouseEnter: () => setHoveredNodeHash(node.hash),
+                        onMouseLeave: () => setHoveredNodeHash(null),
+                        style: {
+                          cursor: 'pointer',
+                          animationDelay: `${Math.min(nIdx * 15, 250)}ms`,
                         },
-                        // 1. Working changes node: breathing aura wave
-                        isWorking &&
-                          h('circle', {
-                            cx: node.x,
-                            cy: node.y,
-                            r: 10,
-                            className: 'dsh-gg-aura-wave',
-                            fill: 'none',
-                            stroke: '#f59e0b',
-                            strokeWidth: 1.6,
-                          }),
-                        // 2. Working diamond or regular circle
-                        isWorking
-                          ? h('polygon', {
-                              points: `${node.x},${node.y - 7} ${node.x + 7},${node.y} ${node.x},${node.y + 7} ${node.x - 7},${node.y}`,
-                              className: 'dsh-gg-diamond-working',
-                              fill: node.color,
-                              stroke: '#fff',
-                              strokeWidth: 1.8,
-                            })
-                          : h('circle', {
-                              cx: node.x,
-                              cy: node.y,
-                              r: isHead ? 6.5 : isMerge ? 6 : 4.5,
-                              fill: node.color,
-                              stroke: isHead || isSelected ? '#fff' : 'rgba(0,0,0,0.35)',
-                              strokeWidth: isHead ? 2.5 : isSelected ? 2 : 1,
-                              className: `dsh-gg-commit-circle ${isMerge ? 'is-merge-node' : ''}`,
-                            }),
-                        // 3. Merge Node: outer rotating halo ring
-                        isMerge &&
-                          h('circle', {
-                            cx: node.x,
-                            cy: node.y,
-                            r: 9.5,
-                            fill: 'none',
-                            stroke: node.color,
-                            strokeWidth: 1.2,
-                            strokeDasharray: '3, 2',
-                            className: 'dsh-gg-merge-ring',
-                          }),
-                        // 4. HEAD Node: halo outer ring
-                        isHead &&
-                          h('circle', {
-                            cx: node.x,
-                            cy: node.y,
-                            r: 11,
-                            fill: 'none',
-                            stroke: node.color,
-                            strokeWidth: 1.5,
-                            className: 'dsh-gg-head-halo',
-                          }),
-                        // 5. Newly added commit highlight wave
-                        isNewlyAdded &&
-                          h('circle', {
-                            cx: node.x,
-                            cy: node.y,
-                            r: 14,
-                            fill: 'none',
-                            stroke: '#34d399',
-                            strokeWidth: 2,
-                            className: 'dsh-gg-new-wave',
-                          })
-                      )
-                    })
-                  )
-                )
-              ),
-
-              // Rows Overlay aligned with Y positions (with subtle entry stagger)
-              h(
-                'div',
-                { className: 'dsh-gg-rows-layer', style: { minHeight: totalHeight * scaleY } },
-                nodes.map((node, rIdx) => {
-                  const isSelected = selectedNode?.hash === node.hash
-                  const isHovered = hoveredNodeHash === node.hash
-                  const isNewlyAdded = newHashes.has(node.hash)
-                  const isMerge = node.isMerge
-
-                  return h(
-                    'div',
-                    {
-                      key: `row-${node.hash}`,
-                      className: `dsh-gg-commit-row ${isSelected ? 'is-selected' : ''} ${isHovered ? 'is-hovered' : ''} ${node.isWorkingTree ? 'is-working' : ''} ${isNewlyAdded ? 'is-new-row' : ''} ${isCompact ? 'compact' : ''}`,
-                      style: {
-                        top: node.y * scaleY - rowHeight / 2,
-                        height: rowHeight,
-                        left: totalWidth,
-                        animationDelay: `${Math.min(rIdx * 18, 300)}ms`,
                       },
-                      onClick: () => setSelectedNode(node),
-                      onMouseEnter: () => setHoveredNodeHash(node.hash),
-                      onMouseLeave: () => setHoveredNodeHash(null),
-                    },
-                    // Newly Added Indicator Badge
-                    isNewlyAdded &&
-                      h('span', { className: 'dsh-gg-ref-badge new' }, tr('graph.newBadge')),
-                    // Merge Indicator Badge
-                    isMerge &&
-                      h('span', { className: 'dsh-gg-ref-badge merge' }, tr('graph.mergeBadge')),
-                    // Ref Badges: HEAD, Local Branches, Remotes, Tags
-                    node.refs &&
-                      node.refs.map((ref, rfIdx) =>
-                        h(
-                          'span',
-                          {
-                            key: `ref-${rfIdx}`,
-                            className: `dsh-gg-ref-badge ${ref.type}`,
-                          },
-                          ref.name
-                        )
-                      ),
-                    // Short Hash chip
-                    h('span', { className: 'dsh-gg-hash' }, node.shortHash),
-                    // Subject message
-                    h('span', { className: 'dsh-gg-subject', title: node.subject }, node.subject),
-                    // Author & Time
-                    h('span', { className: 'dsh-gg-author' }, node.author),
-                    h('span', { className: 'dsh-gg-time' }, node.relativeTime)
-                  )
-                })
-              ),
+                      isWorking &&
+                        h('circle', {
+                          cx: node.x,
+                          cy: node.y,
+                          r: 9,
+                          className: 'dsh-gg-aura-wave',
+                          fill: 'none',
+                          stroke: '#f59e0b',
+                          strokeWidth: 1.6,
+                        }),
+                      isWorking
+                        ? h('polygon', {
+                            points: `${node.x},${node.y - 6} ${node.x + 6},${node.y} ${node.x},${node.y + 6} ${node.x - 6},${node.y}`,
+                            className: 'dsh-gg-diamond-working',
+                            fill: node.color,
+                            stroke: '#fff',
+                            strokeWidth: 1.8,
+                          })
+                        : h('circle', {
+                            cx: node.x,
+                            cy: node.y,
+                            r: isHead ? 6 : isMerge ? 5.5 : 4.5,
+                            fill: node.color,
+                            stroke: isHead || isSelected ? '#fff' : 'rgba(0,0,0,0.4)',
+                            strokeWidth: isHead ? 2.5 : isSelected ? 2 : 1,
+                            className: `dsh-gg-commit-circle ${isMerge ? 'is-merge-node' : ''}`,
+                          }),
+                      isMerge &&
+                        h('circle', {
+                          cx: node.x,
+                          cy: node.y,
+                          r: 9,
+                          fill: 'none',
+                          stroke: node.color,
+                          strokeWidth: 1.2,
+                          strokeDasharray: '3, 2',
+                          className: 'dsh-gg-merge-ring',
+                        }),
+                      isHead &&
+                        h('circle', {
+                          cx: node.x,
+                          cy: node.y,
+                          r: 10,
+                          fill: 'none',
+                          stroke: node.color,
+                          strokeWidth: 1.5,
+                          className: 'dsh-gg-head-halo',
+                        }),
+                      isNewlyAdded &&
+                        h('circle', {
+                          cx: node.x,
+                          cy: node.y,
+                          r: 13,
+                          fill: 'none',
+                          stroke: '#34d399',
+                          strokeWidth: 2,
+                          className: 'dsh-gg-new-wave',
+                        })
+                    )
+                  })
+                ),
 
-              // Floating Node Quick Preview Tooltip
-              hoveredNode &&
-                !hoveredNode.isWorkingTree &&
+                // 2. Table Rows in Natural Document Flow (Guaranteed Visibility & Full Width)
                 h(
                   'div',
-                  {
-                    className: 'dsh-gg-hover-card dsh-gg-animate-fade',
-                    style: {
-                      top: Math.max(10, hoveredNode.y * scaleY - 60),
-                      left: Math.min(totalWidth + 40, 240),
-                    },
-                  },
-                  h(
-                    'div',
-                    { className: 'dsh-gg-hover-card-header' },
-                    h('span', { className: 'sha' }, hoveredNode.shortHash),
-                    hoveredNode.isHead && h('span', { className: 'dsh-gg-ref-badge head' }, 'HEAD'),
-                    hoveredNode.isMerge && h('span', { className: 'dsh-gg-ref-badge merge' }, 'MERGE'),
-                    h('span', { className: 'time' }, hoveredNode.relativeTime)
-                  ),
-                  h('div', { className: 'dsh-gg-hover-card-msg' }, hoveredNode.subject),
-                  h('div', { className: 'dsh-gg-hover-card-author' }, `${hoveredNode.author} <${hoveredNode.email}>`)
+                  { className: 'dsh-gg-rows-list' },
+                  nodes.map((node, rIdx) => {
+                    const isSelected = selectedNode?.hash === node.hash
+                    const isHovered = hoveredNodeHash === node.hash
+                    const isNewlyAdded = newHashes.has(node.hash)
+                    const isMerge = node.isMerge
+
+                    return h(
+                      'div',
+                      {
+                        key: `row-${node.hash}`,
+                        className: `dsh-gg-table-row ${isSelected ? 'is-selected' : ''} ${isHovered ? 'is-hovered' : ''} ${node.isWorkingTree ? 'is-working' : ''} ${isNewlyAdded ? 'is-new' : ''}`,
+                        style: {
+                          height: ROW_HEIGHT,
+                          animationDelay: `${Math.min(rIdx * 15, 250)}ms`,
+                        },
+                        onClick: () => setSelectedNode(node),
+                        onMouseEnter: () => setHoveredNodeHash(node.hash),
+                        onMouseLeave: () => setHoveredNodeHash(null),
+                      },
+                      // Spacer matching Graph width
+                      h('div', { className: 'dsh-gg-row-graph-spacer', style: { width: graphColWidth } }),
+
+                      // Commit Message & Ref Badges
+                      h(
+                        'div',
+                        { className: 'dsh-gg-row-msg' },
+                        node.isWorkingTree &&
+                          h('span', { className: 'dsh-gg-badge working' }, tr('graph.workingBadge')),
+                        isNewlyAdded &&
+                          h('span', { className: 'dsh-gg-badge new' }, tr('graph.newBadge')),
+                        isMerge &&
+                          h('span', { className: 'dsh-gg-badge merge' }, tr('graph.mergeBadge')),
+                        node.refs &&
+                          node.refs.map((r, i) =>
+                            h(
+                              'span',
+                              { key: `ref-${i}`, className: `dsh-gg-badge ${r.type}` },
+                              r.type === 'head' && h('span', { className: 'head-active-dot' }),
+                              r.name
+                            )
+                          ),
+                        h('span', { className: 'msg-text', title: node.subject }, node.subject)
+                      ),
+
+                      // Author
+                      h(
+                        'div',
+                        { className: 'dsh-gg-row-author' },
+                        h(
+                          'span',
+                          { className: 'author-avatar', style: { background: node.color } },
+                          node.author ? node.author[0].toUpperCase() : 'U'
+                        ),
+                        h('span', { className: 'author-name', title: node.email ? `${node.author} <${node.email}>` : node.author }, node.author)
+                      ),
+
+                      // Date
+                      h('div', { className: 'dsh-gg-row-date', title: node.date }, node.relativeTime),
+
+                      // SHA
+                      h(
+                        'div',
+                        { className: 'dsh-gg-row-sha' },
+                        h(
+                          'code',
+                          {
+                            onClick: (e) => {
+                              e.stopPropagation()
+                              copyText(node.hash)
+                            },
+                            title: 'Click to copy SHA',
+                          },
+                          node.shortHash
+                        )
+                      )
+                    )
+                  })
                 )
+              )
             ),
 
-            // Right: Detail Panel / Drawer with smooth slide-in & grouped files
-            h(
-              'div',
-              { className: 'dsh-gg-detail-drawer' },
-              selectedNode
-                ? h(
+            // Right: Detail Panel / Drawer (Collapsible; gives full-width when unselected)
+            selectedNode &&
+              h(
+                'div',
+                { className: 'dsh-gg-detail-drawer' },
+                h(
+                  'div',
+                  { className: 'dsh-gg-drawer-inner dsh-gg-drawer-animate' },
+                  h(
                     'div',
-                    { className: 'dsh-gg-drawer-inner dsh-gg-drawer-animate' },
+                    { className: 'dsh-gg-drawer-header' },
+                    h(
+                      'h4',
+                      null,
+                      selectedNode.isWorkingTree ? tr('graph.inspectWorking') : tr('graph.inspectCommit')
+                    ),
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'dsh-gg-icon-btn',
+                        onClick: () => setSelectedNode(null),
+                      },
+                      '✕'
+                    )
+                  ),
+
+                  h(
+                    'div',
+                    { className: 'dsh-gg-drawer-body' },
                     h(
                       'div',
-                      { className: 'dsh-gg-drawer-header' },
+                      { className: 'dsh-gg-meta-item' },
+                      h('span', { className: 'label' }, 'Commit:'),
                       h(
-                        'h4',
-                        null,
-                        selectedNode.isWorkingTree ? tr('graph.inspectWorking') : tr('graph.inspectCommit')
-                      ),
-                      h(
-                        'button',
-                        {
-                          type: 'button',
-                          className: 'dsh-gg-icon-btn',
-                          onClick: () => setSelectedNode(null),
-                        },
-                        '✕'
+                        'code',
+                        { className: 'sha', onClick: () => copyText(selectedNode.hash) },
+                        selectedNode.hash,
+                        h(CopyIcon, { size: 12, style: { marginLeft: 6 } })
                       )
                     ),
 
                     h(
                       'div',
-                      { className: 'dsh-gg-drawer-body' },
-                      // Hash & Copy Tag
+                      { className: 'dsh-gg-meta-item full' },
+                      h('div', { className: 'subject' }, selectedNode.subject)
+                    ),
+
+                    !selectedNode.isWorkingTree &&
                       h(
                         'div',
                         { className: 'dsh-gg-meta-item' },
-                        h('span', { className: 'label' }, 'Commit:'),
+                        h('span', { className: 'label' }, 'Author:'),
+                        h('span', { className: 'val' }, `${selectedNode.author} <${selectedNode.email}>`)
+                      ),
+                    !selectedNode.isWorkingTree &&
+                      h(
+                        'div',
+                        { className: 'dsh-gg-meta-item' },
+                        h('span', { className: 'label' }, 'Date:'),
+                        h('span', { className: 'val' }, selectedNode.date)
+                      ),
+
+                    selectedNode.parents &&
+                      selectedNode.parents.length > 0 &&
+                      h(
+                        'div',
+                        { className: 'dsh-gg-meta-item' },
+                        h('span', { className: 'label' }, tr('graph.parents')),
                         h(
-                          'code',
-                          { className: 'sha', onClick: () => copyText(selectedNode.hash) },
-                          selectedNode.hash,
-                          h(CopyIcon, { size: 12, style: { marginLeft: 6 } })
+                          'div',
+                          { className: 'parents-wrap' },
+                          selectedNode.parents.map((p) =>
+                            h('code', { key: p, className: 'parent-sha', onClick: () => copyText(p) }, p.slice(0, 7))
+                          )
                         )
                       ),
 
-                      // Subject Title
+                    selectedNode.isWorkingTree &&
                       h(
                         'div',
-                        { className: 'dsh-gg-meta-item full' },
-                        h('div', { className: 'subject' }, selectedNode.subject)
-                      ),
+                        { className: 'dsh-gg-files-box' },
+                        h('h5', null, tr('graph.filesChanged', { n: files.length })),
 
-                      // Author & Date
-                      !selectedNode.isWorkingTree &&
-                        h(
-                          'div',
-                          { className: 'dsh-gg-meta-item' },
-                          h('span', { className: 'label' }, 'Author:'),
-                          h('span', { className: 'val' }, `${selectedNode.author} <${selectedNode.email}>`)
-                        ),
-                      !selectedNode.isWorkingTree &&
-                        h(
-                          'div',
-                          { className: 'dsh-gg-meta-item' },
-                          h('span', { className: 'label' }, 'Date:'),
-                          h('span', { className: 'val' }, selectedNode.date)
-                        ),
-
-                      // Parents
-                      selectedNode.parents &&
-                        selectedNode.parents.length > 0 &&
-                        h(
-                          'div',
-                          { className: 'dsh-gg-meta-item' },
-                          h('span', { className: 'label' }, tr('graph.parents')),
+                        stagedFiles.length > 0 &&
                           h(
                             'div',
-                            { className: 'parents-wrap' },
-                            selectedNode.parents.map((p) =>
-                              h('code', { key: p, className: 'parent-sha', onClick: () => copyText(p) }, p.slice(0, 7))
-                            )
+                            { className: 'dsh-gg-accordion-group' },
+                            h(
+                              'div',
+                              {
+                                className: 'dsh-gg-accordion-header staged',
+                                onClick: () => toggleGroup('staged'),
+                              },
+                              h(ChevronDownIcon, {
+                                size: 11,
+                                className: `dsh-gg-chevron ${expandedGroups.staged ? 'open' : ''}`,
+                              }),
+                              h('span', { className: 'title' }, `Staged (${stagedFiles.length})`)
+                            ),
+                            expandedGroups.staged &&
+                              h(
+                                'div',
+                                { className: 'dsh-gg-files-scroll' },
+                                stagedFiles.map((file) =>
+                                  h(
+                                    'div',
+                                    { key: file.path, className: 'dsh-gg-file-row' },
+                                    h('span', { className: `tag ${file.status}` }, (file.xy || '..').trim()),
+                                    h('span', { className: 'name', title: file.path }, file.path),
+                                    h(
+                                      'button',
+                                      {
+                                        type: 'button',
+                                        className: 'copy-path-btn',
+                                        onClick: () => copyText(file.path),
+                                        title: tr('graph.copyPath'),
+                                      },
+                                      h(CopyIcon, { size: 11 })
+                                    )
+                                  )
+                                )
+                              )
+                          ),
+
+                        unstagedFiles.length > 0 &&
+                          h(
+                            'div',
+                            { className: 'dsh-gg-accordion-group' },
+                            h(
+                              'div',
+                              {
+                                className: 'dsh-gg-accordion-header unstaged',
+                                onClick: () => toggleGroup('unstaged'),
+                              },
+                              h(ChevronDownIcon, {
+                                size: 11,
+                                className: `dsh-gg-chevron ${expandedGroups.unstaged ? 'open' : ''}`,
+                              }),
+                              h('span', { className: 'title' }, `Unstaged (${unstagedFiles.length})`)
+                            ),
+                            expandedGroups.unstaged &&
+                              h(
+                                'div',
+                                { className: 'dsh-gg-files-scroll' },
+                                unstagedFiles.map((file) =>
+                                  h(
+                                    'div',
+                                    { key: file.path, className: 'dsh-gg-file-row' },
+                                    h('span', { className: `tag ${file.status}` }, (file.xy || '..').trim()),
+                                    h('span', { className: 'name', title: file.path }, file.path),
+                                    h(
+                                      'button',
+                                      {
+                                        type: 'button',
+                                        className: 'copy-path-btn',
+                                        onClick: () => copyText(file.path),
+                                        title: tr('graph.copyPath'),
+                                      },
+                                      h(CopyIcon, { size: 11 })
+                                    )
+                                  )
+                                )
+                              )
+                          ),
+
+                        untrackedFiles.length > 0 &&
+                          h(
+                            'div',
+                            { className: 'dsh-gg-accordion-group' },
+                            h(
+                              'div',
+                              {
+                                className: 'dsh-gg-accordion-header untracked',
+                                onClick: () => toggleGroup('untracked'),
+                              },
+                              h(ChevronDownIcon, {
+                                size: 11,
+                                className: `dsh-gg-chevron ${expandedGroups.untracked ? 'open' : ''}`,
+                              }),
+                              h('span', { className: 'title' }, `Untracked (${untrackedFiles.length})`)
+                            ),
+                            expandedGroups.untracked &&
+                              h(
+                                'div',
+                                { className: 'dsh-gg-files-scroll' },
+                                untrackedFiles.map((file) =>
+                                  h(
+                                    'div',
+                                    { key: file.path, className: 'dsh-gg-file-row' },
+                                    h('span', { className: `tag ${file.status}` }, (file.xy || '..').trim()),
+                                    h('span', { className: 'name', title: file.path }, file.path),
+                                    h(
+                                      'button',
+                                      {
+                                        type: 'button',
+                                        className: 'copy-path-btn',
+                                        onClick: () => copyText(file.path),
+                                        title: tr('graph.copyPath'),
+                                      },
+                                      h(CopyIcon, { size: 11 })
+                                    )
+                                  )
+                                )
+                              )
                           )
-                        ),
+                      ),
 
-                      // Working tree grouped accordion
-                      selectedNode.isWorkingTree &&
-                        h(
-                          'div',
-                          { className: 'dsh-gg-files-box' },
-                          h('h5', null, tr('graph.filesChanged', { n: files.length })),
+                    copyNotice && h('div', { className: 'dsh-gg-notice' }, copyNotice)
+                  ),
 
-                          // Staged section
-                          stagedFiles.length > 0 &&
-                            h(
-                              'div',
-                              { className: 'dsh-gg-accordion-group' },
-                              h(
-                                'div',
-                                {
-                                  className: 'dsh-gg-accordion-header staged',
-                                  onClick: () => toggleGroup('staged'),
-                                },
-                                h(ChevronDownIcon, {
-                                  size: 11,
-                                  className: `dsh-gg-chevron ${expandedGroups.staged ? 'open' : ''}`,
-                                }),
-                                h('span', { className: 'title' }, `Staged (${stagedFiles.length})`)
-                              ),
-                              expandedGroups.staged &&
-                                h(
-                                  'div',
-                                  { className: 'dsh-gg-files-scroll' },
-                                  stagedFiles.map((file) =>
-                                    h(
-                                      'div',
-                                      { key: file.path, className: 'dsh-gg-file-row' },
-                                      h('span', { className: `tag ${file.status}` }, (file.xy || '..').trim()),
-                                      h('span', { className: 'name', title: file.path }, file.path),
-                                      h(
-                                        'button',
-                                        {
-                                          type: 'button',
-                                          className: 'copy-path-btn',
-                                          onClick: () => copyText(file.path),
-                                          title: tr('graph.copyPath'),
-                                        },
-                                        h(CopyIcon, { size: 11 })
-                                      )
-                                    )
-                                  )
-                                )
-                            ),
-
-                          // Unstaged section
-                          unstagedFiles.length > 0 &&
-                            h(
-                              'div',
-                              { className: 'dsh-gg-accordion-group' },
-                              h(
-                                'div',
-                                {
-                                  className: 'dsh-gg-accordion-header unstaged',
-                                  onClick: () => toggleGroup('unstaged'),
-                                },
-                                h(ChevronDownIcon, {
-                                  size: 11,
-                                  className: `dsh-gg-chevron ${expandedGroups.unstaged ? 'open' : ''}`,
-                                }),
-                                h('span', { className: 'title' }, `Unstaged (${unstagedFiles.length})`)
-                              ),
-                              expandedGroups.unstaged &&
-                                h(
-                                  'div',
-                                  { className: 'dsh-gg-files-scroll' },
-                                  unstagedFiles.map((file) =>
-                                    h(
-                                      'div',
-                                      { key: file.path, className: 'dsh-gg-file-row' },
-                                      h('span', { className: `tag ${file.status}` }, (file.xy || '..').trim()),
-                                      h('span', { className: 'name', title: file.path }, file.path),
-                                      h(
-                                        'button',
-                                        {
-                                          type: 'button',
-                                          className: 'copy-path-btn',
-                                          onClick: () => copyText(file.path),
-                                          title: tr('graph.copyPath'),
-                                        },
-                                        h(CopyIcon, { size: 11 })
-                                      )
-                                    )
-                                  )
-                                )
-                            ),
-
-                          // Untracked section
-                          untrackedFiles.length > 0 &&
-                            h(
-                              'div',
-                              { className: 'dsh-gg-accordion-group' },
-                              h(
-                                'div',
-                                {
-                                  className: 'dsh-gg-accordion-header untracked',
-                                  onClick: () => toggleGroup('untracked'),
-                                },
-                                h(ChevronDownIcon, {
-                                  size: 11,
-                                  className: `dsh-gg-chevron ${expandedGroups.untracked ? 'open' : ''}`,
-                                }),
-                                h('span', { className: 'title' }, `Untracked (${untrackedFiles.length})`)
-                              ),
-                              expandedGroups.untracked &&
-                                h(
-                                  'div',
-                                  { className: 'dsh-gg-files-scroll' },
-                                  untrackedFiles.map((file) =>
-                                    h(
-                                      'div',
-                                      { key: file.path, className: 'dsh-gg-file-row' },
-                                      h('span', { className: `tag ${file.status}` }, (file.xy || '..').trim()),
-                                      h('span', { className: 'name', title: file.path }, file.path),
-                                      h(
-                                        'button',
-                                        {
-                                          type: 'button',
-                                          className: 'copy-path-btn',
-                                          onClick: () => copyText(file.path),
-                                          title: tr('graph.copyPath'),
-                                        },
-                                        h(CopyIcon, { size: 11 })
-                                      )
-                                    )
-                                  )
-                                )
-                            )
-                        ),
-
-                      // Copy notice
-                      copyNotice && h('div', { className: 'dsh-gg-notice' }, copyNotice)
-                    ),
-
-                    // Actions
+                  h(
+                    'div',
+                    { className: 'dsh-gg-drawer-actions' },
                     h(
-                      'div',
-                      { className: 'dsh-gg-drawer-actions' },
-                      h(
-                        'button',
-                        {
-                          type: 'button',
-                          className: 'dsh-gg-btn primary',
-                          onClick: () => copyText(selectedNode.hash),
-                        },
-                        tr('dock.copySha')
-                      ),
-                      h(
-                        'button',
-                        {
-                          type: 'button',
-                          className: 'dsh-gg-btn secondary',
-                          onClick: () => copyText(`git show ${selectedNode.hash}`),
-                        },
-                        'git show'
-                      ),
-                      h(
-                        'button',
-                        {
-                          type: 'button',
-                          className: 'dsh-gg-btn secondary',
-                          onClick: () => copyText(`git diff ${selectedNode.hash}^!`),
-                        },
-                        'git diff'
-                      )
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'dsh-gg-btn primary',
+                        onClick: () => copyText(selectedNode.hash),
+                      },
+                      tr('dock.copySha')
+                    ),
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'dsh-gg-btn secondary',
+                        onClick: () => copyText(`git show ${selectedNode.hash}`),
+                      },
+                      'git show'
+                    ),
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'dsh-gg-btn secondary',
+                        onClick: () => copyText(`git diff ${selectedNode.hash}^!`),
+                      },
+                      'git diff'
                     )
                   )
-                : h(
-                    'div',
-                    { className: 'dsh-gg-drawer-empty' },
-                    h(GitCommitIcon, { size: 36, style: { opacity: 0.3 } }),
-                    h('p', null, 'Click on any commit or working change node to inspect details')
-                  )
-            )
+                )
+              )
           ),
 
-          // Scoped Stylesheet with Keyframe Animations
+          // Scoped Stylesheet with Keyframe Animations & Table Styling
           h('style', null, CSS_STYLES)
         )
       } catch (err) {
@@ -1430,30 +1367,26 @@ window.__ModuleLoader__.load({
     }
 
     // -------------------------------------------------------------------------
-    // Scoped CSS Styles (with Keyframes, Smooth Easings & Transitions)
+    // Scoped CSS Styles (Pixel-Perfect Alignment, Modern Table, Contrast & Flow)
     // -------------------------------------------------------------------------
     const CSS_STYLES = `
       /* Keyframe Animations */
       @keyframes dsh-gg-fade-in {
-        from { opacity: 0; transform: translateY(6px); }
+        from { opacity: 0; transform: translateY(4px); }
         to { opacity: 1; transform: translateY(0); }
       }
       @keyframes dsh-gg-node-enter {
         from { opacity: 0; transform: scale(0.6); }
         to { opacity: 1; transform: scale(1); }
       }
-      @keyframes dsh-gg-row-enter {
-        from { opacity: 0; transform: translateX(8px); }
-        to { opacity: 1; transform: translateX(0); }
-      }
       @keyframes dsh-gg-dash-flow {
         from { stroke-dashoffset: 20; }
         to { stroke-dashoffset: 0; }
       }
       @keyframes dsh-gg-aura-wave {
-        0% { r: 6px; opacity: 0.85; stroke-width: 2px; }
-        50% { r: 12px; opacity: 0.35; stroke-width: 1.5px; }
-        100% { r: 16px; opacity: 0; stroke-width: 1px; }
+        0% { r: 5px; opacity: 0.85; stroke-width: 2px; }
+        50% { r: 11px; opacity: 0.35; stroke-width: 1.5px; }
+        100% { r: 15px; opacity: 0; stroke-width: 1px; }
       }
       @keyframes dsh-gg-pulse-amber {
         0%, 100% { filter: drop-shadow(0 0 2px rgba(245, 158, 11, 0.4)); }
@@ -1477,7 +1410,7 @@ window.__ModuleLoader__.load({
         to { opacity: 1; transform: translateY(0) scale(1); }
       }
       @keyframes dsh-gg-drawer-in {
-        from { transform: translateX(18px); opacity: 0.8; }
+        from { transform: translateX(20px); opacity: 0.8; }
         to { transform: translateX(0); opacity: 1; }
       }
       @keyframes dsh-gg-new-glow {
@@ -1534,8 +1467,6 @@ window.__ModuleLoader__.load({
         z-index: 1000; overflow: hidden; display: flex; flex-direction: column;
       }
       .dsh-gg-animate-in { animation: dsh-gg-flyout-in 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-      .dsh-gg-animate-fade { animation: dsh-gg-fade-in 0.18s ease forwards; }
-
       .dsh-gg-flyout-header {
         display: flex; align-items: center; justify-content: space-between;
         padding: 10px 12px; border-bottom: 1px solid var(--dsw-alias-border-l2, #333);
@@ -1567,7 +1498,6 @@ window.__ModuleLoader__.load({
       .dsh-gg-file-item .status-tag.untracked { background: rgba(156, 163, 175, 0.2); color: #9ca3af; }
       .dsh-gg-file-item .file-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 
-      /* Mini Timeline in Dock Flyout */
       .dsh-gg-mini-timeline { border-top: 1px solid var(--dsw-alias-border-l2, #333); padding-top: 8px; }
       .dsh-gg-mini-timeline-title { font-size: 11px; color: var(--dsw-alias-label-secondary, #888); margin-bottom: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
       .dsh-gg-mini-timeline-list { display: flex; flex-direction: column; gap: 5px; }
@@ -1581,48 +1511,83 @@ window.__ModuleLoader__.load({
       .dsh-gg-copied-notice { color: #10b981; font-size: 11px; text-align: center; animation: dsh-gg-fade-in 0.2s ease; }
       .dsh-gg-flyout-footer { display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--dsw-alias-border-l2, #333); background: var(--dsw-alias-bg-layer-2, #242424); }
 
-      /* Full View Styles */
-      .dsh-gg-container { display: flex; flex-direction: column; height: 100%; width: 100%; min-height: 480px; background: var(--dsw-alias-bg-base, #121212); color: var(--dsw-alias-label-primary, #eee); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; position: relative; }
-      .dsh-gg-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--dsw-alias-border-l1, #2c2c2c); background: var(--dsw-alias-bg-layer-1, #1a1a1a); backdrop-filter: blur(12px); flex-wrap: wrap; gap: 8px; }
-      .dsh-gg-toolbar-left { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; flex-wrap: wrap; }
-      .dsh-gg-title { font-weight: 600; font-size: 14px; }
-      .dsh-gg-branch-chip { font-size: 12px; padding: 2px 8px; border-radius: 12px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; font-weight: 500; border: 1px solid rgba(56, 189, 248, 0.3); }
-      .dsh-gg-dirty-chip { font-size: 11px; padding: 2px 8px; border-radius: 12px; background: rgba(245, 158, 11, 0.18); color: #f59e0b; font-weight: 500; border: 1px solid rgba(245, 158, 11, 0.3); transition: all 0.3s ease; }
+      /* Full View Main Container */
+      .dsh-gg-container {
+        display: flex; flex-direction: column; height: 100%; width: 100%; min-height: 480px;
+        background: var(--dsw-alias-bg-base, #131417); color: var(--dsw-alias-label-primary, #f1f5f9);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; position: relative;
+      }
+
+      /* Toolbar */
+      .dsh-gg-toolbar {
+        display: flex; align-items: center; justify-content: space-between; padding: 10px 16px;
+        border-bottom: 1px solid var(--dsw-alias-border-l1, #252830); background: var(--dsw-alias-bg-layer-1, #181a20);
+        backdrop-filter: blur(12px); gap: 12px; flex-shrink: 0;
+      }
+      .dsh-gg-toolbar-left { display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 600; }
+      .dsh-gg-title { font-weight: 600; font-size: 13px; color: #f8fafc; }
+      .dsh-gg-branch-chip {
+        font-size: 11px; padding: 2px 8px; border-radius: 12px;
+        background: rgba(56, 189, 248, 0.12); color: #38bdf8; font-weight: 500;
+        border: 1px solid rgba(56, 189, 248, 0.25);
+      }
+      .dsh-gg-dirty-chip {
+        font-size: 11px; padding: 2px 8px; border-radius: 12px;
+        background: rgba(245, 158, 11, 0.15); color: #f59e0b; font-weight: 500;
+        border: 1px solid rgba(245, 158, 11, 0.3); transition: all 0.3s ease;
+      }
       .dsh-gg-dirty-chip.mini { font-size: 10px; padding: 1px 6px; }
       .dsh-gg-dirty-chip.pulse { animation: dsh-gg-bounce-number 0.4s ease; border-color: #f59e0b; }
 
-      /* Filter Tabs */
-      .dsh-gg-filter-tabs { display: inline-flex; background: var(--dsw-alias-bg-layer-2, #262626); padding: 2px; border-radius: 6px; border: 1px solid var(--dsw-alias-border-l2, #3a3a3a); margin-left: 8px; }
-      .dsh-gg-filter-tab { background: transparent; border: none; color: #888; font-size: 11px; font-weight: 500; padding: 3px 8px; border-radius: 4px; cursor: pointer; transition: all 0.15s ease; }
-      .dsh-gg-filter-tab:hover { color: #eee; }
-      .dsh-gg-filter-tab.active { background: var(--dsw-alias-interactive-bg-hover, #3a3a3a); color: #38bdf8; font-weight: 600; }
+      .dsh-gg-filter-tabs { display: inline-flex; background: rgba(0,0,0,0.3); padding: 2px; border-radius: 6px; border: 1px solid var(--dsw-alias-border-l2, #333); margin-left: 6px; }
+      .dsh-gg-filter-tab { background: transparent; border: none; color: #94a3b8; font-size: 11px; font-weight: 500; padding: 3px 9px; border-radius: 4px; cursor: pointer; transition: all 0.15s ease; }
+      .dsh-gg-filter-tab:hover { color: #f1f5f9; }
+      .dsh-gg-filter-tab.active { background: var(--dsw-alias-interactive-bg-hover, #2c3240); color: #38bdf8; font-weight: 600; }
 
       .dsh-gg-toolbar-right { display: flex; align-items: center; gap: 8px; }
-      .dsh-gg-search-input { background: var(--dsw-alias-bg-layer-2, #262626); border: 1px solid var(--dsw-alias-border-l2, #3a3a3a); border-radius: 6px; padding: 5px 10px; font-size: 12px; color: #fff; width: 220px; outline: none; transition: border-color 0.2s ease, width 0.2s ease; }
-      .dsh-gg-search-input:focus { border-color: var(--dsw-alias-brand-primary, #38bdf8); width: 260px; }
+      .dsh-gg-search-input {
+        background: var(--dsw-alias-bg-layer-2, #20232b); border: 1px solid var(--dsw-alias-border-l2, #313542);
+        border-radius: 6px; padding: 5px 10px; font-size: 12px; color: #fff; width: 230px; outline: none;
+        transition: border-color 0.2s ease, width 0.2s ease;
+      }
+      .dsh-gg-search-input:focus { border-color: #38bdf8; width: 270px; }
       .dsh-gg-btn { padding: 4px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; border: 1px solid transparent; font-weight: 500; transition: all 0.15s ease; }
       .dsh-gg-btn.mini { padding: 3px 8px; font-size: 11px; }
-      .dsh-gg-btn.primary { background: var(--dsw-alias-brand-primary, #2563eb); color: #fff; }
+      .dsh-gg-btn.primary { background: #2563eb; color: #fff; }
       .dsh-gg-btn.primary:hover { opacity: 0.9; transform: translateY(-1px); }
-      .dsh-gg-btn.secondary { background: var(--dsw-alias-bg-layer-2, #333); color: #ddd; border-color: var(--dsw-alias-border-l2, #444); }
-      .dsh-gg-btn.secondary:hover { background: var(--dsw-alias-interactive-bg-hover, #3e3e3e); color: #fff; }
-      .dsh-gg-btn.icon { background: var(--dsw-alias-bg-layer-2, #262626); border: 1px solid var(--dsw-alias-border-l2, #3a3a3a); color: #aaa; display: flex; align-items: center; justify-content: center; padding: 5px; }
-      .dsh-gg-btn.icon:hover { color: #fff; border-color: var(--dsw-alias-border-l1, #555); }
-      .dsh-gg-btn.icon.active { color: #38bdf8; border-color: #38bdf8; background: rgba(56, 189, 248, 0.12); }
+      .dsh-gg-btn.secondary { background: #2a2e39; color: #cbd5e1; border-color: #3f4453; }
+      .dsh-gg-btn.secondary:hover { background: #383d4c; color: #fff; }
+      .dsh-gg-btn.icon { background: #20232b; border: 1px solid #313542; color: #94a3b8; display: flex; align-items: center; justify-content: center; padding: 5px; }
+      .dsh-gg-btn.icon:hover { color: #fff; border-color: #555; }
 
-      .dsh-gg-main { display: flex; flex: 1; overflow: hidden; position: relative; min-height: 400px; }
-      .dsh-gg-graph-area { flex: 1; overflow: auto; position: relative; background: var(--dsw-alias-bg-base, #141414); }
-      .dsh-gg-svg-wrap { position: absolute; top: 0; left: 0; z-index: 1; pointer-events: none; }
-      .dsh-gg-svg-layer { display: block; overflow: visible; }
+      /* Main Split Area */
+      .dsh-gg-main { display: flex; flex: 1; overflow: hidden; position: relative; min-height: 400px; width: 100%; }
 
-      /* SVG Node & Path Interactive Animations */
+      /* Scrollable Table Area */
+      .dsh-gg-table-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; position: relative; display: flex; flex-direction: column; width: 100%; }
+
+      /* Table Header */
+      .dsh-gg-table-header {
+        display: flex; align-items: center; height: 30px; background: #181a20;
+        border-bottom: 1px solid #252830; font-size: 11px; font-weight: 600; color: #94a3b8;
+        padding-right: 16px; user-select: none; position: sticky; top: 0; z-index: 10;
+      }
+      .col-graph-hdr { flex-shrink: 0; padding-left: 14px; text-transform: uppercase; letter-spacing: 0.5px; }
+      .col-msg-hdr { flex: 1; padding-left: 8px; }
+      .col-author-hdr { width: 140px; text-align: left; padding-left: 8px; }
+      .col-date-hdr { width: 85px; text-align: right; padding-right: 8px; }
+      .col-sha-hdr { width: 75px; text-align: right; font-family: monospace; }
+
+      /* Table Body */
+      .dsh-gg-table-body { position: relative; width: 100%; display: flex; flex-direction: column; }
+
+      /* SVG Canvas Overlay */
+      .dsh-gg-svg-canvas { pointer-events: auto; }
       .dsh-gg-conn-path { transition: stroke-width 0.2s ease, opacity 0.2s ease; }
-      .dsh-gg-conn-path.is-merge-flow { stroke-dasharray: 5, 4; }
-      .dsh-gg-conn-path.is-hover-highlight { filter: drop-shadow(0 0 4px currentColor); }
+      .dsh-gg-conn-path.is-hover-highlight { filter: drop-shadow(0 0 5px currentColor); }
       .dsh-gg-merge-particle-stream { animation: dsh-gg-dash-flow 1.2s linear infinite; pointer-events: none; }
-
-      .dsh-gg-node-dot { pointer-events: auto; transform-origin: center; animation: dsh-gg-node-enter 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) backwards; }
-      .dsh-gg-node-dot:hover .dsh-gg-commit-circle { transform: scale(1.3); stroke: #fff; stroke-width: 2.5; filter: drop-shadow(0 0 6px currentColor); }
+      .dsh-gg-node-dot { pointer-events: auto; transform-origin: center; animation: dsh-gg-node-enter 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) backwards; }
+      .dsh-gg-node-dot:hover .dsh-gg-commit-circle { transform: scale(1.35); stroke: #fff; stroke-width: 2.5; filter: drop-shadow(0 0 6px currentColor); }
       .dsh-gg-commit-circle { transition: transform 0.2s ease, stroke-width 0.2s ease; transform-origin: center; }
       .dsh-gg-aura-wave { animation: dsh-gg-aura-wave 2s cubic-bezier(0.25, 1, 0.5, 1) infinite; }
       .dsh-gg-diamond-working { animation: dsh-gg-pulse-amber 2.5s ease-in-out infinite; }
@@ -1630,85 +1595,87 @@ window.__ModuleLoader__.load({
       .dsh-gg-head-halo { animation: dsh-gg-pulse-amber 3s ease-in-out infinite; }
       .dsh-gg-new-wave { animation: dsh-gg-aura-wave 1.5s ease-out 3; stroke: #34d399; }
 
-      /* Commit Rows Layer */
-      .dsh-gg-rows-layer { position: absolute; top: 0; right: 0; z-index: 2; pointer-events: auto; }
-      .dsh-gg-commit-row {
-        position: absolute; height: 36px; display: flex; align-items: center; gap: 8px;
-        padding-left: 12px; padding-right: 16px; border-radius: 5px; cursor: pointer;
-        font-size: 12px; white-space: nowrap; right: 0;
-        transition: background 0.18s ease, transform 0.18s ease, border-color 0.18s ease;
-        animation: dsh-gg-row-enter 0.25s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+      /* Rows List in Natural Document Flow */
+      .dsh-gg-rows-list { display: flex; flex-direction: column; width: 100%; z-index: 2; pointer-events: auto; }
+      .dsh-gg-table-row {
+        display: flex; align-items: center; width: 100%; box-sizing: border-box;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.035); padding-right: 16px;
+        cursor: pointer; font-size: 12px; transition: background 0.15s ease;
       }
-      .dsh-gg-commit-row.compact { height: 26px; font-size: 11px; gap: 6px; padding-left: 8px; }
-      .dsh-gg-commit-row:hover, .dsh-gg-commit-row.is-hovered {
-        background: rgba(255, 255, 255, 0.05);
-        transform: translateX(-2px);
+      .dsh-gg-table-row:hover, .dsh-gg-table-row.is-hovered {
+        background: rgba(255, 255, 255, 0.045);
       }
-      .dsh-gg-commit-row.is-selected {
-        background: rgba(56, 189, 248, 0.14);
-        border-left: 2px solid #38bdf8;
+      .dsh-gg-table-row.is-selected {
+        background: rgba(56, 189, 248, 0.12) !important;
+        border-left: 3px solid #38bdf8;
       }
-      .dsh-gg-commit-row.is-working { font-style: italic; color: #f59e0b; font-weight: 500; }
-      .dsh-gg-commit-row.is-new-row {
-        background: rgba(52, 211, 153, 0.1);
-        border-left: 2px solid #34d399;
-        animation: dsh-gg-new-glow 2s ease infinite;
-      }
+      .dsh-gg-table-row.is-working { font-style: italic; color: #f59e0b; }
+      .dsh-gg-table-row.is-new { background: rgba(52, 211, 153, 0.08); animation: dsh-gg-new-glow 2s ease infinite; }
 
-      /* Ref Badges */
-      .dsh-gg-ref-badge { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 4px; font-family: monospace; letter-spacing: 0.3px; transition: all 0.15s ease; }
-      .dsh-gg-ref-badge.head { background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.4); }
-      .dsh-gg-ref-badge.merge { background: linear-gradient(135deg, rgba(168, 85, 247, 0.25), rgba(236, 72, 153, 0.25)); color: #f472b6; border: 1px solid rgba(244, 114, 182, 0.4); }
-      .dsh-gg-ref-badge.new { background: rgba(52, 211, 153, 0.25); color: #34d399; border: 1px solid rgba(52, 211, 153, 0.45); animation: dsh-gg-bounce-number 0.5s ease; }
-      .dsh-gg-ref-badge.branch { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); }
-      .dsh-gg-ref-badge.remote { background: rgba(168, 85, 247, 0.15); color: #a855f7; border: 1px solid rgba(168, 85, 247, 0.3); }
-      .dsh-gg-ref-badge.tag { background: rgba(234, 179, 8, 0.15); color: #eab308; border: 1px solid rgba(234, 179, 8, 0.3); }
+      .dsh-gg-row-graph-spacer { flex-shrink: 0; }
+      .dsh-gg-row-msg { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; padding-left: 8px; overflow: hidden; }
+      .msg-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: #e2e8f0; }
+      .dsh-gg-table-row.is-selected .msg-text { color: #fff; font-weight: 600; }
 
-      .dsh-gg-hash { font-family: monospace; color: var(--dsw-alias-label-secondary, #777); font-size: 11px; background: rgba(255,255,255,0.04); padding: 1px 4px; border-radius: 3px; }
-      .dsh-gg-subject { color: var(--dsw-alias-label-primary, #ddd); max-width: 380px; overflow: hidden; text-overflow: ellipsis; }
-      .dsh-gg-author { color: var(--dsw-alias-label-secondary, #888); font-size: 11px; margin-left: auto; padding-left: 12px; }
-      .dsh-gg-time { color: var(--dsw-alias-label-tertiary, #666); font-size: 11px; min-width: 60px; text-align: right; }
-
-      /* Floating Hover Preview Card */
-      .dsh-gg-hover-card {
-        position: absolute; z-index: 100; pointer-events: none;
-        background: var(--dsw-alias-bg-layer-1, #1e1e1e);
-        border: 1px solid var(--dsw-alias-border-l1, #444);
-        border-radius: 8px; padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-        max-width: 340px; display: flex; flex-direction: column; gap: 5px;
+      /* Badges & Pills */
+      .dsh-gg-badge {
+        font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 4px;
+        font-family: monospace; letter-spacing: 0.3px; flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;
       }
-      .dsh-gg-hover-card-header { display: flex; align-items: center; gap: 6px; font-size: 11px; }
-      .dsh-gg-hover-card-header .sha { font-family: monospace; color: #38bdf8; font-weight: 600; }
-      .dsh-gg-hover-card-header .time { color: #888; margin-left: auto; }
-      .dsh-gg-hover-card-msg { font-size: 12px; font-weight: 500; color: #fff; line-height: 1.35; }
-      .dsh-gg-hover-card-author { font-size: 11px; color: #888; }
+      .dsh-gg-badge.head { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
+      .dsh-gg-badge.working { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); }
+      .dsh-gg-badge.merge { background: linear-gradient(135deg, rgba(168, 85, 247, 0.25), rgba(236, 72, 153, 0.25)); color: #f472b6; border: 1px solid rgba(244, 114, 182, 0.4); }
+      .dsh-gg-badge.new { background: rgba(52, 211, 153, 0.25); color: #34d399; border: 1px solid rgba(52, 211, 153, 0.45); animation: dsh-gg-bounce-number 0.5s ease; }
+      .dsh-gg-badge.branch { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); }
+      .dsh-gg-badge.remote { background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); }
+      .dsh-gg-badge.tag { background: rgba(234, 179, 8, 0.15); color: #fbbf24; border: 1px solid rgba(234, 179, 8, 0.3); }
+      .head-active-dot { width: 5px; height: 5px; border-radius: 50%; background: #f87171; animation: dsh-gg-bounce-number 1s infinite; }
+
+      .dsh-gg-row-author { width: 140px; flex-shrink: 0; display: flex; align-items: center; gap: 6px; padding-left: 8px; overflow: hidden; }
+      .author-avatar { width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: #fff; flex-shrink: 0; }
+      .author-name { color: #94a3b8; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+      .dsh-gg-row-date { width: 85px; flex-shrink: 0; text-align: right; color: #64748b; font-size: 11px; padding-right: 8px; }
+
+      .dsh-gg-row-sha { width: 75px; flex-shrink: 0; text-align: right; }
+      .dsh-gg-row-sha code {
+        font-family: monospace; font-size: 11px; color: #94a3b8; background: rgba(255,255,255,0.05);
+        padding: 2px 5px; border-radius: 4px; transition: all 0.15s ease;
+      }
+      .dsh-gg-row-sha code:hover { background: rgba(56, 189, 248, 0.2); color: #38bdf8; }
 
       /* Details Drawer */
-      .dsh-gg-detail-drawer { width: 340px; border-left: 1px solid var(--dsw-alias-border-l1, #2c2c2c); background: var(--dsw-alias-bg-layer-1, #181818); display: flex; flex-direction: column; overflow-y: auto; }
+      .dsh-gg-detail-drawer {
+        width: 330px; border-left: 1px solid #252830; background: #16181f;
+        display: flex; flex-direction: column; overflow-y: auto; flex-shrink: 0;
+      }
       .dsh-gg-drawer-inner { display: flex; flex-direction: column; height: 100%; }
       .dsh-gg-drawer-animate { animation: dsh-gg-drawer-in 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-      .dsh-gg-drawer-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--dsw-alias-border-l2, #2c2c2c); }
-      .dsh-gg-drawer-header h4 { margin: 0; font-size: 13px; font-weight: 600; }
+      .dsh-gg-drawer-header {
+        display: flex; align-items: center; justify-content: space-between; padding: 12px 14px;
+        border-bottom: 1px solid #252830; background: #1c1f27;
+      }
+      .dsh-gg-drawer-header h4 { margin: 0; font-size: 13px; font-weight: 600; color: #f8fafc; }
       .dsh-gg-drawer-body { padding: 14px; display: flex; flex-direction: column; gap: 12px; flex: 1; font-size: 12px; }
       .dsh-gg-meta-item { display: flex; gap: 8px; font-size: 12px; }
-      .dsh-gg-meta-item .label { color: var(--dsw-alias-label-secondary, #888); width: 60px; flex-shrink: 0; }
-      .dsh-gg-meta-item .val { color: var(--dsw-alias-label-primary, #eee); }
+      .dsh-gg-meta-item .label { color: #94a3b8; width: 60px; flex-shrink: 0; }
+      .dsh-gg-meta-item .val { color: #f1f5f9; }
       .dsh-gg-meta-item .sha { font-family: monospace; background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 4px; cursor: pointer; display: inline-flex; align-items: center; word-break: break-all; transition: background 0.15s ease; }
-      .dsh-gg-meta-item .sha:hover { background: rgba(255,255,255,0.12); color: #38bdf8; }
+      .dsh-gg-meta-item .sha:hover { background: rgba(56, 189, 248, 0.2); color: #38bdf8; }
       .dsh-gg-meta-item.full .subject { font-size: 13px; font-weight: 500; color: #fff; line-height: 1.4; }
       .parents-wrap { display: flex; gap: 6px; flex-wrap: wrap; }
       .parent-sha { font-family: monospace; background: rgba(255,255,255,0.08); padding: 1px 4px; border-radius: 3px; cursor: pointer; transition: background 0.15s ease; }
       .parent-sha:hover { background: rgba(56, 189, 248, 0.2); color: #38bdf8; }
 
       /* File Accordion in Drawer */
-      .dsh-gg-files-box { margin-top: 6px; border-top: 1px solid var(--dsw-alias-border-l2, #333); padding-top: 8px; }
+      .dsh-gg-files-box { margin-top: 6px; border-top: 1px solid #252830; padding-top: 8px; }
       .dsh-gg-files-box h5 { margin: 0 0 8px 0; font-size: 12px; font-weight: 600; }
-      .dsh-gg-accordion-group { margin-bottom: 8px; border: 1px solid var(--dsw-alias-border-l2, #333); border-radius: 6px; overflow: hidden; }
+      .dsh-gg-accordion-group { margin-bottom: 8px; border: 1px solid #252830; border-radius: 6px; overflow: hidden; }
       .dsh-gg-accordion-header {
         display: flex; align-items: center; gap: 6px; padding: 6px 10px; cursor: pointer; font-size: 11px; font-weight: 600;
-        background: var(--dsw-alias-bg-layer-2, #222); user-select: none; transition: background 0.15s ease;
+        background: #1c1f27; user-select: none; transition: background 0.15s ease;
       }
-      .dsh-gg-accordion-header:hover { background: var(--dsw-alias-interactive-bg-hover, #2c2c2c); }
+      .dsh-gg-accordion-header:hover { background: #252830; }
       .dsh-gg-accordion-header.staged .title { color: #10b981; }
       .dsh-gg-accordion-header.unstaged .title { color: #f59e0b; }
       .dsh-gg-accordion-header.untracked .title { color: #888; }
@@ -1729,8 +1696,7 @@ window.__ModuleLoader__.load({
       .dsh-gg-file-row .copy-path-btn:hover { color: #fff; background: rgba(255,255,255,0.1); }
 
       .dsh-gg-notice { color: #10b981; font-size: 11px; text-align: center; animation: dsh-gg-fade-in 0.2s ease; }
-      .dsh-gg-drawer-actions { padding: 12px; border-top: 1px solid var(--dsw-alias-border-l2, #2c2c2c); display: flex; gap: 6px; }
-      .dsh-gg-drawer-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: #666; font-size: 12px; padding: 20px; text-align: center; }
+      .dsh-gg-drawer-actions { padding: 12px; border-top: 1px solid #252830; display: flex; gap: 6px; }
       .dsh-gg-view-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 320px; color: #888; font-size: 13px; }
       .dsh-gg-empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 360px; color: #777; gap: 10px; padding: 24px; text-align: center; }
       .dsh-gg-empty-state.is-error h3 { color: #f87171; }
@@ -1742,7 +1708,6 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots', 'locale'],
       apply(ctx) {
-        // Register localizations
         ctx.locale.register(NS, { zh, en })
         const t = ctx.locale.bind(NS)
 

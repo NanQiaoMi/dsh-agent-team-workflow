@@ -23,8 +23,8 @@ export const LANE_PALETTE = [
 ]
 
 const RECORD_SEP = '\x1f' // Unit separator for git log format fields
-const ROW_HEIGHT = 40
-const LANE_WIDTH = 22
+const ROW_HEIGHT = 38
+const LANE_WIDTH = 18
 const LEFT_OFFSET = 18
 
 /**
@@ -252,7 +252,7 @@ export function layoutGitGraph(rawCommits, status) {
   if (status && status.isDirty) {
     const workingLane = 0
     const workingX = LEFT_OFFSET + workingLane * LANE_WIDTH
-    const workingY = ROW_HEIGHT * (rowIndex + 1)
+    const workingY = Math.round(ROW_HEIGHT * (rowIndex + 0.5))
     maxLane = Math.max(maxLane, workingLane)
 
     nodes.push({
@@ -295,14 +295,18 @@ export function layoutGitGraph(rawCommits, status) {
     }
 
     maxLane = Math.max(maxLane, assignedLane)
-    activeLanes[assignedLane] = null // Free current spot
+
+    // Clear all occurrences of current commit from active lanes
+    for (let i = 0; i < activeLanes.length; i++) {
+      if (activeLanes[i] === c.hash) activeLanes[i] = null
+    }
 
     const isHead = c.hash === status?.headOid
     const isMerge = c.parents.length > 1
     const refs = parseRefs(c.rawRefs)
     const color = LANE_PALETTE[assignedLane % LANE_PALETTE.length]
     const x = LEFT_OFFSET + assignedLane * LANE_WIDTH
-    const y = ROW_HEIGHT * (rowIndex + 1)
+    const y = Math.round(ROW_HEIGHT * (rowIndex + 0.5))
 
     nodes.push({
       hash: c.hash,
@@ -326,17 +330,14 @@ export function layoutGitGraph(rawCommits, status) {
     // Update active lanes for parents
     for (let pIdx = 0; pIdx < c.parents.length; pIdx++) {
       const parentHash = c.parents[pIdx]
-      if (pIdx === 0) {
-        // Primary parent stays in the same lane if free, or first free lane
-        if (activeLanes[assignedLane] === null || activeLanes[assignedLane] === undefined) {
-          activeLanes[assignedLane] = parentHash
-        } else {
-          const nextFree = activeLanes.indexOf(null)
-          if (nextFree !== -1) activeLanes[nextFree] = parentHash
-          else activeLanes.push(parentHash)
-        }
+      // Avoid duplicate lanes for the same parent commit
+      if (activeLanes.includes(parentHash)) continue
+
+      if (pIdx === 0 && (activeLanes[assignedLane] === null || activeLanes[assignedLane] === undefined)) {
+        // Primary parent continues straight down the same lane
+        activeLanes[assignedLane] = parentHash
       } else {
-        // Secondary/merge parents go to another lane
+        // Fork/Merge parent takes the first available free lane
         const nextFree = activeLanes.indexOf(null)
         if (nextFree !== -1) {
           activeLanes[nextFree] = parentHash
@@ -356,7 +357,7 @@ export function layoutGitGraph(rawCommits, status) {
     rowIndex++
   }
 
-  // 3. Generate connection Bezier curves between child node and parent node
+  // 3. Generate clean, tight connection curves between child node and parent node
   const nodeLookup = new Map()
   for (const n of nodes) nodeLookup.set(n.hash, n)
 
@@ -371,10 +372,17 @@ export function layoutGitGraph(rawCommits, status) {
 
         let path = ''
         if (x1 === x2) {
+          // Direct straight vertical track
           path = `M ${x1} ${y1} L ${x2} ${y2}`
-        } else {
+        } else if (y2 <= y1 + ROW_HEIGHT) {
+          // Direct smooth transition over single row
           const cy = (y1 + y2) / 2
           path = `M ${x1} ${y1} C ${x1} ${cy}, ${x2} ${cy}, ${x2} ${y2}`
+        } else {
+          // Smooth 1-row lane change transition, then clean vertical line down to target
+          const midY = y1 + ROW_HEIGHT
+          const cy = y1 + ROW_HEIGHT * 0.5
+          path = `M ${x1} ${y1} C ${x1} ${cy}, ${x2} ${cy}, ${x2} ${midY} L ${x2} ${y2}`
         }
 
         connections.push({
