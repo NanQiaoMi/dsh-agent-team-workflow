@@ -13,6 +13,7 @@ import path from 'node:path'
 import { runSettings } from './config.js'
 import * as G from './git.js'
 import { fireHooks } from './hooks.js'
+import { computeUsage } from './telemetry.js'
 import * as W from './workflow.js'
 import {
   autoProvisionWorktrees,
@@ -1100,6 +1101,30 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             evidenceChecked,
             now,
           })
+          if (current.settings?.archiveApprovedItems && outcome.item.status === W.ITEM_STATUS.APPROVED) {
+            const archivePath = await store.archiveItem(agent, outcome.item)
+            outcome.item.archived = true
+            if (outcome.item.report) {
+              outcome.item.report.archived = true
+              outcome.item.report.archivePath = archivePath
+              outcome.item.report.evidence = []
+              outcome.item.report.openQuestions = []
+              outcome.item.report.risks = []
+            }
+            if (Array.isArray(outcome.item.reviews)) {
+              outcome.item.reviews = outcome.item.reviews.map((r) => ({
+                round: r.round,
+                reviewer: r.reviewer,
+                status: r.status ?? 'submitted',
+                verdict: r.verdict ?? r.status,
+                reportSeq: r.reportSeq ?? 0,
+                evidenceChecked: r.evidenceChecked ?? ['archived'],
+                findingsCount: Array.isArray(r.findings) ? r.findings.length : 0,
+                findings: [],
+                archived: true,
+              }))
+            }
+          }
           return current
         })
         const item = outcome.item
@@ -1339,23 +1364,8 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           for (const override of overrides) W.findItem(current, override.itemId)
           // Capture token usage (when the Host exposes the token-meter projection)
           // so the gate can enforce budgets and the board can show real numbers.
-          const usage = { capturedAt: now, members: {}, totals: { uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 } }
           const readUsage = tokenUsage?.()
-          for (const member of members) {
-            if (typeof readUsage !== 'function') break
-            const raw = readUsage(member.agent)
-            if (raw === null || raw === undefined) continue
-            // The token-meter projection exposes `{ totals, last }`; keep only
-            // the flat bucket totals so budgets and the board agree.
-            const totals = raw.totals !== undefined && raw.totals !== null && typeof raw.totals === 'object' ? raw.totals : raw
-            usage.members[member.name] = {
-              uncachedInputTokens: Number.isFinite(totals.uncachedInputTokens) ? totals.uncachedInputTokens : 0,
-              outputTokens: Number.isFinite(totals.outputTokens) ? totals.outputTokens : 0,
-              cacheReadTokens: Number.isFinite(totals.cacheReadTokens) ? totals.cacheReadTokens : 0,
-              cacheWriteTokens: Number.isFinite(totals.cacheWriteTokens) ? totals.cacheWriteTokens : 0,
-            }
-            for (const key of Object.keys(usage.totals)) usage.totals[key] += Number.isFinite(totals[key]) ? totals[key] : 0
-          }
+          const usage = computeUsage({ members, read: readUsage, state: current, now })
           current.usage = usage
           gate = W.evaluateGates(current, { settings: current.settings, members, nativeTasks, overrides, now })
           // Worktree isolation is only real if reported artifacts actually live
@@ -1605,6 +1615,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             item.approvedAt = null
             item.approvedBy = null
             item.overrideReason = null
+            item.archived = false
             item.updatedAt = now
             for (const review of item.reviews) if (review.status === 'pending') review.status = 'superseded'
             entry.detail = 'report cleared; earlier verdicts invalidated by a new report version'
@@ -2785,6 +2796,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
         type: 'object',
         properties: {
           item_id: { type: 'string', description: 'Optional work item id to include its thread and review/handoff records.' },
+          archive_item_id: { type: 'string', description: 'Optional work item id to retrieve its cold archived report and reviews on demand.' },
           limit: { type: 'integer', description: 'How many channel messages to return (default 30, max 100).' },
         },
         additionalProperties: false,
@@ -2799,6 +2811,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           my_handoffs: { type: 'array', items: {} },
           questions_to_me: { type: 'array', items: {} },
           item: {},
+          archived_item: {},
           next_actions: { type: 'array', items: { type: 'string' } },
           warnings: { type: 'array', items: { type: 'string' } },
         },
@@ -2832,6 +2845,11 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             definition_of_done: found.definitionOfDone,
             open_proposals: W.openBlockingProposals(state, found.id).map((proposal) => proposal.id),
           }
+        }
+        const archiveItemId = args.archive_item_id === undefined || args.archive_item_id === null || String(args.archive_item_id).trim() === '' ? null : String(args.archive_item_id).trim()
+        let archivedItem = null
+        if (archiveItemId !== null) {
+          archivedItem = await store.readArchivedItem(agent, archiveItemId)
         }
         const channelSource = itemId === null
           ? state.channel
@@ -2870,6 +2888,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           my_handoffs: summary.handoffs_to_me,
           questions_to_me: summary.questions_to_me,
           item,
+          archived_item: archivedItem,
           next_actions: W.nextActions(state, { me: { name: membership.name, role: membership.role }, role: membership.role, members, settings: state.settings }),
           warnings: [],
         }

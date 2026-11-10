@@ -57,6 +57,8 @@ export function createStore({ ctx, settings }) {
    * run; disk stays authoritative whenever it has a readable value.
    */
   const memoryStates = new Map()
+  /** Memory cache for archived item details. */
+  const memoryArchives = new Map()
 
   /** Deep-clone one JSON value so callers can never mutate cached state. */
   function cloneJson(value) {
@@ -232,12 +234,94 @@ export function createStore({ ctx, settings }) {
     }
   }
 
+  /** @returns the archive directory for this member's Team. */
+  function archiveDir(agent) {
+    return join(teamDir(agent), 'archive')
+  }
+
+  /** @returns the absolute path of one item's archive record. */
+  function archivePath(agent, itemId) {
+    const safeId = String(itemId ?? 'unknown').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80)
+    return join(archiveDir(agent), `${safeId}.json`)
+  }
+
+  /**
+   * Persist one approved work item's detailed report and reviews to cold storage.
+   * @param agent - exact live Agent.
+   * @param item - the work item to archive.
+   * @returns archive file path.
+   */
+  async function archiveItem(agent, item) {
+    const path = archivePath(agent, item.id)
+    const record = {
+      id: item.id,
+      subject: item.subject,
+      owner: item.owner,
+      status: item.status,
+      report: cloneJson(item.report),
+      reviews: cloneJson(item.reviews),
+      archivedAt: new Date().toISOString(),
+    }
+    memoryArchives.set(path, cloneJson(record))
+    if (!settings.writeArtifacts) return path
+    await mkdir(archiveDir(agent), { recursive: true })
+    const temporary = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
+    await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, 'utf8')
+    await rename(temporary, path)
+    return path
+  }
+
+  /**
+   * Read one archived work item's detailed report and reviews from cold storage.
+   * @param agent - exact live Agent.
+   * @param itemId - work item id.
+   * @returns parsed archive record or null.
+   */
+  async function readArchivedItem(agent, itemId) {
+    const path = archivePath(agent, itemId)
+    const memorized = memoryArchives.get(path)
+    if (!settings.writeArtifacts && memorized !== undefined) return cloneJson(memorized)
+    let raw
+    try {
+      raw = await readFile(path, 'utf8')
+    } catch (error) {
+      if (error?.code === 'ENOENT') return memorized === undefined ? null : cloneJson(memorized)
+      throw new RunStateError(`cannot read archived item at ${path}: ${error.message}`, 'WORKFLOW_ARCHIVE_UNREADABLE')
+    }
+    let parsed
+    try {
+      parsed = JSON.parse(raw)
+    } catch (error) {
+      throw new RunStateError(`archived item at ${path} is not valid JSON: ${error.message}`, 'WORKFLOW_ARCHIVE_CORRUPT')
+    }
+    memoryArchives.set(path, parsed)
+    return parsed
+  }
+
   /** Run one operation while holding this Team's board lock. */
   function lock(agent, task) {
     return withLock(statePath(agent), task)
   }
 
-  return { readState, mutateState, writeState, writeArtifact, artifactRoot, statePath, teamDir, teamIdOf, workingDir, cachedState, cachedSummary, describeRoot, lock }
+  return {
+    readState,
+    mutateState,
+    writeState,
+    writeArtifact,
+    archiveItem,
+    readArchivedItem,
+    archivePath,
+    archiveDir,
+    artifactRoot,
+    statePath,
+    teamDir,
+    teamIdOf,
+    workingDir,
+    cachedState,
+    cachedSummary,
+    describeRoot,
+    lock,
+  }
 }
 
 /**

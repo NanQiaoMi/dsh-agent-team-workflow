@@ -7,6 +7,7 @@
 
 | # | 验证项 | 方法 | 结论 |
 | --- | --- | --- | --- |
+| V36 | v1.26.0：消耗与效率深水区第三阶段 | 已批准工作项冷热数据沉降归档（.agentteam/teams/<id>/archive/，减小热态黑板体积）+ team_flow_read 详细报告按需调阅；细粒度 Token 消耗归因度量（byRole: lead/worker/reviewer，tokenShare 占比），并在最终报告与看板中呈现；新增 efficiency 2 例；253/253 | ✅ 253/253 + kit 9/9；bench 15/15 全绿 |
 | V35 | v1.25.1：消耗与效率深水区第二阶段 | 客户端增量同步接入（since_rev 传递 + unchanged 快速路径 + mergeSnapshotDelta）、评审分级 Nit 容忍门禁（阻断纯 nit request_changes 避免无效返工）；新增 efficiency 2 例；251/251 | ✅ 251/251 + kit 9/9；bench 15/15 全绿 |
 | V34 | v1.25.0：消耗与效率深水区第一阶段 | 角色化工具轻量切片（ROLE_TOOL_MATRIX，Worker 10/Reviewer 6）、零轮次自包含调度（消除 status 强迫轮询）、提测前退出码确定性自检、bench 工具 Schema 体积门禁；新增/更新测试 10 例；250/250 | ✅ 250/250 + kit 9/9；bench 15/15 预算全绿 |
 | V1 | 引擎状态机正确性（计划校验、版本绑定、累计返修轮、nits 早停、升级、门禁、override、多 reviewer） | 离线单元测试 26 例 | ✅ 全绿 |

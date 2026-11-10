@@ -415,6 +415,9 @@ export function renderReportMarkdown(state, gate) {
     if (item.report !== null) {
       lines.push('')
       lines.push(`**Report:** ${item.report.summary}`)
+      if (item.archived === true && item.report.archivePath) {
+        lines.push(`- *(Details archived at \`${item.report.archivePath}\`)*`)
+      }
       lines.push('')
       lines.push('Files:')
       for (const file of item.report.files) lines.push(`- \`${file}\``)
@@ -444,7 +447,7 @@ export function renderReportMarkdown(state, gate) {
       lines.push('Reviews:')
       for (const review of item.reviews) {
         lines.push(`- round ${review.round} by ${review.reviewer}: **${review.verdict ?? review.status}** — ${review.summary || '(no summary)'}`)
-        for (const finding of review.findings) {
+        for (const finding of (review.findings ?? [])) {
           const resolution = finding.resolution === null ? 'unresolved' : `${finding.resolution.state}${finding.resolution.evidence ? ` (${finding.resolution.evidence})` : ''}`
           lines.push(`  - ${finding.id} [${finding.severity}] ${finding.file ?? ''}${finding.line ? `:${finding.line}` : ''} — ${finding.claim} → ${resolution}`)
         }
@@ -484,6 +487,20 @@ export function renderReportMarkdown(state, gate) {
     lines.push(`| ${itemGate.id} | ${itemGate.pass ? 'yes' : 'no'} | ${itemGate.failures.join('; ') || '-'} | ${itemGate.warnings.join('; ') || '-'} |`)
   }
   lines.push('')
+  const usage = state.usage ?? gate.usage
+  if (usage?.byRole && typeof usage.byRole === 'object' && Object.keys(usage.byRole).length > 0) {
+    lines.push('## Token attribution by role')
+    lines.push('')
+    lines.push('| role | uncached input | output | cache read | cache write | total | share |')
+    lines.push('| --- | --- | --- | --- | --- | --- | --- |')
+    for (const [role, data] of Object.entries(usage.byRole)) {
+      const share = usage.tokenShare?.[role] !== undefined
+        ? `${(usage.tokenShare[role] * 100).toFixed(1)}%`
+        : '-'
+      lines.push(`| ${role} | ${data.uncachedInputTokens ?? 0} | ${data.outputTokens ?? 0} | ${data.cacheReadTokens ?? 0} | ${data.cacheWriteTokens ?? 0} | ${data.totalTokens ?? 0} | ${share} |`)
+    }
+    lines.push('')
+  }
   lines.push('## Audit trail (tail)')
   lines.push('')
   for (const event of state.events.slice(-40)) lines.push(`- ${event.at} [${event.type}] ${event.actor}: ${event.detail}`)

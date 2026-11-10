@@ -14,6 +14,7 @@
 
 import { appendEvent, evaluateGates, ITEM_STATUS, RUN_PHASE } from './workflow.js'
 import { renderReportMarkdown } from './protocol.js'
+import { computeUsage } from './telemetry.js'
 import { autoCleanupRunWorktrees, getWorktreeDiffSummary } from './worktree-manager.js'
 
 /**
@@ -72,29 +73,10 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
    * autonomous finalize path and the live budget breaker; a missing projection
    * yields null and never blocks the run.
    */
-  function readUsage(members) {
+  function readUsage(members, state = null) {
     const read = typeof tokenUsage === 'function' ? tokenUsage() : null
     if (typeof read !== 'function') return null
-    const usage = { capturedAt: new Date().toISOString(), members: {}, totals: { uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 } }
-    for (const member of members) {
-      if (member.agent === undefined || member.agent === null) continue
-      let raw = null
-      try {
-        raw = read(member.agent)
-      } catch {
-        raw = null
-      }
-      if (raw === null || raw === undefined) continue
-      const totals = raw.totals !== undefined && raw.totals !== null && typeof raw.totals === 'object' ? raw.totals : raw
-      usage.members[member.name] = {
-        uncachedInputTokens: Number.isFinite(totals.uncachedInputTokens) ? totals.uncachedInputTokens : 0,
-        outputTokens: Number.isFinite(totals.outputTokens) ? totals.outputTokens : 0,
-        cacheReadTokens: Number.isFinite(totals.cacheReadTokens) ? totals.cacheReadTokens : 0,
-        cacheWriteTokens: Number.isFinite(totals.cacheWriteTokens) ? totals.cacheWriteTokens : 0,
-      }
-      for (const key of Object.keys(usage.totals)) usage.totals[key] += Number.isFinite(totals[key]) ? totals[key] : 0
-    }
-    return usage
+    return computeUsage({ members, read, state })
   }
 
   async function sendNotice(root, target, message) {
@@ -160,7 +142,7 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
 
     // Live budget breaker: sampling the projection is cheap and lets the team
     // stop spending before the gate, instead of only failing at finalize.
-    const sampledUsage = readUsage(members)
+    const sampledUsage = readUsage(members, state)
     if (sampledUsage !== null && (settings.tokenBudgetPerMember > 0 || settings.tokenBudgetPerRun > 0)) {
       const total = (totals) => ['uncachedInputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'].reduce((sum, key) => sum + (Number.isFinite(totals?.[key]) ? totals[key] : 0), 0)
       const violations = []
@@ -336,7 +318,7 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
           nativeTasks = []
         }
         const now = new Date().toISOString()
-        const usage = readUsage(members)
+        const usage = readUsage(members, state)
         const gate = evaluateGates(state, { settings: state.settings, members, nativeTasks, overrides: [], now })
         // The autonomous path must capture usage exactly like team_flow_gate
         // does, otherwise live budgets and the board's usage panel are blind.
