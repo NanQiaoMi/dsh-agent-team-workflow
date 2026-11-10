@@ -1,9 +1,12 @@
 /**
- * @local/dsh-git-graph - Client UI Plugin
+ * @local/dsh-git-graph - Client UI Plugin (Enhanced Animation & Visuals)
  *
  * Registers:
- * 1. `conversation.input.dock` -> Interactive Git Status Icon & Quick Popover
- * 2. `conversation.view` -> Full-fidelity Interactive Git Tree DAG Graph View
+ * 1. `conversation.input.dock` -> Interactive Git Status Icon, Pulse Badge & Quick Popover
+ * 2. `conversation.view` -> Full-fidelity Interactive Git Tree DAG Graph View with:
+ *    - 新增 (New Commits / Added files): Staggered entry, draw-in lines, green glow.
+ *    - 修改 (Modifications / Working Changes): Amber breathing aura, reactive count pulse.
+ *    - 合并 (Merge Commits / Convergences): Animated flowing dash stream, double-ring nodes.
  *
  * Zero external require (strictly only `require('react')`).
  * Uses DSH host theme tokens (`--dsw-alias-*`) and self-contained styles.
@@ -49,6 +52,8 @@ window.__ModuleLoader__.load({
       'graph.unstaged': '未暂存 {n}',
       'graph.untracked': '未跟踪 {n}',
       'graph.headBadge': 'HEAD',
+      'graph.mergeBadge': 'MERGE',
+      'graph.newBadge': 'NEW',
       'graph.author': '作者: {name}',
       'graph.date': '时间: {time}',
       'graph.parents': '父提交:',
@@ -89,6 +94,8 @@ window.__ModuleLoader__.load({
       'graph.unstaged': 'unstaged {n}',
       'graph.untracked': 'untracked {n}',
       'graph.headBadge': 'HEAD',
+      'graph.mergeBadge': 'MERGE',
+      'graph.newBadge': 'NEW',
       'graph.author': 'Author: {name}',
       'graph.date': 'Date: {time}',
       'graph.parents': 'Parents:',
@@ -109,15 +116,18 @@ window.__ModuleLoader__.load({
     }
 
     // -------------------------------------------------------------------------
-    // Custom Hooks
+    // Custom Hooks (with State-Change Animation Detection)
     // -------------------------------------------------------------------------
 
-    /** Fetch live Git snapshot with automatic document visibility pause */
+    /** Fetch live Git snapshot with automatic diff & state transition tracking */
     function useGitSnapshot(sessionId, pollMs = DEFAULT_POLL_MS) {
       const [snapshot, setSnapshot] = useState(null)
       const [loading, setLoading] = useState(true)
       const [error, setError] = useState(null)
       const [lastUpdated, setLastUpdated] = useState(null)
+      const [newHashes, setNewHashes] = useState(new Set())
+      const [dirtyPulse, setDirtyPulse] = useState(false)
+      const prevSnapshotRef = useRef(null)
 
       const refresh = useCallback(async () => {
         try {
@@ -131,6 +141,30 @@ window.__ModuleLoader__.load({
           }
           const data = await res.json()
           if (data && typeof data === 'object') {
+            // Detect state transitions for animations
+            if (prevSnapshotRef.current && prevSnapshotRef.current.graph?.nodes && data.graph?.nodes) {
+              const oldSet = new Set(prevSnapshotRef.current.graph.nodes.map((n) => n.hash))
+              const newlyAdded = new Set()
+              for (const n of data.graph.nodes) {
+                if (!oldSet.has(n.hash) && !n.isWorkingTree) {
+                  newlyAdded.add(n.hash)
+                }
+              }
+              if (newlyAdded.size > 0) {
+                setNewHashes(newlyAdded)
+                setTimeout(() => setNewHashes(new Set()), 4000)
+              }
+
+              // Detect working tree modifications
+              const oldChanged = prevSnapshotRef.current.status?.totalChanged || 0
+              const curChanged = data.status?.totalChanged || 0
+              if (oldChanged !== curChanged) {
+                setDirtyPulse(true)
+                setTimeout(() => setDirtyPulse(false), 1600)
+              }
+            }
+
+            prevSnapshotRef.current = data
             setSnapshot(data)
             setError(null)
             setLastUpdated(new Date())
@@ -154,7 +188,7 @@ window.__ModuleLoader__.load({
         return () => clearInterval(timer)
       }, [refresh, pollMs])
 
-      return { snapshot, loading, error, refresh, lastUpdated }
+      return { snapshot, loading, error, refresh, lastUpdated, newHashes, dirtyPulse }
     }
 
     // -------------------------------------------------------------------------
@@ -203,6 +237,7 @@ window.__ModuleLoader__.load({
           width: props.size || 13,
           height: props.size || 13,
           fill: 'currentColor',
+          className: props.spinning ? 'dsh-gg-spin' : '',
           style: props.style,
           'aria-hidden': 'true',
         },
@@ -256,7 +291,7 @@ window.__ModuleLoader__.load({
     }
 
     // -------------------------------------------------------------------------
-    // Component: GitDock (Conversation Composer Dock Item)
+    // Component: GitDock (Conversation Composer Dock Item with Pulse & Flyout)
     // -------------------------------------------------------------------------
 
     function GitDock(props) {
@@ -265,9 +300,10 @@ window.__ModuleLoader__.load({
         const sessionId = source.sessionId || ''
         const tr = makeTr(source.t, zh)
 
-        const { snapshot, loading, error, refresh } = useGitSnapshot(sessionId, 2000)
+        const { snapshot, loading, error, refresh, dirtyPulse } = useGitSnapshot(sessionId, 2000)
         const [flyoutOpen, setFlyoutOpen] = useState(false)
         const [copiedText, setCopiedText] = useState('')
+        const [isRefreshing, setIsRefreshing] = useState(false)
 
         const copyToClipboard = (text, label) => {
           if (navigator.clipboard) {
@@ -276,6 +312,11 @@ window.__ModuleLoader__.load({
               setTimeout(() => setCopiedText(''), 1500)
             })
           }
+        }
+
+        const handleManualRefresh = () => {
+          setIsRefreshing(true)
+          refresh().finally(() => setTimeout(() => setIsRefreshing(false), 500))
         }
 
         // Safe status values
@@ -311,7 +352,7 @@ window.__ModuleLoader__.load({
               {
                 type: 'button',
                 className: 'dsh-gg-dock-pill is-error',
-                onClick: () => refresh(),
+                onClick: handleManualRefresh,
                 title: `${error} (${tr('dock.refresh')})`,
               },
               h(GitBranchIcon, { size: 13, style: { color: '#f87171' } }),
@@ -330,7 +371,7 @@ window.__ModuleLoader__.load({
               {
                 type: 'button',
                 className: 'dsh-gg-dock-pill is-clean',
-                onClick: () => refresh(),
+                onClick: handleManualRefresh,
                 title: tr('graph.notGitRepo'),
               },
               h(GitBranchIcon, { size: 13, style: { opacity: 0.5 } }),
@@ -346,24 +387,24 @@ window.__ModuleLoader__.load({
             'button',
             {
               type: 'button',
-              className: `dsh-gg-dock-pill ${isDirty ? 'is-dirty' : 'is-clean'} ${flyoutOpen ? 'is-active' : ''}`,
+              className: `dsh-gg-dock-pill ${isDirty ? 'is-dirty' : 'is-clean'} ${flyoutOpen ? 'is-active' : ''} ${dirtyPulse ? 'has-pulse' : ''}`,
               onClick: () => setFlyoutOpen(!flyoutOpen),
               title: isDirty ? `Git: ${branch} (${changedCount} uncommitted)` : `Git: ${branch} (clean)`,
             },
             h(GitBranchIcon, { size: 13 }),
             h('span', { className: 'dsh-gg-dock-branch' }, branch),
             isDirty
-              ? h('span', { className: 'dsh-gg-dock-badge dirty' }, `● ${changedCount}`)
+              ? h('span', { className: `dsh-gg-dock-badge dirty ${dirtyPulse ? 'bounce' : ''}` }, `● ${changedCount}`)
               : h('span', { className: 'dsh-gg-dock-badge clean' }, '✓'),
             ahead > 0 && h('span', { className: 'dsh-gg-dock-ahead' }, `↑${ahead}`),
             behind > 0 && h('span', { className: 'dsh-gg-dock-behind' }, `↓${behind}`)
           ),
 
-          // Quick Flyout Popover
+          // Quick Flyout Popover with animated drop
           flyoutOpen &&
             h(
               'div',
-              { className: 'dsh-gg-flyout' },
+              { className: 'dsh-gg-flyout dsh-gg-animate-in' },
               h(
                 'div',
                 { className: 'dsh-gg-flyout-header' },
@@ -381,10 +422,10 @@ window.__ModuleLoader__.load({
                     {
                       type: 'button',
                       className: 'dsh-gg-icon-btn',
-                      onClick: () => refresh(),
+                      onClick: handleManualRefresh,
                       title: tr('dock.refresh'),
                     },
-                    h(RefreshIcon, { size: 12 })
+                    h(RefreshIcon, { size: 12, spinning: isRefreshing })
                   ),
                   h(
                     'button',
@@ -472,7 +513,7 @@ window.__ModuleLoader__.load({
     }
 
     // -------------------------------------------------------------------------
-    // Component: GitGraphView (Full Conversation View Tab)
+    // Component: GitGraphView (Full Conversation View Tab with Animations)
     // -------------------------------------------------------------------------
 
     function GitGraphView(props) {
@@ -483,10 +524,12 @@ window.__ModuleLoader__.load({
         const sessionId = source.sessionId || ''
         const tr = makeTr(source.t, zh)
 
-        const { snapshot, loading, error, refresh } = useGitSnapshot(sessionId, 2500)
+        const { snapshot, loading, error, refresh, newHashes, dirtyPulse } = useGitSnapshot(sessionId, 2500)
         const [searchQuery, setSearchQuery] = useState('')
         const [selectedNode, setSelectedNode] = useState(null)
+        const [hoveredNodeHash, setHoveredNodeHash] = useState(null)
         const [copyNotice, setCopyNotice] = useState('')
+        const [isManualRefreshing, setIsManualRefreshing] = useState(false)
 
         // View switch reuses conversation scrollport: normalize scrollTop to 0 on mount
         useEffect(() => {
@@ -503,6 +546,11 @@ window.__ModuleLoader__.load({
             cursor = cursor.parentElement
           }
         }, [])
+
+        const handleRefreshClick = () => {
+          setIsManualRefreshing(true)
+          refresh().finally(() => setTimeout(() => setIsManualRefreshing(false), 500))
+        }
 
         const copyText = (text) => {
           if (navigator.clipboard) {
@@ -532,7 +580,12 @@ window.__ModuleLoader__.load({
           return h(
             'div',
             { ref: rootRef, className: 'dsh-gg-container' },
-            h('div', { className: 'dsh-gg-view-loading' }, tr('graph.loading')),
+            h(
+              'div',
+              { className: 'dsh-gg-view-loading' },
+              h(GitCommitIcon, { size: 28, className: 'dsh-gg-pulse-aura', style: { marginBottom: 12, opacity: 0.6 } }),
+              h('div', null, tr('graph.loading'))
+            ),
             h('style', null, CSS_STYLES)
           )
         }
@@ -554,7 +607,7 @@ window.__ModuleLoader__.load({
                 {
                   type: 'button',
                   className: 'dsh-gg-btn primary',
-                  onClick: () => refresh(),
+                  onClick: handleRefreshClick,
                   style: { marginTop: 12, padding: '6px 16px' },
                 },
                 tr('graph.retry')
@@ -605,7 +658,7 @@ window.__ModuleLoader__.load({
         return h(
           'div',
           { ref: rootRef, className: 'dsh-gg-container' },
-          // Top Toolbar
+          // Top Toolbar with subtle blur
           h(
             'div',
             { className: 'dsh-gg-toolbar' },
@@ -616,7 +669,7 @@ window.__ModuleLoader__.load({
               h('span', { className: 'dsh-gg-title' }, tr('graph.title')),
               h('span', { className: 'dsh-gg-branch-chip' }, currentBranch),
               isDirty &&
-                h('span', { className: 'dsh-gg-dirty-chip' }, `${totalChanged} uncommitted`)
+                h('span', { className: `dsh-gg-dirty-chip ${dirtyPulse ? 'pulse' : ''}` }, `${totalChanged} uncommitted`)
             ),
             h(
               'div',
@@ -633,10 +686,10 @@ window.__ModuleLoader__.load({
                 {
                   type: 'button',
                   className: 'dsh-gg-btn icon',
-                  onClick: () => refresh(),
+                  onClick: handleRefreshClick,
                   title: tr('dock.refresh'),
                 },
-                h(RefreshIcon, { size: 14 })
+                h(RefreshIcon, { size: 14, spinning: isManualRefreshing })
               )
             )
           ),
@@ -659,88 +712,174 @@ window.__ModuleLoader__.load({
                     width: totalWidth,
                     height: totalHeight,
                   },
-                  // Render Connection Curves
-                  connections.map((conn, idx) =>
-                    h('path', {
-                      key: `conn-${idx}`,
-                      d: conn.path,
-                      stroke: conn.color || 'var(--dsw-alias-border-l1)',
-                      strokeWidth: conn.isMerge ? 1.5 : 2,
-                      strokeDasharray: conn.isMerge ? '3,2' : 'none',
-                      fill: 'none',
-                      opacity: 0.85,
-                    })
-                  ),
-                  // Render Node Points
-                  nodes.map((node) => {
+                  // Render Connection Curves with Dynamic Animations
+                  connections.map((conn, idx) => {
+                    const isHoverRelated =
+                      hoveredNodeHash &&
+                      (conn.fromHash === hoveredNodeHash || conn.toHash === hoveredNodeHash)
+                    const isMerge = conn.isMerge
+
+                    return h(
+                      'g',
+                      { key: `conn-group-${idx}` },
+                      // Base path
+                      h('path', {
+                        d: conn.path,
+                        stroke: conn.color || 'var(--dsw-alias-border-l1)',
+                        strokeWidth: isHoverRelated ? 3 : isMerge ? 2 : 2,
+                        strokeDasharray: isMerge ? '5,4' : 'none',
+                        className: `dsh-gg-conn-path ${isMerge ? 'is-merge-flow' : ''} ${isHoverRelated ? 'is-hover-highlight' : ''}`,
+                        fill: 'none',
+                        opacity: isHoverRelated ? 1 : hoveredNodeHash ? 0.35 : 0.85,
+                      }),
+                      // For merge connections: animated flowing dash particles
+                      isMerge &&
+                        h('path', {
+                          d: conn.path,
+                          stroke: '#fff',
+                          strokeWidth: 1.5,
+                          strokeDasharray: '4, 12',
+                          className: 'dsh-gg-merge-particle-stream',
+                          fill: 'none',
+                          opacity: 0.7,
+                        })
+                    )
+                  }),
+                  // Render Node Points with Rich State Animations
+                  nodes.map((node, nIdx) => {
                     const isSelected = selectedNode?.hash === node.hash
+                    const isHovered = hoveredNodeHash === node.hash
+                    const isNewlyAdded = newHashes.has(node.hash)
+                    const isWorking = node.isWorkingTree
+                    const isMerge = node.isMerge
+                    const isHead = node.isHead
+
                     return h(
                       'g',
                       {
                         key: `node-${node.hash}`,
-                        className: `dsh-gg-node-dot ${isSelected ? 'is-selected' : ''}`,
+                        className: `dsh-gg-node-dot ${isSelected ? 'is-selected' : ''} ${isHovered ? 'is-hovered' : ''} ${isNewlyAdded ? 'is-new' : ''}`,
                         onClick: () => setSelectedNode(node),
-                        style: { cursor: 'pointer' },
+                        onMouseEnter: () => setHoveredNodeHash(node.hash),
+                        onMouseLeave: () => setHoveredNodeHash(null),
+                        style: {
+                          cursor: 'pointer',
+                          animationDelay: `${Math.min(nIdx * 25, 400)}ms`,
+                        },
                       },
-                      node.isWorkingTree
+                      // 1. Working changes node: breathing aura wave
+                      isWorking &&
+                        h('circle', {
+                          cx: node.x,
+                          cy: node.y,
+                          r: 10,
+                          className: 'dsh-gg-aura-wave',
+                          fill: 'none',
+                          stroke: '#f59e0b',
+                          strokeWidth: 1.5,
+                        }),
+                      // 2. Working diamond or regular circle
+                      isWorking
                         ? h('polygon', {
-                            points: `${node.x},${node.y - 6} ${node.x + 6},${node.y} ${node.x},${node.y + 6} ${node.x - 6},${node.y}`,
+                            points: `${node.x},${node.y - 7} ${node.x + 7},${node.y} ${node.x},${node.y + 7} ${node.x - 7},${node.y}`,
+                            className: 'dsh-gg-diamond-working',
                             fill: node.color,
                             stroke: '#fff',
-                            strokeWidth: 1.5,
+                            strokeWidth: 1.8,
                           })
                         : h('circle', {
                             cx: node.x,
                             cy: node.y,
-                            r: node.isHead ? 6 : node.isMerge ? 5.5 : 4.5,
+                            r: isHead ? 6.5 : isMerge ? 6 : 4.5,
                             fill: node.color,
-                            stroke: node.isHead ? '#fff' : isSelected ? '#fff' : 'rgba(0,0,0,0.3)',
-                            strokeWidth: node.isHead ? 2 : 1,
+                            stroke: isHead || isSelected ? '#fff' : 'rgba(0,0,0,0.35)',
+                            strokeWidth: isHead ? 2.5 : isSelected ? 2 : 1,
+                            className: `dsh-gg-commit-circle ${isMerge ? 'is-merge-node' : ''}`,
                           }),
-                      node.isHead &&
+                      // 3. Merge Node: outer rotating halo ring
+                      isMerge &&
                         h('circle', {
                           cx: node.x,
                           cy: node.y,
-                          r: 9,
+                          r: 9.5,
                           fill: 'none',
                           stroke: node.color,
                           strokeWidth: 1.2,
-                          opacity: 0.6,
+                          strokeDasharray: '3, 2',
+                          className: 'dsh-gg-merge-ring',
+                        }),
+                      // 4. HEAD Node: halo outer ring
+                      isHead &&
+                        h('circle', {
+                          cx: node.x,
+                          cy: node.y,
+                          r: 11,
+                          fill: 'none',
+                          stroke: node.color,
+                          strokeWidth: 1.5,
+                          className: 'dsh-gg-head-halo',
+                        }),
+                      // 5. Newly added commit highlight wave
+                      isNewlyAdded &&
+                        h('circle', {
+                          cx: node.x,
+                          cy: node.y,
+                          r: 14,
+                          fill: 'none',
+                          stroke: '#34d399',
+                          strokeWidth: 2,
+                          className: 'dsh-gg-new-wave',
                         })
                     )
                   })
                 )
               ),
 
-              // Rows Overlay aligned with Y positions
+              // Rows Overlay aligned with Y positions (with subtle entry stagger)
               h(
                 'div',
                 { className: 'dsh-gg-rows-layer', style: { minHeight: totalHeight } },
-                nodes.map((node) => {
+                nodes.map((node, rIdx) => {
                   const isSelected = selectedNode?.hash === node.hash
+                  const isHovered = hoveredNodeHash === node.hash
+                  const isNewlyAdded = newHashes.has(node.hash)
+                  const isMerge = node.isMerge
+
                   return h(
                     'div',
                     {
                       key: `row-${node.hash}`,
-                      className: `dsh-gg-commit-row ${isSelected ? 'is-selected' : ''} ${node.isWorkingTree ? 'is-working' : ''}`,
-                      style: { top: node.y - 18, left: totalWidth },
+                      className: `dsh-gg-commit-row ${isSelected ? 'is-selected' : ''} ${isHovered ? 'is-hovered' : ''} ${node.isWorkingTree ? 'is-working' : ''} ${isNewlyAdded ? 'is-new-row' : ''}`,
+                      style: {
+                        top: node.y - 18,
+                        left: totalWidth,
+                        animationDelay: `${Math.min(rIdx * 20, 350)}ms`,
+                      },
                       onClick: () => setSelectedNode(node),
+                      onMouseEnter: () => setHoveredNodeHash(node.hash),
+                      onMouseLeave: () => setHoveredNodeHash(null),
                     },
-                    // Badges: HEAD, Branches, Tags
+                    // Newly Added Indicator Badge
+                    isNewlyAdded &&
+                      h('span', { className: 'dsh-gg-ref-badge new' }, tr('graph.newBadge')),
+                    // Merge Indicator Badge
+                    isMerge &&
+                      h('span', { className: 'dsh-gg-ref-badge merge' }, tr('graph.mergeBadge')),
+                    // Ref Badges: HEAD, Local Branches, Remotes, Tags
                     node.refs &&
-                      node.refs.map((ref, rIdx) =>
+                      node.refs.map((ref, rfIdx) =>
                         h(
                           'span',
                           {
-                            key: `ref-${rIdx}`,
+                            key: `ref-${rfIdx}`,
                             className: `dsh-gg-ref-badge ${ref.type}`,
                           },
                           ref.name
                         )
                       ),
-                    // Short Hash
+                    // Short Hash chip
                     h('span', { className: 'dsh-gg-hash' }, node.shortHash),
-                    // Subject
+                    // Subject message
                     h('span', { className: 'dsh-gg-subject', title: node.subject }, node.subject),
                     // Author & Time
                     h('span', { className: 'dsh-gg-author' }, node.author),
@@ -750,14 +889,14 @@ window.__ModuleLoader__.load({
               )
             ),
 
-            // Right: Detail Panel / Drawer
+            // Right: Detail Panel / Drawer with smooth slide-in
             h(
               'div',
               { className: 'dsh-gg-detail-drawer' },
               selectedNode
                 ? h(
                     'div',
-                    { className: 'dsh-gg-drawer-inner' },
+                    { className: 'dsh-gg-drawer-inner dsh-gg-drawer-animate' },
                     h(
                       'div',
                       { className: 'dsh-gg-drawer-header' },
@@ -780,7 +919,7 @@ window.__ModuleLoader__.load({
                     h(
                       'div',
                       { className: 'dsh-gg-drawer-body' },
-                      // Hash & Copy
+                      // Hash & Copy Tag
                       h(
                         'div',
                         { className: 'dsh-gg-meta-item' },
@@ -793,7 +932,7 @@ window.__ModuleLoader__.load({
                         )
                       ),
 
-                      // Subject
+                      // Subject Title
                       h(
                         'div',
                         { className: 'dsh-gg-meta-item full' },
@@ -822,7 +961,7 @@ window.__ModuleLoader__.load({
                         h(
                           'div',
                           { className: 'dsh-gg-meta-item' },
-                          h('span', { className: 'label' }, 'Parents:'),
+                          h('span', { className: 'label' }, tr('graph.parents')),
                           h(
                             'div',
                             { className: 'parents-wrap' },
@@ -832,7 +971,7 @@ window.__ModuleLoader__.load({
                           )
                         ),
 
-                      // Working tree files list
+                      // Working tree files list with color badges
                       selectedNode.isWorkingTree &&
                         status.files &&
                         h(
@@ -897,13 +1036,13 @@ window.__ModuleLoader__.load({
                 : h(
                     'div',
                     { className: 'dsh-gg-drawer-empty' },
-                    h(GitCommitIcon, { size: 32, style: { opacity: 0.3 } }),
+                    h(GitCommitIcon, { size: 36, style: { opacity: 0.3 } }),
                     h('p', null, 'Click on any commit or working change node to inspect details')
                   )
             )
           ),
 
-          // Scoped Stylesheet
+          // Scoped Stylesheet with Keyframe Animations
           h('style', null, CSS_STYLES)
         )
       } catch (err) {
@@ -930,25 +1069,88 @@ window.__ModuleLoader__.load({
     }
 
     // -------------------------------------------------------------------------
-    // Scoped CSS Styles (Derived from DSH Theme Tokens)
+    // Scoped CSS Styles (with Keyframes, Smooth Easings & Transitions)
     // -------------------------------------------------------------------------
     const CSS_STYLES = `
+      /* Keyframe Animations */
+      @keyframes dsh-gg-fade-in {
+        from { opacity: 0; transform: translateY(6px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes dsh-gg-node-enter {
+        from { opacity: 0; transform: scale(0.6); }
+        to { opacity: 1; transform: scale(1); }
+      }
+      @keyframes dsh-gg-row-enter {
+        from { opacity: 0; transform: translateX(8px); }
+        to { opacity: 1; transform: translateX(0); }
+      }
+      @keyframes dsh-gg-dash-flow {
+        from { stroke-dashoffset: 18; }
+        to { stroke-dashoffset: 0; }
+      }
+      @keyframes dsh-gg-aura-wave {
+        0% { r: 6px; opacity: 0.8; stroke-width: 2px; }
+        50% { r: 12px; opacity: 0.35; stroke-width: 1.5px; }
+        100% { r: 16px; opacity: 0; stroke-width: 1px; }
+      }
+      @keyframes dsh-gg-pulse-amber {
+        0%, 100% { filter: drop-shadow(0 0 2px rgba(245, 158, 11, 0.4)); }
+        50% { filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.85)); }
+      }
+      @keyframes dsh-gg-merge-ring {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+      @keyframes dsh-gg-bounce-number {
+        0% { transform: scale(1); }
+        40% { transform: scale(1.3); }
+        100% { transform: scale(1); }
+      }
+      @keyframes dsh-gg-spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+      @keyframes dsh-gg-flyout-in {
+        from { opacity: 0; transform: translateY(8px) scale(0.96); }
+        to { opacity: 1; transform: translateY(0) scale(1); }
+      }
+      @keyframes dsh-gg-drawer-in {
+        from { transform: translateX(18px); opacity: 0.8; }
+        to { transform: translateX(0); opacity: 1; }
+      }
+      @keyframes dsh-gg-new-glow {
+        0%, 100% { box-shadow: 0 0 4px rgba(52, 211, 153, 0.3); }
+        50% { box-shadow: 0 0 12px rgba(52, 211, 153, 0.7); }
+      }
+
+      .dsh-gg-spin { animation: dsh-gg-spin 0.8s linear infinite; }
+
+      /* Dock Styles */
       .dsh-gg-dock-wrap { position: relative; display: inline-flex; align-items: center; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
       .dsh-gg-dock-pill {
         display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px;
         border-radius: 13px; font-size: 12px; font-weight: 500; cursor: pointer;
         background: var(--dsw-alias-bg-layer-2, #262626); color: var(--dsw-alias-label-primary, #ededed);
-        border: 1px solid var(--dsw-alias-border-l2, #3a3a3a); transition: all 0.15s ease;
+        border: 1px solid var(--dsw-alias-border-l2, #3a3a3a);
+        transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
       }
       .dsh-gg-dock-pill:hover, .dsh-gg-dock-pill.is-active {
         background: var(--dsw-alias-interactive-bg-hover, #333);
         border-color: var(--dsw-alias-border-l1, #555);
+        transform: translateY(-1px);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+      }
+      .dsh-gg-dock-pill.has-pulse {
+        border-color: #f59e0b;
+        animation: dsh-gg-pulse-amber 1.2s ease-in-out infinite;
       }
       .dsh-gg-dock-pill.is-loading { opacity: 0.7; cursor: wait; }
       .dsh-gg-dock-pill.is-error { border-color: rgba(248, 113, 113, 0.4); color: #f87171; }
       .dsh-gg-dock-branch { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .dsh-gg-dock-badge { font-size: 11px; padding: 1px 5px; border-radius: 9px; }
+      .dsh-gg-dock-badge { font-size: 11px; padding: 1px 5px; border-radius: 9px; transition: transform 0.2s ease; }
       .dsh-gg-dock-badge.dirty { background: rgba(245, 158, 11, 0.2); color: #f59e0b; font-weight: 600; }
+      .dsh-gg-dock-badge.dirty.bounce { animation: dsh-gg-bounce-number 0.4s ease; }
       .dsh-gg-dock-badge.clean { color: #10b981; }
       .dsh-gg-dock-ahead { color: #38bdf8; font-size: 11px; font-weight: 600; }
       .dsh-gg-dock-behind { color: #f43f5e; font-size: 11px; font-weight: 600; }
@@ -957,9 +1159,11 @@ window.__ModuleLoader__.load({
         position: absolute; bottom: 32px; left: 0; width: 340px;
         background: var(--dsw-alias-bg-layer-1, #1e1e1e);
         border: 1px solid var(--dsw-alias-border-l1, #3a3a3a);
-        border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.45);
         z-index: 1000; overflow: hidden; display: flex; flex-direction: column;
       }
+      .dsh-gg-animate-in { animation: dsh-gg-flyout-in 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
       .dsh-gg-flyout-header {
         display: flex; align-items: center; justify-content: space-between;
         padding: 10px 12px; border-bottom: 1px solid var(--dsw-alias-border-l2, #333);
@@ -970,17 +1174,19 @@ window.__ModuleLoader__.load({
       .dsh-gg-icon-btn {
         background: transparent; border: none; cursor: pointer; color: var(--dsw-alias-label-secondary, #999);
         padding: 4px; border-radius: 4px; display: flex; align-items: center; justify-content: center;
+        transition: all 0.15s ease;
       }
       .dsh-gg-icon-btn:hover { background: var(--dsw-alias-interactive-bg-hover, #333); color: var(--dsw-alias-label-primary, #fff); }
       .dsh-gg-flyout-body { padding: 12px; font-size: 12px; display: flex; flex-direction: column; gap: 10px; }
       .dsh-gg-flyout-status-row { display: flex; align-items: center; justify-content: space-between; }
       .dsh-gg-status-label { color: var(--dsw-alias-label-secondary, #888); }
-      .dsh-gg-sha-tag { font-family: monospace; background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 4px; cursor: pointer; display: inline-flex; align-items: center; }
-      .dsh-gg-flyout-dirty-box { background: rgba(0,0,0,0.2); border-radius: 6px; padding: 8px; }
+      .dsh-gg-sha-tag { font-family: monospace; background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 4px; cursor: pointer; display: inline-flex; align-items: center; transition: background 0.15s ease; }
+      .dsh-gg-sha-tag:hover { background: rgba(255,255,255,0.12); }
+      .dsh-gg-flyout-dirty-box { background: rgba(0,0,0,0.22); border-radius: 6px; padding: 8px; border: 1px solid rgba(245, 158, 11, 0.2); }
       .dsh-gg-dirty-counts { display: flex; gap: 8px; font-size: 11px; margin-bottom: 6px; }
-      .dsh-gg-dirty-counts .staged { color: #10b981; }
-      .dsh-gg-dirty-counts .unstaged { color: #f59e0b; }
-      .dsh-gg-dirty-counts .untracked { color: #888; }
+      .dsh-gg-dirty-counts .staged { color: #10b981; font-weight: 500; }
+      .dsh-gg-dirty-counts .unstaged { color: #f59e0b; font-weight: 500; }
+      .dsh-gg-dirty-counts .untracked { color: #888; font-weight: 500; }
       .dsh-gg-file-list { list-style: none; margin: 0; padding: 0; max-height: 120px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
       .dsh-gg-file-item { display: flex; align-items: center; gap: 6px; font-size: 11px; font-family: monospace; }
       .dsh-gg-file-item .status-tag { padding: 1px 4px; border-radius: 3px; font-weight: bold; font-size: 10px; }
@@ -988,76 +1194,116 @@ window.__ModuleLoader__.load({
       .dsh-gg-file-item .status-tag.added { background: rgba(16, 185, 129, 0.2); color: #10b981; }
       .dsh-gg-file-item .status-tag.untracked { background: rgba(156, 163, 175, 0.2); color: #9ca3af; }
       .dsh-gg-file-item .file-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-      .dsh-gg-copied-notice { color: #10b981; font-size: 11px; text-align: center; }
+      .dsh-gg-copied-notice { color: #10b981; font-size: 11px; text-align: center; animation: dsh-gg-fade-in 0.2s ease; }
       .dsh-gg-flyout-footer { display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--dsw-alias-border-l2, #333); background: var(--dsw-alias-bg-layer-2, #242424); }
 
       /* Full View Styles */
       .dsh-gg-container { display: flex; flex-direction: column; height: 100%; width: 100%; min-height: 480px; background: var(--dsw-alias-bg-base, #121212); color: var(--dsw-alias-label-primary, #eee); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; position: relative; }
-      .dsh-gg-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--dsw-alias-border-l1, #2c2c2c); background: var(--dsw-alias-bg-layer-1, #1a1a1a); }
+      .dsh-gg-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--dsw-alias-border-l1, #2c2c2c); background: var(--dsw-alias-bg-layer-1, #1a1a1a); backdrop-filter: blur(12px); }
       .dsh-gg-toolbar-left { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; }
       .dsh-gg-title { font-weight: 600; font-size: 14px; }
-      .dsh-gg-branch-chip { font-size: 12px; padding: 2px 8px; border-radius: 12px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; font-weight: 500; }
-      .dsh-gg-dirty-chip { font-size: 11px; padding: 2px 8px; border-radius: 12px; background: rgba(245, 158, 11, 0.18); color: #f59e0b; font-weight: 500; }
+      .dsh-gg-branch-chip { font-size: 12px; padding: 2px 8px; border-radius: 12px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; font-weight: 500; border: 1px solid rgba(56, 189, 248, 0.3); }
+      .dsh-gg-dirty-chip { font-size: 11px; padding: 2px 8px; border-radius: 12px; background: rgba(245, 158, 11, 0.18); color: #f59e0b; font-weight: 500; border: 1px solid rgba(245, 158, 11, 0.3); transition: all 0.3s ease; }
+      .dsh-gg-dirty-chip.pulse { animation: dsh-gg-bounce-number 0.4s ease; border-color: #f59e0b; }
       .dsh-gg-toolbar-right { display: flex; align-items: center; gap: 8px; }
-      .dsh-gg-search-input { background: var(--dsw-alias-bg-layer-2, #262626); border: 1px solid var(--dsw-alias-border-l2, #3a3a3a); border-radius: 6px; padding: 5px 10px; font-size: 12px; color: #fff; width: 220px; outline: none; }
-      .dsh-gg-search-input:focus { border-color: var(--dsw-alias-brand-primary, #38bdf8); }
-      .dsh-gg-btn { padding: 4px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; border: 1px solid transparent; font-weight: 500; }
+      .dsh-gg-search-input { background: var(--dsw-alias-bg-layer-2, #262626); border: 1px solid var(--dsw-alias-border-l2, #3a3a3a); border-radius: 6px; padding: 5px 10px; font-size: 12px; color: #fff; width: 220px; outline: none; transition: border-color 0.2s ease, width 0.2s ease; }
+      .dsh-gg-search-input:focus { border-color: var(--dsw-alias-brand-primary, #38bdf8); width: 260px; }
+      .dsh-gg-btn { padding: 4px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; border: 1px solid transparent; font-weight: 500; transition: all 0.15s ease; }
       .dsh-gg-btn.primary { background: var(--dsw-alias-brand-primary, #2563eb); color: #fff; }
+      .dsh-gg-btn.primary:hover { opacity: 0.9; transform: translateY(-1px); }
       .dsh-gg-btn.secondary { background: var(--dsw-alias-bg-layer-2, #333); color: #ddd; border-color: var(--dsw-alias-border-l2, #444); }
+      .dsh-gg-btn.secondary:hover { background: var(--dsw-alias-interactive-bg-hover, #3e3e3e); color: #fff; }
       .dsh-gg-btn.icon { background: var(--dsw-alias-bg-layer-2, #262626); border: 1px solid var(--dsw-alias-border-l2, #3a3a3a); color: #aaa; display: flex; align-items: center; justify-content: center; padding: 5px; }
+      .dsh-gg-btn.icon:hover { color: #fff; border-color: var(--dsw-alias-border-l1, #555); }
 
       .dsh-gg-main { display: flex; flex: 1; overflow: hidden; position: relative; min-height: 400px; }
       .dsh-gg-graph-area { flex: 1; overflow: auto; position: relative; background: var(--dsw-alias-bg-base, #141414); }
       .dsh-gg-svg-wrap { position: absolute; top: 0; left: 0; z-index: 1; pointer-events: none; }
       .dsh-gg-svg-layer { display: block; overflow: visible; }
-      .dsh-gg-node-dot { pointer-events: auto; }
-      .dsh-gg-node-dot:hover circle { stroke: #fff; stroke-width: 2.5; }
 
+      /* SVG Node & Path Interactive Animations */
+      .dsh-gg-conn-path { transition: stroke-width 0.2s ease, opacity 0.2s ease; }
+      .dsh-gg-conn-path.is-merge-flow { stroke-dasharray: 5, 4; }
+      .dsh-gg-conn-path.is-hover-highlight { filter: drop-shadow(0 0 4px currentColor); }
+      .dsh-gg-merge-particle-stream { animation: dsh-gg-dash-flow 1.2s linear infinite; pointer-events: none; }
+
+      .dsh-gg-node-dot { pointer-events: auto; transform-origin: center; animation: dsh-gg-node-enter 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) backwards; }
+      .dsh-gg-node-dot:hover .dsh-gg-commit-circle { transform: scale(1.3); stroke: #fff; stroke-width: 2.5; filter: drop-shadow(0 0 6px currentColor); }
+      .dsh-gg-commit-circle { transition: transform 0.2s ease, stroke-width 0.2s ease; transform-origin: center; }
+      .dsh-gg-aura-wave { animation: dsh-gg-aura-wave 2s cubic-bezier(0.25, 1, 0.5, 1) infinite; }
+      .dsh-gg-diamond-working { animation: dsh-gg-pulse-amber 2.5s ease-in-out infinite; }
+      .dsh-gg-merge-ring { animation: dsh-gg-merge-ring 8s linear infinite; transform-origin: center; }
+      .dsh-gg-head-halo { animation: dsh-gg-pulse-amber 3s ease-in-out infinite; }
+      .dsh-gg-new-wave { animation: dsh-gg-aura-wave 1.5s ease-out 3; stroke: #34d399; }
+
+      /* Commit Rows Layer */
       .dsh-gg-rows-layer { position: absolute; top: 0; right: 0; z-index: 2; pointer-events: auto; }
       .dsh-gg-commit-row {
         position: absolute; height: 36px; display: flex; align-items: center; gap: 8px;
-        padding-left: 12px; padding-right: 16px; border-radius: 4px; cursor: pointer;
-        font-size: 12px; white-space: nowrap; right: 0; transition: background 0.1s ease;
+        padding-left: 12px; padding-right: 16px; border-radius: 5px; cursor: pointer;
+        font-size: 12px; white-space: nowrap; right: 0;
+        transition: background 0.18s ease, transform 0.18s ease, border-color 0.18s ease;
+        animation: dsh-gg-row-enter 0.25s cubic-bezier(0.16, 1, 0.3, 1) backwards;
       }
-      .dsh-gg-commit-row:hover { background: rgba(255,255,255,0.04); }
-      .dsh-gg-commit-row.is-selected { background: rgba(56, 189, 248, 0.12); border-left: 2px solid #38bdf8; }
+      .dsh-gg-commit-row:hover, .dsh-gg-commit-row.is-hovered {
+        background: rgba(255, 255, 255, 0.05);
+        transform: translateX(-2px);
+      }
+      .dsh-gg-commit-row.is-selected {
+        background: rgba(56, 189, 248, 0.14);
+        border-left: 2px solid #38bdf8;
+      }
       .dsh-gg-commit-row.is-working { font-style: italic; color: #f59e0b; font-weight: 500; }
-      .dsh-gg-ref-badge { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 4px; font-family: monospace; }
+      .dsh-gg-commit-row.is-new-row {
+        background: rgba(52, 211, 153, 0.1);
+        border-left: 2px solid #34d399;
+        animation: dsh-gg-new-glow 2s ease infinite;
+      }
+
+      /* Ref Badges */
+      .dsh-gg-ref-badge { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 4px; font-family: monospace; letter-spacing: 0.3px; transition: all 0.15s ease; }
       .dsh-gg-ref-badge.head { background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.4); }
+      .dsh-gg-ref-badge.merge { background: linear-gradient(135deg, rgba(168, 85, 247, 0.25), rgba(236, 72, 153, 0.25)); color: #f472b6; border: 1px solid rgba(244, 114, 182, 0.4); }
+      .dsh-gg-ref-badge.new { background: rgba(52, 211, 153, 0.25); color: #34d399; border: 1px solid rgba(52, 211, 153, 0.45); animation: dsh-gg-bounce-number 0.5s ease; }
       .dsh-gg-ref-badge.branch { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); }
       .dsh-gg-ref-badge.remote { background: rgba(168, 85, 247, 0.15); color: #a855f7; border: 1px solid rgba(168, 85, 247, 0.3); }
       .dsh-gg-ref-badge.tag { background: rgba(234, 179, 8, 0.15); color: #eab308; border: 1px solid rgba(234, 179, 8, 0.3); }
-      .dsh-gg-hash { font-family: monospace; color: var(--dsw-alias-label-secondary, #777); font-size: 11px; }
+
+      .dsh-gg-hash { font-family: monospace; color: var(--dsw-alias-label-secondary, #777); font-size: 11px; background: rgba(255,255,255,0.04); padding: 1px 4px; border-radius: 3px; }
       .dsh-gg-subject { color: var(--dsw-alias-label-primary, #ddd); max-width: 380px; overflow: hidden; text-overflow: ellipsis; }
       .dsh-gg-author { color: var(--dsw-alias-label-secondary, #888); font-size: 11px; margin-left: auto; padding-left: 12px; }
       .dsh-gg-time { color: var(--dsw-alias-label-tertiary, #666); font-size: 11px; min-width: 60px; text-align: right; }
 
-      .dsh-gg-detail-drawer { width: 320px; border-left: 1px solid var(--dsw-alias-border-l1, #2c2c2c); background: var(--dsw-alias-bg-layer-1, #181818); display: flex; flex-direction: column; overflow-y: auto; }
+      /* Details Drawer */
+      .dsh-gg-detail-drawer { width: 330px; border-left: 1px solid var(--dsw-alias-border-l1, #2c2c2c); background: var(--dsw-alias-bg-layer-1, #181818); display: flex; flex-direction: column; overflow-y: auto; }
       .dsh-gg-drawer-inner { display: flex; flex-direction: column; height: 100%; }
+      .dsh-gg-drawer-animate { animation: dsh-gg-drawer-in 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
       .dsh-gg-drawer-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--dsw-alias-border-l2, #2c2c2c); }
       .dsh-gg-drawer-header h4 { margin: 0; font-size: 13px; font-weight: 600; }
       .dsh-gg-drawer-body { padding: 14px; display: flex; flex-direction: column; gap: 12px; flex: 1; font-size: 12px; }
       .dsh-gg-meta-item { display: flex; gap: 8px; font-size: 12px; }
       .dsh-gg-meta-item .label { color: var(--dsw-alias-label-secondary, #888); width: 60px; flex-shrink: 0; }
       .dsh-gg-meta-item .val { color: var(--dsw-alias-label-primary, #eee); }
-      .dsh-gg-meta-item .sha { font-family: monospace; background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 4px; cursor: pointer; display: inline-flex; align-items: center; word-break: break-all; }
+      .dsh-gg-meta-item .sha { font-family: monospace; background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 4px; cursor: pointer; display: inline-flex; align-items: center; word-break: break-all; transition: background 0.15s ease; }
+      .dsh-gg-meta-item .sha:hover { background: rgba(255,255,255,0.12); color: #38bdf8; }
       .dsh-gg-meta-item.full .subject { font-size: 13px; font-weight: 500; color: #fff; line-height: 1.4; }
       .parents-wrap { display: flex; gap: 6px; flex-wrap: wrap; }
-      .parent-sha { font-family: monospace; background: rgba(255,255,255,0.08); padding: 1px 4px; border-radius: 3px; cursor: pointer; }
+      .parent-sha { font-family: monospace; background: rgba(255,255,255,0.08); padding: 1px 4px; border-radius: 3px; cursor: pointer; transition: background 0.15s ease; }
+      .parent-sha:hover { background: rgba(56, 189, 248, 0.2); color: #38bdf8; }
       .dsh-gg-files-box { margin-top: 6px; border-top: 1px solid var(--dsw-alias-border-l2, #333); padding-top: 8px; }
       .dsh-gg-files-box h5 { margin: 0 0 8px 0; font-size: 12px; }
       .dsh-gg-files-scroll { max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
       .dsh-gg-file-row { display: flex; align-items: center; gap: 6px; font-size: 11px; font-family: monospace; }
       .dsh-gg-file-row .tag { font-weight: bold; padding: 1px 4px; border-radius: 3px; }
-      .dsh-gg-file-row .tag.modified { color: #f59e0b; }
-      .dsh-gg-file-row .tag.added { color: #10b981; }
-      .dsh-gg-file-row .tag.deleted { color: #ef4444; }
-      .dsh-gg-file-row .tag.untracked { color: #9ca3af; }
+      .dsh-gg-file-row .tag.modified { color: #f59e0b; background: rgba(245, 158, 11, 0.15); }
+      .dsh-gg-file-row .tag.added { color: #10b981; background: rgba(16, 185, 129, 0.15); }
+      .dsh-gg-file-row .tag.deleted { color: #ef4444; background: rgba(239, 68, 68, 0.15); }
+      .dsh-gg-file-row .tag.untracked { color: #9ca3af; background: rgba(156, 163, 175, 0.15); }
       .dsh-gg-file-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-      .dsh-gg-notice { color: #10b981; font-size: 11px; text-align: center; }
+      .dsh-gg-notice { color: #10b981; font-size: 11px; text-align: center; animation: dsh-gg-fade-in 0.2s ease; }
       .dsh-gg-drawer-actions { padding: 12px; border-top: 1px solid var(--dsw-alias-border-l2, #2c2c2c); display: flex; gap: 6px; }
       .dsh-gg-drawer-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: #666; font-size: 12px; padding: 20px; text-align: center; }
-      .dsh-gg-view-loading { display: flex; align-items: center; justify-content: center; height: 320px; color: #888; font-size: 13px; }
+      .dsh-gg-view-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 320px; color: #888; font-size: 13px; }
       .dsh-gg-empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 360px; color: #777; gap: 10px; padding: 24px; text-align: center; }
       .dsh-gg-empty-state.is-error h3 { color: #f87171; }
     `
