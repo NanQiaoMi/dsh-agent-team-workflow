@@ -1,12 +1,13 @@
 /**
- * @local/dsh-git-graph - Client UI Plugin (Enhanced Animation & Visuals)
+ * @local/dsh-git-graph - Client UI Plugin (Enhanced Animation & Interactive Visuals)
  *
  * Registers:
- * 1. `conversation.input.dock` -> Interactive Git Status Icon, Pulse Badge & Quick Popover
+ * 1. `conversation.input.dock` -> Interactive Git Status Icon, Pulse Badge, Mini-Timeline & Flyout
  * 2. `conversation.view` -> Full-fidelity Interactive Git Tree DAG Graph View with:
  *    - 新增 (New Commits / Added files): Staggered entry, draw-in lines, green glow.
  *    - 修改 (Modifications / Working Changes): Amber breathing aura, reactive count pulse.
- *    - 合并 (Merge Commits / Convergences): Animated flowing dash stream, double-ring nodes.
+ *    - 合并 (Merge Commits / Convergences): Animated flowing dash stream, double-ring nodes, hover lineage.
+ *    - 视图增强: 紧凑/标准密度切换、多维度分支与工作区筛选、悬浮卡片、分组变更折叠、一键指令抽屉。
  *
  * Zero external require (strictly only `require('react')`).
  * Uses DSH host theme tokens (`--dsw-alias-*`) and self-contained styles.
@@ -29,7 +30,7 @@ window.__ModuleLoader__.load({
     const DEFAULT_POLL_MS = 2000
 
     // -------------------------------------------------------------------------
-    // Localization Dictionaries
+    // Localization Dictionaries (Strict 100% Key Parity)
     // -------------------------------------------------------------------------
     const zh = {
       'view.label': 'Git 树图',
@@ -45,6 +46,7 @@ window.__ModuleLoader__.load({
       'dock.loading': '读取中...',
       'dock.offline': 'Git 离线',
       'dock.notGit': '未初始化',
+      'dock.recentCommits': '最近提交历史',
       'graph.title': 'Git 提交关系与分支树',
       'graph.searchPlaceholder': '搜索提交信息、SHA、作者或分支...',
       'graph.uncommitted': '工作区未提交改动',
@@ -71,6 +73,13 @@ window.__ModuleLoader__.load({
       'graph.retry': '重试连接',
       'graph.connErrorTitle': 'Git 树图服务连接中或暂未就绪',
       'graph.connErrorHint': '正在尝试与 Host 数据路由建立通信。若刚安装插件，可点击重试或重启 DSH Desktop。',
+      'graph.filterAll': '全部提交',
+      'graph.filterBranch': '当前分支',
+      'graph.filterDirty': '仅工作区',
+      'graph.densityNormal': '标准视图',
+      'graph.densityCompact': '紧凑视图',
+      'graph.recentCommits': '最近提交',
+      'graph.copyPath': '复制路径',
     }
 
     const en = {
@@ -87,6 +96,7 @@ window.__ModuleLoader__.load({
       'dock.loading': 'Loading...',
       'dock.offline': 'Git Offline',
       'dock.notGit': 'Not a repo',
+      'dock.recentCommits': 'Recent Commit History',
       'graph.title': 'Git Commit DAG & Branch Tree',
       'graph.searchPlaceholder': 'Search message, SHA, author, branch...',
       'graph.uncommitted': 'Uncommitted Working Changes',
@@ -113,6 +123,13 @@ window.__ModuleLoader__.load({
       'graph.retry': 'Retry Connection',
       'graph.connErrorTitle': 'Git Graph service connecting or not yet ready',
       'graph.connErrorHint': 'Connecting to Host snapshot route. If newly installed, click Retry or restart DSH.',
+      'graph.filterAll': 'All Commits',
+      'graph.filterBranch': 'Current Branch',
+      'graph.filterDirty': 'Working Changes',
+      'graph.densityNormal': 'Normal View',
+      'graph.densityCompact': 'Compact View',
+      'graph.recentCommits': 'Recent Commits',
+      'graph.copyPath': 'Copy Path',
     }
 
     // -------------------------------------------------------------------------
@@ -131,7 +148,7 @@ window.__ModuleLoader__.load({
 
       const refresh = useCallback(async () => {
         try {
-          const url = `${SNAPSHOT_PATH}?session=${encodeURIComponent(sessionId || '')}&limit=60`
+          const url = `${SNAPSHOT_PATH}?session=${encodeURIComponent(sessionId || '')}&limit=80`
           const res = await fetch(url, {
             credentials: 'same-origin',
             headers: { accept: 'application/json' },
@@ -204,6 +221,7 @@ window.__ModuleLoader__.load({
           height: props.size || 14,
           fill: 'currentColor',
           style: props.style,
+          className: props.className,
           'aria-hidden': 'true',
         },
         h('path', {
@@ -221,6 +239,7 @@ window.__ModuleLoader__.load({
           height: props.size || 14,
           fill: 'currentColor',
           style: props.style,
+          className: props.className,
           'aria-hidden': 'true',
         },
         h('path', {
@@ -256,6 +275,7 @@ window.__ModuleLoader__.load({
           height: props.size || 13,
           fill: 'currentColor',
           style: props.style,
+          className: props.className,
           'aria-hidden': 'true',
         },
         h('path', {
@@ -263,6 +283,42 @@ window.__ModuleLoader__.load({
         }),
         h('path', {
           d: 'M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z',
+        })
+      )
+    }
+
+    function ChevronDownIcon(props) {
+      return h(
+        'svg',
+        {
+          viewBox: '0 0 16 16',
+          width: props.size || 12,
+          height: props.size || 12,
+          fill: 'currentColor',
+          style: props.style,
+          className: props.className,
+          'aria-hidden': 'true',
+        },
+        h('path', {
+          d: 'M4.427 6.427l3.396 3.396a.25.25 0 00.354 0l3.396-3.396A.25.25 0 0011.396 6H4.604a.25.25 0 00-.177.427z',
+        })
+      )
+    }
+
+    function LayoutDensityIcon(props) {
+      return h(
+        'svg',
+        {
+          viewBox: '0 0 16 16',
+          width: props.size || 13,
+          height: props.size || 13,
+          fill: 'currentColor',
+          style: props.style,
+          className: props.className,
+          'aria-hidden': 'true',
+        },
+        h('path', {
+          d: 'M1.5 3.25a.75.75 0 01.75-.75h11.5a.75.75 0 010 1.5H2.25a.75.75 0 01-.75-.75zm0 4.75a.75.75 0 01.75-.75h11.5a.75.75 0 010 1.5H2.25A.75.75 0 011.5 8zm0 4.75a.75.75 0 01.75-.75h11.5a.75.75 0 010 1.5H2.25a.75.75 0 01-.75-.75z',
         })
       )
     }
@@ -328,6 +384,12 @@ window.__ModuleLoader__.load({
         const ahead = status.ahead || 0
         const behind = status.behind || 0
 
+        // Extract recent commits (top 3, non-working tree)
+        const recentCommits = useMemo(() => {
+          if (!snapshot?.graph?.nodes) return []
+          return snapshot.graph.nodes.filter((n) => !n.isWorkingTree).slice(0, 3)
+        }, [snapshot])
+
         // Loading state
         if (loading && !snapshot) {
           return h(
@@ -391,7 +453,7 @@ window.__ModuleLoader__.load({
               onClick: () => setFlyoutOpen(!flyoutOpen),
               title: isDirty ? `Git: ${branch} (${changedCount} uncommitted)` : `Git: ${branch} (clean)`,
             },
-            h(GitBranchIcon, { size: 13 }),
+            h(GitBranchIcon, { size: 13, className: 'dsh-gg-dock-icon-rock' }),
             h('span', { className: 'dsh-gg-dock-branch' }, branch),
             isDirty
               ? h('span', { className: `dsh-gg-dock-badge dirty ${dirtyPulse ? 'bounce' : ''}` }, `● ${changedCount}`)
@@ -400,7 +462,7 @@ window.__ModuleLoader__.load({
             behind > 0 && h('span', { className: 'dsh-gg-dock-behind' }, `↓${behind}`)
           ),
 
-          // Quick Flyout Popover with animated drop
+          // Quick Flyout Popover with animated drop and mini timeline
           flyoutOpen &&
             h(
               'div',
@@ -411,8 +473,9 @@ window.__ModuleLoader__.load({
                 h(
                   'div',
                   { className: 'dsh-gg-flyout-title' },
-                  h(GitBranchIcon, { size: 14 }),
-                  h('strong', null, branch)
+                  h(GitBranchIcon, { size: 14, style: { color: '#38bdf8' } }),
+                  h('strong', null, branch),
+                  isDirty && h('span', { className: 'dsh-gg-dirty-chip mini' }, `${changedCount} uncommitted`)
                 ),
                 h(
                   'div',
@@ -442,18 +505,24 @@ window.__ModuleLoader__.load({
               h(
                 'div',
                 { className: 'dsh-gg-flyout-body' },
+                // HEAD Status Row
                 h(
                   'div',
                   { className: 'dsh-gg-flyout-status-row' },
-                  h('span', { className: 'dsh-gg-status-label' }, 'HEAD Commit:'),
+                  h('span', { className: 'dsh-gg-status-label' }, 'HEAD:'),
                   h(
                     'span',
-                    { className: 'dsh-gg-sha-tag', onClick: () => copyToClipboard(status.headOid || '', 'sha') },
+                    {
+                      className: 'dsh-gg-sha-tag',
+                      onClick: () => copyToClipboard(status.headOid || '', 'sha'),
+                      title: 'Click to copy SHA',
+                    },
                     status.headOid ? status.headOid.slice(0, 7) : 'none',
                     h(CopyIcon, { size: 11, style: { marginLeft: 4 } })
                   )
                 ),
 
+                // Uncommitted changes box
                 isDirty &&
                   h(
                     'div',
@@ -468,12 +537,42 @@ window.__ModuleLoader__.load({
                     h(
                       'ul',
                       { className: 'dsh-gg-file-list' },
-                      (status.files || []).slice(0, 6).map((f) =>
+                      (status.files || []).slice(0, 5).map((f) =>
                         h(
                           'li',
                           { key: f.path, className: 'dsh-gg-file-item' },
                           h('span', { className: `status-tag ${f.status}` }, (f.xy || '..').trim()),
                           h('span', { className: 'file-path', title: f.path }, f.path)
+                        )
+                      )
+                    )
+                  ),
+
+                // Recent Commits Mini Timeline
+                recentCommits.length > 0 &&
+                  h(
+                    'div',
+                    { className: 'dsh-gg-mini-timeline' },
+                    h('div', { className: 'dsh-gg-mini-timeline-title' }, tr('dock.recentCommits')),
+                    h(
+                      'div',
+                      { className: 'dsh-gg-mini-timeline-list' },
+                      recentCommits.map((c, i) =>
+                        h(
+                          'div',
+                          {
+                            key: c.hash,
+                            className: 'dsh-gg-mini-item',
+                            onClick: () => copyToClipboard(c.hash, 'sha'),
+                            title: `${c.subject} (${c.hash})\nClick to copy SHA`,
+                          },
+                          h('span', {
+                            className: 'dsh-gg-mini-dot',
+                            style: { background: c.color || '#38bdf8' },
+                          }),
+                          h('span', { className: 'dsh-gg-mini-sha' }, c.shortHash),
+                          h('span', { className: 'dsh-gg-mini-subj' }, c.subject),
+                          h('span', { className: 'dsh-gg-mini-time' }, c.relativeTime)
                         )
                       )
                     )
@@ -489,7 +588,7 @@ window.__ModuleLoader__.load({
                   'button',
                   {
                     type: 'button',
-                    className: 'dsh-gg-btn secondary',
+                    className: 'dsh-gg-btn secondary mini',
                     onClick: () => copyToClipboard(branch, 'branch'),
                   },
                   tr('dock.copyBranch')
@@ -498,8 +597,8 @@ window.__ModuleLoader__.load({
                   'button',
                   {
                     type: 'button',
-                    className: 'dsh-gg-btn secondary',
-                    onClick: () => copyToClipboard(`git diff`, 'diff'),
+                    className: 'dsh-gg-btn secondary mini',
+                    onClick: () => copyToClipboard('git diff', 'diff'),
                   },
                   tr('graph.copyDiffCmd')
                 )
@@ -513,7 +612,7 @@ window.__ModuleLoader__.load({
     }
 
     // -------------------------------------------------------------------------
-    // Component: GitGraphView (Full Conversation View Tab with Animations)
+    // Component: GitGraphView (Full Conversation View Tab with Rich Visuals)
     // -------------------------------------------------------------------------
 
     function GitGraphView(props) {
@@ -530,6 +629,9 @@ window.__ModuleLoader__.load({
         const [hoveredNodeHash, setHoveredNodeHash] = useState(null)
         const [copyNotice, setCopyNotice] = useState('')
         const [isManualRefreshing, setIsManualRefreshing] = useState(false)
+        const [filterMode, setFilterMode] = useState('all') // 'all' | 'branch' | 'dirty'
+        const [density, setDensity] = useState('normal') // 'normal' | 'compact'
+        const [expandedGroups, setExpandedGroups] = useState({ staged: true, unstaged: true, untracked: true })
 
         // View switch reuses conversation scrollport: normalize scrollTop to 0 on mount
         useEffect(() => {
@@ -561,19 +663,46 @@ window.__ModuleLoader__.load({
           }
         }
 
-        // Filter nodes by query
+        const toggleGroup = (key) => {
+          setExpandedGroups((prev) => ({ ...prev, [key]: !prev[key] }))
+        }
+
+        // Current branch and status
+        const status = snapshot?.status || {}
+        const currentBranch = status.headBranch || 'main'
+
+        // Filter nodes by mode & search query
         const filteredNodes = useMemo(() => {
           if (!snapshot?.graph?.nodes) return []
-          if (!searchQuery.trim()) return snapshot.graph.nodes
-          const q = searchQuery.toLowerCase()
-          return snapshot.graph.nodes.filter(
-            (n) =>
-              (n.subject && n.subject.toLowerCase().includes(q)) ||
-              (n.hash && n.hash.toLowerCase().includes(q)) ||
-              (n.author && n.author.toLowerCase().includes(q)) ||
-              (n.refs && n.refs.some((r) => r.name && r.name.toLowerCase().includes(q)))
-          )
-        }, [snapshot, searchQuery])
+          let list = snapshot.graph.nodes
+
+          // Filter by Mode
+          if (filterMode === 'branch') {
+            list = list.filter(
+              (n) =>
+                n.isWorkingTree ||
+                n.isHead ||
+                (n.refs && n.refs.some((r) => r.name === currentBranch || r.name === `origin/${currentBranch}`)) ||
+                n.lane === 0
+            )
+          } else if (filterMode === 'dirty') {
+            list = list.filter((n) => n.isWorkingTree || n.isHead)
+          }
+
+          // Search query filter
+          if (searchQuery.trim()) {
+            const q = searchQuery.toLowerCase()
+            list = list.filter(
+              (n) =>
+                (n.subject && n.subject.toLowerCase().includes(q)) ||
+                (n.hash && n.hash.toLowerCase().includes(q)) ||
+                (n.author && n.author.toLowerCase().includes(q)) ||
+                (n.refs && n.refs.some((r) => r.name && r.name.toLowerCase().includes(q)))
+            )
+          }
+
+          return list
+        }, [snapshot, filterMode, searchQuery, currentBranch])
 
         // 1. Loading State
         if (loading && !snapshot) {
@@ -583,7 +712,7 @@ window.__ModuleLoader__.load({
             h(
               'div',
               { className: 'dsh-gg-view-loading' },
-              h(GitCommitIcon, { size: 28, className: 'dsh-gg-pulse-aura', style: { marginBottom: 12, opacity: 0.6 } }),
+              h(GitCommitIcon, { size: 28, className: 'dsh-gg-spin-slow', style: { marginBottom: 12, opacity: 0.6 } }),
               h('div', null, tr('graph.loading'))
             ),
             h('style', null, CSS_STYLES)
@@ -646,34 +775,84 @@ window.__ModuleLoader__.load({
         }
 
         // Safe status and graph attributes
-        const status = snapshot.status || {}
         const nodes = filteredNodes || []
         const connections = snapshot.graph?.connections || []
         const totalWidth = Math.max(snapshot.graph?.totalWidth || 120, 160)
         const totalHeight = snapshot.graph?.totalHeight || (nodes.length + 1) * 40
         const isDirty = Boolean(status.isDirty)
         const totalChanged = status.totalChanged || 0
-        const currentBranch = status.headBranch || 'detached'
+
+        // Density scaling factor
+        const isCompact = density === 'compact'
+        const scaleY = isCompact ? 0.72 : 1.0
+        const rowHeight = isCompact ? 26 : 36
+
+        // Hovered node details for quick tooltip card
+        const hoveredNode = hoveredNodeHash
+          ? nodes.find((n) => n.hash === hoveredNodeHash)
+          : null
+
+        // Group files for working changes drawer
+        const files = status.files || []
+        const stagedFiles = files.filter((f) => f.staged || (f.xy && f.xy[0] && f.xy[0] !== ' ' && f.xy[0] !== '?'))
+        const unstagedFiles = files.filter((f) => !f.staged && f.xy && f.xy[1] && f.xy[1] !== ' ' && f.xy[1] !== '?')
+        const untrackedFiles = files.filter((f) => f.status === 'untracked' || f.xy === '??')
 
         return h(
           'div',
           { ref: rootRef, className: 'dsh-gg-container' },
-          // Top Toolbar with subtle blur
+          // Top Toolbar with filter pills and density switcher
           h(
             'div',
             { className: 'dsh-gg-toolbar' },
             h(
               'div',
               { className: 'dsh-gg-toolbar-left' },
-              h(GitBranchIcon, { size: 16 }),
+              h(GitBranchIcon, { size: 16, style: { color: '#38bdf8' } }),
               h('span', { className: 'dsh-gg-title' }, tr('graph.title')),
               h('span', { className: 'dsh-gg-branch-chip' }, currentBranch),
               isDirty &&
-                h('span', { className: `dsh-gg-dirty-chip ${dirtyPulse ? 'pulse' : ''}` }, `${totalChanged} uncommitted`)
+                h('span', { className: `dsh-gg-dirty-chip ${dirtyPulse ? 'pulse' : ''}` }, `${totalChanged} uncommitted`),
+
+              // Filter Tabs (All / Current Branch / Working)
+              h(
+                'div',
+                { className: 'dsh-gg-filter-tabs' },
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: `dsh-gg-filter-tab ${filterMode === 'all' ? 'active' : ''}`,
+                    onClick: () => setFilterMode('all'),
+                  },
+                  tr('graph.filterAll')
+                ),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: `dsh-gg-filter-tab ${filterMode === 'branch' ? 'active' : ''}`,
+                    onClick: () => setFilterMode('branch'),
+                  },
+                  tr('graph.filterBranch')
+                ),
+                isDirty &&
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: `dsh-gg-filter-tab ${filterMode === 'dirty' ? 'active' : ''}`,
+                      onClick: () => setFilterMode('dirty'),
+                    },
+                    tr('graph.filterDirty')
+                  )
+              )
             ),
+
             h(
               'div',
               { className: 'dsh-gg-toolbar-right' },
+              // Search input
               h('input', {
                 type: 'text',
                 className: 'dsh-gg-search-input',
@@ -681,6 +860,20 @@ window.__ModuleLoader__.load({
                 value: searchQuery,
                 onChange: (e) => setSearchQuery(e.target.value),
               }),
+
+              // Density Switcher
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: `dsh-gg-btn icon ${isCompact ? 'active' : ''}`,
+                  onClick: () => setDensity(isCompact ? 'normal' : 'compact'),
+                  title: isCompact ? tr('graph.densityNormal') : tr('graph.densityCompact'),
+                },
+                h(LayoutDensityIcon, { size: 14 })
+              ),
+
+              // Manual Refresh button
               h(
                 'button',
                 {
@@ -704,141 +897,171 @@ window.__ModuleLoader__.load({
               { className: 'dsh-gg-graph-area' },
               h(
                 'div',
-                { className: 'dsh-gg-svg-wrap', style: { width: totalWidth, minHeight: totalHeight } },
+                { className: 'dsh-gg-svg-wrap', style: { width: totalWidth, minHeight: totalHeight * scaleY } },
                 h(
                   'svg',
                   {
                     className: 'dsh-gg-svg-layer',
                     width: totalWidth,
-                    height: totalHeight,
+                    height: totalHeight * scaleY,
                   },
-                  // Render Connection Curves with Dynamic Animations
-                  connections.map((conn, idx) => {
-                    const isHoverRelated =
-                      hoveredNodeHash &&
-                      (conn.fromHash === hoveredNodeHash || conn.toHash === hoveredNodeHash)
-                    const isMerge = conn.isMerge
+                  // Gradients and glow filters
+                  h(
+                    'defs',
+                    null,
+                    h(
+                      'linearGradient',
+                      { id: 'dsh-gg-merge-grad', x1: '0%', y1: '0%', x2: '100%', y2: '100%' },
+                      h('stop', { offset: '0%', stopColor: '#c084fc' }),
+                      h('stop', { offset: '100%', stopColor: '#38bdf8' })
+                    ),
+                    h(
+                      'linearGradient',
+                      { id: 'dsh-gg-head-grad', x1: '0%', y1: '0%', x2: '100%', y2: '100%' },
+                      h('stop', { offset: '0%', stopColor: '#f43f5e' }),
+                      h('stop', { offset: '100%', stopColor: '#fb923c' })
+                    ),
+                    h(
+                      'filter',
+                      { id: 'dsh-gg-glow', x: '-40%', y: '-40%', width: '180%', height: '180%' },
+                      h('feGaussianBlur', { stdDeviation: '2.5', result: 'blur' }),
+                      h('feMerge', null, h('feMergeNode', { in: 'blur' }), h('feMergeNode', { in: 'SourceGraphic' }))
+                    )
+                  ),
 
-                    return h(
-                      'g',
-                      { key: `conn-group-${idx}` },
-                      // Base path
-                      h('path', {
-                        d: conn.path,
-                        stroke: conn.color || 'var(--dsw-alias-border-l1)',
-                        strokeWidth: isHoverRelated ? 3 : isMerge ? 2 : 2,
-                        strokeDasharray: isMerge ? '5,4' : 'none',
-                        className: `dsh-gg-conn-path ${isMerge ? 'is-merge-flow' : ''} ${isHoverRelated ? 'is-hover-highlight' : ''}`,
-                        fill: 'none',
-                        opacity: isHoverRelated ? 1 : hoveredNodeHash ? 0.35 : 0.85,
-                      }),
-                      // For merge connections: animated flowing dash particles
-                      isMerge &&
+                  // Transform container for density scaling
+                  h(
+                    'g',
+                    { transform: scaleY !== 1 ? `scale(1, ${scaleY})` : undefined },
+                    // Render Connection Curves with Dynamic Animations
+                    connections.map((conn, idx) => {
+                      const isHoverRelated =
+                        hoveredNodeHash &&
+                        (conn.fromHash === hoveredNodeHash || conn.toHash === hoveredNodeHash)
+                      const isMerge = conn.isMerge
+
+                      return h(
+                        'g',
+                        { key: `conn-group-${idx}` },
+                        // Base path
                         h('path', {
                           d: conn.path,
-                          stroke: '#fff',
-                          strokeWidth: 1.5,
-                          strokeDasharray: '4, 12',
-                          className: 'dsh-gg-merge-particle-stream',
+                          stroke: conn.color || 'var(--dsw-alias-border-l1)',
+                          strokeWidth: isHoverRelated ? 3.2 : isMerge ? 2.2 : 2,
+                          strokeDasharray: isMerge ? '5,4' : 'none',
+                          className: `dsh-gg-conn-path ${isMerge ? 'is-merge-flow' : ''} ${isHoverRelated ? 'is-hover-highlight' : ''}`,
                           fill: 'none',
-                          opacity: 0.7,
-                        })
-                    )
-                  }),
-                  // Render Node Points with Rich State Animations
-                  nodes.map((node, nIdx) => {
-                    const isSelected = selectedNode?.hash === node.hash
-                    const isHovered = hoveredNodeHash === node.hash
-                    const isNewlyAdded = newHashes.has(node.hash)
-                    const isWorking = node.isWorkingTree
-                    const isMerge = node.isMerge
-                    const isHead = node.isHead
-
-                    return h(
-                      'g',
-                      {
-                        key: `node-${node.hash}`,
-                        className: `dsh-gg-node-dot ${isSelected ? 'is-selected' : ''} ${isHovered ? 'is-hovered' : ''} ${isNewlyAdded ? 'is-new' : ''}`,
-                        onClick: () => setSelectedNode(node),
-                        onMouseEnter: () => setHoveredNodeHash(node.hash),
-                        onMouseLeave: () => setHoveredNodeHash(null),
-                        style: {
-                          cursor: 'pointer',
-                          animationDelay: `${Math.min(nIdx * 25, 400)}ms`,
-                        },
-                      },
-                      // 1. Working changes node: breathing aura wave
-                      isWorking &&
-                        h('circle', {
-                          cx: node.x,
-                          cy: node.y,
-                          r: 10,
-                          className: 'dsh-gg-aura-wave',
-                          fill: 'none',
-                          stroke: '#f59e0b',
-                          strokeWidth: 1.5,
+                          opacity: isHoverRelated ? 1 : hoveredNodeHash ? 0.25 : 0.85,
                         }),
-                      // 2. Working diamond or regular circle
-                      isWorking
-                        ? h('polygon', {
-                            points: `${node.x},${node.y - 7} ${node.x + 7},${node.y} ${node.x},${node.y + 7} ${node.x - 7},${node.y}`,
-                            className: 'dsh-gg-diamond-working',
-                            fill: node.color,
+                        // For merge connections: animated flowing dash particles
+                        isMerge &&
+                          h('path', {
+                            d: conn.path,
                             stroke: '#fff',
-                            strokeWidth: 1.8,
+                            strokeWidth: 1.6,
+                            strokeDasharray: '4, 10',
+                            className: 'dsh-gg-merge-particle-stream',
+                            fill: 'none',
+                            opacity: isHoverRelated ? 0.95 : 0.65,
                           })
-                        : h('circle', {
+                      )
+                    }),
+
+                    // Render Node Points with Rich State Animations
+                    nodes.map((node, nIdx) => {
+                      const isSelected = selectedNode?.hash === node.hash
+                      const isHovered = hoveredNodeHash === node.hash
+                      const isNewlyAdded = newHashes.has(node.hash)
+                      const isWorking = node.isWorkingTree
+                      const isMerge = node.isMerge
+                      const isHead = node.isHead
+
+                      return h(
+                        'g',
+                        {
+                          key: `node-${node.hash}`,
+                          className: `dsh-gg-node-dot ${isSelected ? 'is-selected' : ''} ${isHovered ? 'is-hovered' : ''} ${isNewlyAdded ? 'is-new' : ''}`,
+                          onClick: () => setSelectedNode(node),
+                          onMouseEnter: () => setHoveredNodeHash(node.hash),
+                          onMouseLeave: () => setHoveredNodeHash(null),
+                          style: {
+                            cursor: 'pointer',
+                            animationDelay: `${Math.min(nIdx * 20, 350)}ms`,
+                          },
+                        },
+                        // 1. Working changes node: breathing aura wave
+                        isWorking &&
+                          h('circle', {
                             cx: node.x,
                             cy: node.y,
-                            r: isHead ? 6.5 : isMerge ? 6 : 4.5,
-                            fill: node.color,
-                            stroke: isHead || isSelected ? '#fff' : 'rgba(0,0,0,0.35)',
-                            strokeWidth: isHead ? 2.5 : isSelected ? 2 : 1,
-                            className: `dsh-gg-commit-circle ${isMerge ? 'is-merge-node' : ''}`,
+                            r: 10,
+                            className: 'dsh-gg-aura-wave',
+                            fill: 'none',
+                            stroke: '#f59e0b',
+                            strokeWidth: 1.6,
                           }),
-                      // 3. Merge Node: outer rotating halo ring
-                      isMerge &&
-                        h('circle', {
-                          cx: node.x,
-                          cy: node.y,
-                          r: 9.5,
-                          fill: 'none',
-                          stroke: node.color,
-                          strokeWidth: 1.2,
-                          strokeDasharray: '3, 2',
-                          className: 'dsh-gg-merge-ring',
-                        }),
-                      // 4. HEAD Node: halo outer ring
-                      isHead &&
-                        h('circle', {
-                          cx: node.x,
-                          cy: node.y,
-                          r: 11,
-                          fill: 'none',
-                          stroke: node.color,
-                          strokeWidth: 1.5,
-                          className: 'dsh-gg-head-halo',
-                        }),
-                      // 5. Newly added commit highlight wave
-                      isNewlyAdded &&
-                        h('circle', {
-                          cx: node.x,
-                          cy: node.y,
-                          r: 14,
-                          fill: 'none',
-                          stroke: '#34d399',
-                          strokeWidth: 2,
-                          className: 'dsh-gg-new-wave',
-                        })
-                    )
-                  })
+                        // 2. Working diamond or regular circle
+                        isWorking
+                          ? h('polygon', {
+                              points: `${node.x},${node.y - 7} ${node.x + 7},${node.y} ${node.x},${node.y + 7} ${node.x - 7},${node.y}`,
+                              className: 'dsh-gg-diamond-working',
+                              fill: node.color,
+                              stroke: '#fff',
+                              strokeWidth: 1.8,
+                            })
+                          : h('circle', {
+                              cx: node.x,
+                              cy: node.y,
+                              r: isHead ? 6.5 : isMerge ? 6 : 4.5,
+                              fill: node.color,
+                              stroke: isHead || isSelected ? '#fff' : 'rgba(0,0,0,0.35)',
+                              strokeWidth: isHead ? 2.5 : isSelected ? 2 : 1,
+                              className: `dsh-gg-commit-circle ${isMerge ? 'is-merge-node' : ''}`,
+                            }),
+                        // 3. Merge Node: outer rotating halo ring
+                        isMerge &&
+                          h('circle', {
+                            cx: node.x,
+                            cy: node.y,
+                            r: 9.5,
+                            fill: 'none',
+                            stroke: node.color,
+                            strokeWidth: 1.2,
+                            strokeDasharray: '3, 2',
+                            className: 'dsh-gg-merge-ring',
+                          }),
+                        // 4. HEAD Node: halo outer ring
+                        isHead &&
+                          h('circle', {
+                            cx: node.x,
+                            cy: node.y,
+                            r: 11,
+                            fill: 'none',
+                            stroke: node.color,
+                            strokeWidth: 1.5,
+                            className: 'dsh-gg-head-halo',
+                          }),
+                        // 5. Newly added commit highlight wave
+                        isNewlyAdded &&
+                          h('circle', {
+                            cx: node.x,
+                            cy: node.y,
+                            r: 14,
+                            fill: 'none',
+                            stroke: '#34d399',
+                            strokeWidth: 2,
+                            className: 'dsh-gg-new-wave',
+                          })
+                      )
+                    })
+                  )
                 )
               ),
 
               // Rows Overlay aligned with Y positions (with subtle entry stagger)
               h(
                 'div',
-                { className: 'dsh-gg-rows-layer', style: { minHeight: totalHeight } },
+                { className: 'dsh-gg-rows-layer', style: { minHeight: totalHeight * scaleY } },
                 nodes.map((node, rIdx) => {
                   const isSelected = selectedNode?.hash === node.hash
                   const isHovered = hoveredNodeHash === node.hash
@@ -849,11 +1072,12 @@ window.__ModuleLoader__.load({
                     'div',
                     {
                       key: `row-${node.hash}`,
-                      className: `dsh-gg-commit-row ${isSelected ? 'is-selected' : ''} ${isHovered ? 'is-hovered' : ''} ${node.isWorkingTree ? 'is-working' : ''} ${isNewlyAdded ? 'is-new-row' : ''}`,
+                      className: `dsh-gg-commit-row ${isSelected ? 'is-selected' : ''} ${isHovered ? 'is-hovered' : ''} ${node.isWorkingTree ? 'is-working' : ''} ${isNewlyAdded ? 'is-new-row' : ''} ${isCompact ? 'compact' : ''}`,
                       style: {
-                        top: node.y - 18,
+                        top: node.y * scaleY - rowHeight / 2,
+                        height: rowHeight,
                         left: totalWidth,
-                        animationDelay: `${Math.min(rIdx * 20, 350)}ms`,
+                        animationDelay: `${Math.min(rIdx * 18, 300)}ms`,
                       },
                       onClick: () => setSelectedNode(node),
                       onMouseEnter: () => setHoveredNodeHash(node.hash),
@@ -886,10 +1110,34 @@ window.__ModuleLoader__.load({
                     h('span', { className: 'dsh-gg-time' }, node.relativeTime)
                   )
                 })
-              )
+              ),
+
+              // Floating Node Quick Preview Tooltip
+              hoveredNode &&
+                !hoveredNode.isWorkingTree &&
+                h(
+                  'div',
+                  {
+                    className: 'dsh-gg-hover-card dsh-gg-animate-fade',
+                    style: {
+                      top: Math.max(10, hoveredNode.y * scaleY - 60),
+                      left: Math.min(totalWidth + 40, 240),
+                    },
+                  },
+                  h(
+                    'div',
+                    { className: 'dsh-gg-hover-card-header' },
+                    h('span', { className: 'sha' }, hoveredNode.shortHash),
+                    hoveredNode.isHead && h('span', { className: 'dsh-gg-ref-badge head' }, 'HEAD'),
+                    hoveredNode.isMerge && h('span', { className: 'dsh-gg-ref-badge merge' }, 'MERGE'),
+                    h('span', { className: 'time' }, hoveredNode.relativeTime)
+                  ),
+                  h('div', { className: 'dsh-gg-hover-card-msg' }, hoveredNode.subject),
+                  h('div', { className: 'dsh-gg-hover-card-author' }, `${hoveredNode.author} <${hoveredNode.email}>`)
+                )
             ),
 
-            // Right: Detail Panel / Drawer with smooth slide-in
+            // Right: Detail Panel / Drawer with smooth slide-in & grouped files
             h(
               'div',
               { className: 'dsh-gg-detail-drawer' },
@@ -971,29 +1219,138 @@ window.__ModuleLoader__.load({
                           )
                         ),
 
-                      // Working tree files list with color badges
+                      // Working tree grouped accordion
                       selectedNode.isWorkingTree &&
-                        status.files &&
                         h(
                           'div',
                           { className: 'dsh-gg-files-box' },
-                          h(
-                            'h5',
-                            null,
-                            tr('graph.filesChanged', { n: status.files.length })
-                          ),
-                          h(
-                            'div',
-                            { className: 'dsh-gg-files-scroll' },
-                            status.files.map((file) =>
+                          h('h5', null, tr('graph.filesChanged', { n: files.length })),
+
+                          // Staged section
+                          stagedFiles.length > 0 &&
+                            h(
+                              'div',
+                              { className: 'dsh-gg-accordion-group' },
                               h(
                                 'div',
-                                { key: file.path, className: 'dsh-gg-file-row' },
-                                h('span', { className: `tag ${file.status}` }, (file.xy || '..').trim()),
-                                h('span', { className: 'name', title: file.path }, file.path)
-                              )
+                                {
+                                  className: 'dsh-gg-accordion-header staged',
+                                  onClick: () => toggleGroup('staged'),
+                                },
+                                h(ChevronDownIcon, {
+                                  size: 11,
+                                  className: `dsh-gg-chevron ${expandedGroups.staged ? 'open' : ''}`,
+                                }),
+                                h('span', { className: 'title' }, `Staged (${stagedFiles.length})`)
+                              ),
+                              expandedGroups.staged &&
+                                h(
+                                  'div',
+                                  { className: 'dsh-gg-files-scroll' },
+                                  stagedFiles.map((file) =>
+                                    h(
+                                      'div',
+                                      { key: file.path, className: 'dsh-gg-file-row' },
+                                      h('span', { className: `tag ${file.status}` }, (file.xy || '..').trim()),
+                                      h('span', { className: 'name', title: file.path }, file.path),
+                                      h(
+                                        'button',
+                                        {
+                                          type: 'button',
+                                          className: 'copy-path-btn',
+                                          onClick: () => copyText(file.path),
+                                          title: tr('graph.copyPath'),
+                                        },
+                                        h(CopyIcon, { size: 11 })
+                                      )
+                                    )
+                                  )
+                                )
+                            ),
+
+                          // Unstaged section
+                          unstagedFiles.length > 0 &&
+                            h(
+                              'div',
+                              { className: 'dsh-gg-accordion-group' },
+                              h(
+                                'div',
+                                {
+                                  className: 'dsh-gg-accordion-header unstaged',
+                                  onClick: () => toggleGroup('unstaged'),
+                                },
+                                h(ChevronDownIcon, {
+                                  size: 11,
+                                  className: `dsh-gg-chevron ${expandedGroups.unstaged ? 'open' : ''}`,
+                                }),
+                                h('span', { className: 'title' }, `Unstaged (${unstagedFiles.length})`)
+                              ),
+                              expandedGroups.unstaged &&
+                                h(
+                                  'div',
+                                  { className: 'dsh-gg-files-scroll' },
+                                  unstagedFiles.map((file) =>
+                                    h(
+                                      'div',
+                                      { key: file.path, className: 'dsh-gg-file-row' },
+                                      h('span', { className: `tag ${file.status}` }, (file.xy || '..').trim()),
+                                      h('span', { className: 'name', title: file.path }, file.path),
+                                      h(
+                                        'button',
+                                        {
+                                          type: 'button',
+                                          className: 'copy-path-btn',
+                                          onClick: () => copyText(file.path),
+                                          title: tr('graph.copyPath'),
+                                        },
+                                        h(CopyIcon, { size: 11 })
+                                      )
+                                    )
+                                  )
+                                )
+                            ),
+
+                          // Untracked section
+                          untrackedFiles.length > 0 &&
+                            h(
+                              'div',
+                              { className: 'dsh-gg-accordion-group' },
+                              h(
+                                'div',
+                                {
+                                  className: 'dsh-gg-accordion-header untracked',
+                                  onClick: () => toggleGroup('untracked'),
+                                },
+                                h(ChevronDownIcon, {
+                                  size: 11,
+                                  className: `dsh-gg-chevron ${expandedGroups.untracked ? 'open' : ''}`,
+                                }),
+                                h('span', { className: 'title' }, `Untracked (${untrackedFiles.length})`)
+                              ),
+                              expandedGroups.untracked &&
+                                h(
+                                  'div',
+                                  { className: 'dsh-gg-files-scroll' },
+                                  untrackedFiles.map((file) =>
+                                    h(
+                                      'div',
+                                      { key: file.path, className: 'dsh-gg-file-row' },
+                                      h('span', { className: `tag ${file.status}` }, (file.xy || '..').trim()),
+                                      h('span', { className: 'name', title: file.path }, file.path),
+                                      h(
+                                        'button',
+                                        {
+                                          type: 'button',
+                                          className: 'copy-path-btn',
+                                          onClick: () => copyText(file.path),
+                                          title: tr('graph.copyPath'),
+                                        },
+                                        h(CopyIcon, { size: 11 })
+                                      )
+                                    )
+                                  )
+                                )
                             )
-                          )
                         ),
 
                       // Copy notice
@@ -1056,12 +1413,16 @@ window.__ModuleLoader__.load({
             h(GitBranchIcon, { size: 40, style: { color: '#f87171' } }),
             h('h3', null, 'Git 树图渲染捕获到异常'),
             h('p', { style: { color: '#aaa', fontSize: 12, maxWidth: 440, textAlign: 'center' } }, err?.message || String(err)),
-            h('button', {
-              type: 'button',
-              className: 'dsh-gg-btn primary',
-              onClick: () => window.location.reload(),
-              style: { marginTop: 12 },
-            }, '刷新页面')
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'dsh-gg-btn primary',
+                onClick: () => window.location.reload(),
+                style: { marginTop: 12 },
+              },
+              '刷新页面'
+            )
           ),
           h('style', null, CSS_STYLES)
         )
@@ -1086,11 +1447,11 @@ window.__ModuleLoader__.load({
         to { opacity: 1; transform: translateX(0); }
       }
       @keyframes dsh-gg-dash-flow {
-        from { stroke-dashoffset: 18; }
+        from { stroke-dashoffset: 20; }
         to { stroke-dashoffset: 0; }
       }
       @keyframes dsh-gg-aura-wave {
-        0% { r: 6px; opacity: 0.8; stroke-width: 2px; }
+        0% { r: 6px; opacity: 0.85; stroke-width: 2px; }
         50% { r: 12px; opacity: 0.35; stroke-width: 1.5px; }
         100% { r: 16px; opacity: 0; stroke-width: 1px; }
       }
@@ -1123,8 +1484,14 @@ window.__ModuleLoader__.load({
         0%, 100% { box-shadow: 0 0 4px rgba(52, 211, 153, 0.3); }
         50% { box-shadow: 0 0 12px rgba(52, 211, 153, 0.7); }
       }
+      @keyframes dsh-gg-rock {
+        0%, 100% { transform: rotate(0deg); }
+        25% { transform: rotate(-8deg); }
+        75% { transform: rotate(8deg); }
+      }
 
       .dsh-gg-spin { animation: dsh-gg-spin 0.8s linear infinite; }
+      .dsh-gg-spin-slow { animation: dsh-gg-spin 2s linear infinite; }
 
       /* Dock Styles */
       .dsh-gg-dock-wrap { position: relative; display: inline-flex; align-items: center; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
@@ -1141,6 +1508,9 @@ window.__ModuleLoader__.load({
         transform: translateY(-1px);
         box-shadow: 0 2px 8px rgba(0,0,0,0.25);
       }
+      .dsh-gg-dock-pill:hover .dsh-gg-dock-icon-rock {
+        animation: dsh-gg-rock 0.4s ease;
+      }
       .dsh-gg-dock-pill.has-pulse {
         border-color: #f59e0b;
         animation: dsh-gg-pulse-amber 1.2s ease-in-out infinite;
@@ -1155,14 +1525,16 @@ window.__ModuleLoader__.load({
       .dsh-gg-dock-ahead { color: #38bdf8; font-size: 11px; font-weight: 600; }
       .dsh-gg-dock-behind { color: #f43f5e; font-size: 11px; font-weight: 600; }
 
+      /* Dock Flyout */
       .dsh-gg-flyout {
-        position: absolute; bottom: 32px; left: 0; width: 340px;
+        position: absolute; bottom: 32px; left: 0; width: 350px;
         background: var(--dsw-alias-bg-layer-1, #1e1e1e);
         border: 1px solid var(--dsw-alias-border-l1, #3a3a3a);
-        border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+        border-radius: 10px; box-shadow: 0 10px 28px rgba(0,0,0,0.5);
         z-index: 1000; overflow: hidden; display: flex; flex-direction: column;
       }
       .dsh-gg-animate-in { animation: dsh-gg-flyout-in 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+      .dsh-gg-animate-fade { animation: dsh-gg-fade-in 0.18s ease forwards; }
 
       .dsh-gg-flyout-header {
         display: flex; align-items: center; justify-content: space-between;
@@ -1181,40 +1553,62 @@ window.__ModuleLoader__.load({
       .dsh-gg-flyout-status-row { display: flex; align-items: center; justify-content: space-between; }
       .dsh-gg-status-label { color: var(--dsw-alias-label-secondary, #888); }
       .dsh-gg-sha-tag { font-family: monospace; background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 4px; cursor: pointer; display: inline-flex; align-items: center; transition: background 0.15s ease; }
-      .dsh-gg-sha-tag:hover { background: rgba(255,255,255,0.12); }
+      .dsh-gg-sha-tag:hover { background: rgba(255,255,255,0.12); color: #38bdf8; }
       .dsh-gg-flyout-dirty-box { background: rgba(0,0,0,0.22); border-radius: 6px; padding: 8px; border: 1px solid rgba(245, 158, 11, 0.2); }
       .dsh-gg-dirty-counts { display: flex; gap: 8px; font-size: 11px; margin-bottom: 6px; }
       .dsh-gg-dirty-counts .staged { color: #10b981; font-weight: 500; }
       .dsh-gg-dirty-counts .unstaged { color: #f59e0b; font-weight: 500; }
       .dsh-gg-dirty-counts .untracked { color: #888; font-weight: 500; }
-      .dsh-gg-file-list { list-style: none; margin: 0; padding: 0; max-height: 120px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+      .dsh-gg-file-list { list-style: none; margin: 0; padding: 0; max-height: 110px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
       .dsh-gg-file-item { display: flex; align-items: center; gap: 6px; font-size: 11px; font-family: monospace; }
       .dsh-gg-file-item .status-tag { padding: 1px 4px; border-radius: 3px; font-weight: bold; font-size: 10px; }
       .dsh-gg-file-item .status-tag.modified { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
       .dsh-gg-file-item .status-tag.added { background: rgba(16, 185, 129, 0.2); color: #10b981; }
       .dsh-gg-file-item .status-tag.untracked { background: rgba(156, 163, 175, 0.2); color: #9ca3af; }
       .dsh-gg-file-item .file-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+
+      /* Mini Timeline in Dock Flyout */
+      .dsh-gg-mini-timeline { border-top: 1px solid var(--dsw-alias-border-l2, #333); padding-top: 8px; }
+      .dsh-gg-mini-timeline-title { font-size: 11px; color: var(--dsw-alias-label-secondary, #888); margin-bottom: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+      .dsh-gg-mini-timeline-list { display: flex; flex-direction: column; gap: 5px; }
+      .dsh-gg-mini-item { display: flex; align-items: center; gap: 6px; font-size: 11px; cursor: pointer; padding: 3px 6px; border-radius: 4px; transition: background 0.15s ease; }
+      .dsh-gg-mini-item:hover { background: rgba(255,255,255,0.06); }
+      .dsh-gg-mini-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+      .dsh-gg-mini-sha { font-family: monospace; color: #888; font-size: 10px; }
+      .dsh-gg-mini-subj { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; color: #ddd; }
+      .dsh-gg-mini-time { color: #666; font-size: 10px; flex-shrink: 0; }
+
       .dsh-gg-copied-notice { color: #10b981; font-size: 11px; text-align: center; animation: dsh-gg-fade-in 0.2s ease; }
       .dsh-gg-flyout-footer { display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--dsw-alias-border-l2, #333); background: var(--dsw-alias-bg-layer-2, #242424); }
 
       /* Full View Styles */
       .dsh-gg-container { display: flex; flex-direction: column; height: 100%; width: 100%; min-height: 480px; background: var(--dsw-alias-bg-base, #121212); color: var(--dsw-alias-label-primary, #eee); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; position: relative; }
-      .dsh-gg-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--dsw-alias-border-l1, #2c2c2c); background: var(--dsw-alias-bg-layer-1, #1a1a1a); backdrop-filter: blur(12px); }
-      .dsh-gg-toolbar-left { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; }
+      .dsh-gg-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--dsw-alias-border-l1, #2c2c2c); background: var(--dsw-alias-bg-layer-1, #1a1a1a); backdrop-filter: blur(12px); flex-wrap: wrap; gap: 8px; }
+      .dsh-gg-toolbar-left { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; flex-wrap: wrap; }
       .dsh-gg-title { font-weight: 600; font-size: 14px; }
       .dsh-gg-branch-chip { font-size: 12px; padding: 2px 8px; border-radius: 12px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; font-weight: 500; border: 1px solid rgba(56, 189, 248, 0.3); }
       .dsh-gg-dirty-chip { font-size: 11px; padding: 2px 8px; border-radius: 12px; background: rgba(245, 158, 11, 0.18); color: #f59e0b; font-weight: 500; border: 1px solid rgba(245, 158, 11, 0.3); transition: all 0.3s ease; }
+      .dsh-gg-dirty-chip.mini { font-size: 10px; padding: 1px 6px; }
       .dsh-gg-dirty-chip.pulse { animation: dsh-gg-bounce-number 0.4s ease; border-color: #f59e0b; }
+
+      /* Filter Tabs */
+      .dsh-gg-filter-tabs { display: inline-flex; background: var(--dsw-alias-bg-layer-2, #262626); padding: 2px; border-radius: 6px; border: 1px solid var(--dsw-alias-border-l2, #3a3a3a); margin-left: 8px; }
+      .dsh-gg-filter-tab { background: transparent; border: none; color: #888; font-size: 11px; font-weight: 500; padding: 3px 8px; border-radius: 4px; cursor: pointer; transition: all 0.15s ease; }
+      .dsh-gg-filter-tab:hover { color: #eee; }
+      .dsh-gg-filter-tab.active { background: var(--dsw-alias-interactive-bg-hover, #3a3a3a); color: #38bdf8; font-weight: 600; }
+
       .dsh-gg-toolbar-right { display: flex; align-items: center; gap: 8px; }
       .dsh-gg-search-input { background: var(--dsw-alias-bg-layer-2, #262626); border: 1px solid var(--dsw-alias-border-l2, #3a3a3a); border-radius: 6px; padding: 5px 10px; font-size: 12px; color: #fff; width: 220px; outline: none; transition: border-color 0.2s ease, width 0.2s ease; }
       .dsh-gg-search-input:focus { border-color: var(--dsw-alias-brand-primary, #38bdf8); width: 260px; }
       .dsh-gg-btn { padding: 4px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; border: 1px solid transparent; font-weight: 500; transition: all 0.15s ease; }
+      .dsh-gg-btn.mini { padding: 3px 8px; font-size: 11px; }
       .dsh-gg-btn.primary { background: var(--dsw-alias-brand-primary, #2563eb); color: #fff; }
       .dsh-gg-btn.primary:hover { opacity: 0.9; transform: translateY(-1px); }
       .dsh-gg-btn.secondary { background: var(--dsw-alias-bg-layer-2, #333); color: #ddd; border-color: var(--dsw-alias-border-l2, #444); }
       .dsh-gg-btn.secondary:hover { background: var(--dsw-alias-interactive-bg-hover, #3e3e3e); color: #fff; }
       .dsh-gg-btn.icon { background: var(--dsw-alias-bg-layer-2, #262626); border: 1px solid var(--dsw-alias-border-l2, #3a3a3a); color: #aaa; display: flex; align-items: center; justify-content: center; padding: 5px; }
       .dsh-gg-btn.icon:hover { color: #fff; border-color: var(--dsw-alias-border-l1, #555); }
+      .dsh-gg-btn.icon.active { color: #38bdf8; border-color: #38bdf8; background: rgba(56, 189, 248, 0.12); }
 
       .dsh-gg-main { display: flex; flex: 1; overflow: hidden; position: relative; min-height: 400px; }
       .dsh-gg-graph-area { flex: 1; overflow: auto; position: relative; background: var(--dsw-alias-bg-base, #141414); }
@@ -1245,6 +1639,7 @@ window.__ModuleLoader__.load({
         transition: background 0.18s ease, transform 0.18s ease, border-color 0.18s ease;
         animation: dsh-gg-row-enter 0.25s cubic-bezier(0.16, 1, 0.3, 1) backwards;
       }
+      .dsh-gg-commit-row.compact { height: 26px; font-size: 11px; gap: 6px; padding-left: 8px; }
       .dsh-gg-commit-row:hover, .dsh-gg-commit-row.is-hovered {
         background: rgba(255, 255, 255, 0.05);
         transform: translateX(-2px);
@@ -1274,8 +1669,22 @@ window.__ModuleLoader__.load({
       .dsh-gg-author { color: var(--dsw-alias-label-secondary, #888); font-size: 11px; margin-left: auto; padding-left: 12px; }
       .dsh-gg-time { color: var(--dsw-alias-label-tertiary, #666); font-size: 11px; min-width: 60px; text-align: right; }
 
+      /* Floating Hover Preview Card */
+      .dsh-gg-hover-card {
+        position: absolute; z-index: 100; pointer-events: none;
+        background: var(--dsw-alias-bg-layer-1, #1e1e1e);
+        border: 1px solid var(--dsw-alias-border-l1, #444);
+        border-radius: 8px; padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+        max-width: 340px; display: flex; flex-direction: column; gap: 5px;
+      }
+      .dsh-gg-hover-card-header { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+      .dsh-gg-hover-card-header .sha { font-family: monospace; color: #38bdf8; font-weight: 600; }
+      .dsh-gg-hover-card-header .time { color: #888; margin-left: auto; }
+      .dsh-gg-hover-card-msg { font-size: 12px; font-weight: 500; color: #fff; line-height: 1.35; }
+      .dsh-gg-hover-card-author { font-size: 11px; color: #888; }
+
       /* Details Drawer */
-      .dsh-gg-detail-drawer { width: 330px; border-left: 1px solid var(--dsw-alias-border-l1, #2c2c2c); background: var(--dsw-alias-bg-layer-1, #181818); display: flex; flex-direction: column; overflow-y: auto; }
+      .dsh-gg-detail-drawer { width: 340px; border-left: 1px solid var(--dsw-alias-border-l1, #2c2c2c); background: var(--dsw-alias-bg-layer-1, #181818); display: flex; flex-direction: column; overflow-y: auto; }
       .dsh-gg-drawer-inner { display: flex; flex-direction: column; height: 100%; }
       .dsh-gg-drawer-animate { animation: dsh-gg-drawer-in 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
       .dsh-gg-drawer-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--dsw-alias-border-l2, #2c2c2c); }
@@ -1290,16 +1699,35 @@ window.__ModuleLoader__.load({
       .parents-wrap { display: flex; gap: 6px; flex-wrap: wrap; }
       .parent-sha { font-family: monospace; background: rgba(255,255,255,0.08); padding: 1px 4px; border-radius: 3px; cursor: pointer; transition: background 0.15s ease; }
       .parent-sha:hover { background: rgba(56, 189, 248, 0.2); color: #38bdf8; }
+
+      /* File Accordion in Drawer */
       .dsh-gg-files-box { margin-top: 6px; border-top: 1px solid var(--dsw-alias-border-l2, #333); padding-top: 8px; }
-      .dsh-gg-files-box h5 { margin: 0 0 8px 0; font-size: 12px; }
-      .dsh-gg-files-scroll { max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
-      .dsh-gg-file-row { display: flex; align-items: center; gap: 6px; font-size: 11px; font-family: monospace; }
-      .dsh-gg-file-row .tag { font-weight: bold; padding: 1px 4px; border-radius: 3px; }
+      .dsh-gg-files-box h5 { margin: 0 0 8px 0; font-size: 12px; font-weight: 600; }
+      .dsh-gg-accordion-group { margin-bottom: 8px; border: 1px solid var(--dsw-alias-border-l2, #333); border-radius: 6px; overflow: hidden; }
+      .dsh-gg-accordion-header {
+        display: flex; align-items: center; gap: 6px; padding: 6px 10px; cursor: pointer; font-size: 11px; font-weight: 600;
+        background: var(--dsw-alias-bg-layer-2, #222); user-select: none; transition: background 0.15s ease;
+      }
+      .dsh-gg-accordion-header:hover { background: var(--dsw-alias-interactive-bg-hover, #2c2c2c); }
+      .dsh-gg-accordion-header.staged .title { color: #10b981; }
+      .dsh-gg-accordion-header.unstaged .title { color: #f59e0b; }
+      .dsh-gg-accordion-header.untracked .title { color: #888; }
+      .dsh-gg-chevron { transition: transform 0.2s ease; }
+      .dsh-gg-chevron.open { transform: rotate(180deg); }
+
+      .dsh-gg-files-scroll { max-height: 160px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; padding: 4px; }
+      .dsh-gg-file-row { display: flex; align-items: center; gap: 6px; font-size: 11px; font-family: monospace; padding: 2px 4px; border-radius: 4px; transition: background 0.15s ease; }
+      .dsh-gg-file-row:hover { background: rgba(255,255,255,0.05); }
+      .dsh-gg-file-row .tag { font-weight: bold; padding: 1px 4px; border-radius: 3px; font-size: 10px; }
       .dsh-gg-file-row .tag.modified { color: #f59e0b; background: rgba(245, 158, 11, 0.15); }
       .dsh-gg-file-row .tag.added { color: #10b981; background: rgba(16, 185, 129, 0.15); }
       .dsh-gg-file-row .tag.deleted { color: #ef4444; background: rgba(239, 68, 68, 0.15); }
       .dsh-gg-file-row .tag.untracked { color: #9ca3af; background: rgba(156, 163, 175, 0.15); }
       .dsh-gg-file-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+      .dsh-gg-file-row .copy-path-btn { background: transparent; border: none; cursor: pointer; color: #666; padding: 2px; border-radius: 3px; display: none; }
+      .dsh-gg-file-row:hover .copy-path-btn { display: flex; color: #aaa; }
+      .dsh-gg-file-row .copy-path-btn:hover { color: #fff; background: rgba(255,255,255,0.1); }
+
       .dsh-gg-notice { color: #10b981; font-size: 11px; text-align: center; animation: dsh-gg-fade-in 0.2s ease; }
       .dsh-gg-drawer-actions { padding: 12px; border-top: 1px solid var(--dsw-alias-border-l2, #2c2c2c); display: flex; gap: 6px; }
       .dsh-gg-drawer-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: #666; font-size: 12px; padding: 20px; text-align: center; }
