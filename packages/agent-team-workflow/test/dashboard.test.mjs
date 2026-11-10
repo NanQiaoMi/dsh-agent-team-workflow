@@ -1339,3 +1339,47 @@ test('pipelineStage, summaryPreview, latestFinding, and worktree status are prop
   const finalizedState = makeState({ finalizedAt: '2026-11-05T01:00:00.000Z', items: [makeItem({ status: 'approved' })] })
   assert.equal(buildSnapshot(makeInput(finalizedState)).run.pipelineStage, 'finalized')
 })
+
+test('the snapshot exposes devkit architecture and item handoffPacket records', () => {
+  const itemWithHandoff = makeItem({
+    id: 'W1',
+    status: 'approved',
+    handoffPacket: {
+      contract_id: 'user-service-contract',
+      entry: 'lib/user-service.js',
+      exports: ['getUser', 'saveUser'],
+      notes: 'Requires database connection pool',
+    },
+  })
+  const input = makeInput(makeState({ items: [itemWithHandoff] }))
+  input.devkit = {
+    project: 'my-devkit-app',
+    runtime: { type: 'node', module: 'esm', testRunner: 'node --test' },
+    modules: {
+      core: { path: 'packages/core', entry: 'packages/core/index.js', exports: ['run', 'stop'], testsCount: 3 },
+    },
+    contracts: [
+      { id: 'user-service-contract', title: 'User Service Contract', version: '1.0.0', methods: ['getUser', 'saveUser'], file: 'user-service-contract.json' },
+    ],
+  }
+
+  const snapshot = buildSnapshot(input)
+  assert.ok(snapshot.devkit)
+  assert.equal(snapshot.devkit.project, 'my-devkit-app')
+  assert.equal(snapshot.devkit.runtime.module, 'esm')
+  assert.equal(snapshot.devkit.modules.core.entry, 'packages/core/index.js')
+  assert.equal(snapshot.devkit.contracts.length, 1)
+  assert.equal(snapshot.devkit.contracts[0].id, 'user-service-contract')
+
+  const item = snapshot.run.items[0]
+  assert.ok(item.handoffPacket)
+  assert.equal(item.handoffPacket.contractId, 'user-service-contract')
+  assert.equal(item.handoffPacket.entry, 'lib/user-service.js')
+  assert.deepEqual(item.handoffPacket.exports, ['getUser', 'saveUser'])
+  assert.equal(item.handoffPacket.notes, 'Requires database connection pool')
+
+  // Degrades gracefully when missing
+  const plainSnapshot = buildSnapshot(makeInput(makeState({ items: [makeItem({ id: 'W2' })] })))
+  assert.equal(plainSnapshot.devkit, null)
+  assert.equal(plainSnapshot.run.items[0].handoffPacket, null)
+})

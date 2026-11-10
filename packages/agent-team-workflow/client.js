@@ -43,6 +43,29 @@ window.__ModuleLoader__.load({
       'header.refresh': '刷新',
       'header.pause': '暂停',
       'header.resume': '继续',
+      'header.devkit': '架构与契约',
+      'header.devkitTooltip': '查看工程架构模块与标准接口契约',
+      'card.contractTitle': '标准契约: {id} (入口: {entry})',
+      'drawer.handoffPacket': '下游交付契约包',
+      'drawer.contractId': '契约标识',
+      'drawer.contractEntry': '入口文件',
+      'drawer.contractExports': '导出符号',
+      'drawer.contractNotes': '交付说明',
+      'devkit.title': '工程架构与标准接口契约',
+      'devkit.close': '关闭',
+      'devkit.tabContracts': '标准契约 ({n})',
+      'devkit.tabModules': '代码模块 ({n})',
+      'devkit.tabHandoffs': '交接流转 ({n})',
+      'devkit.noContracts': '尚未注册接口契约文件 (.agentteam/devkit/contracts/*.json)',
+      'devkit.noModules': '未扫描到模块清单 (.agentteam/devkit/manifest.json)',
+      'devkit.noHandoffs': '暂无包含交接契约包的工作项',
+      'devkit.runtime': '运行时',
+      'devkit.testRunner': '测试套件',
+      'devkit.entry': '入口',
+      'devkit.exports': '导出方法',
+      'devkit.methods': '接口规范',
+      'devkit.deliveringItems': '交付任务',
+      'devkit.file': '契约文件',
       'header.members': '参与者 {n}',
       'stat.approved': '已批准',
       'stat.members': '参与者',
@@ -394,6 +417,29 @@ window.__ModuleLoader__.load({
       'header.refresh': 'Refresh',
       'header.pause': 'Pause',
       'header.resume': 'Resume',
+      'header.devkit': 'Architecture & Contracts',
+      'header.devkitTooltip': 'Inspect codebase architecture modules and interface contracts',
+      'card.contractTitle': 'Interface contract: {id} (entry: {entry})',
+      'drawer.handoffPacket': 'Downstream Handoff Packet',
+      'drawer.contractId': 'Contract ID',
+      'drawer.contractEntry': 'Entry Point',
+      'drawer.contractExports': 'Exported Symbols',
+      'drawer.contractNotes': 'Usage Notes',
+      'devkit.title': 'Architecture & Interface Contracts',
+      'devkit.close': 'Close',
+      'devkit.tabContracts': 'Contracts ({n})',
+      'devkit.tabModules': 'Modules ({n})',
+      'devkit.tabHandoffs': 'Handoffs ({n})',
+      'devkit.noContracts': 'No registered interface contracts (.agentteam/devkit/contracts/*.json)',
+      'devkit.noModules': 'No scanned module manifest (.agentteam/devkit/manifest.json)',
+      'devkit.noHandoffs': 'No work items with handoff packets yet',
+      'devkit.runtime': 'Runtime',
+      'devkit.testRunner': 'Test Runner',
+      'devkit.entry': 'Entry',
+      'devkit.exports': 'Exports',
+      'devkit.methods': 'Methods',
+      'devkit.deliveringItems': 'Delivering Items',
+      'devkit.file': 'Contract File',
       'header.members': '{n} member(s)',
       'stat.approved': 'Approved',
       'stat.members': 'Members',
@@ -1107,6 +1153,7 @@ window.__ModuleLoader__.load({
         createdBy: str(item.createdBy),
         git: normalizeGit(item.git, runGit),
         plan: normalizePlan(item.plan),
+        handoffPacket: normalizeHandoffPacket(item.handoffPacket),
         summaryPreview:
           typeof item.summaryPreview === 'string' && item.summaryPreview.trim() !== ''
             ? item.summaryPreview.trim()
@@ -1207,6 +1254,19 @@ window.__ModuleLoader__.load({
         submittedBy: str(raw.submittedBy),
         submittedAt: parseTime(raw.submittedAt),
         decidedAt: parseTime(raw.decidedAt),
+      }
+    }
+
+    /** @returns the normalized handoffPacket block, or null. */
+    function normalizeHandoffPacket(raw) {
+      if (!isRecord(raw)) return null
+      const contractId = str(raw.contractId || raw.contract_id)
+      if (!contractId) return null
+      return {
+        contractId,
+        entry: str(raw.entry) || null,
+        exports: toArray(raw.exports).map((v) => str(v)).filter(Boolean),
+        notes: typeof raw.notes === 'string' && raw.notes.trim() !== '' ? raw.notes.trim() : null,
       }
     }
 
@@ -2174,6 +2234,24 @@ window.__ModuleLoader__.load({
 .atw-drawer-heading{display:flex;flex-direction:column;gap:4px;min-width:0}
 .atw-drawer-title{font-size:16px;line-height:1.43;font-weight:600;letter-spacing:-0.01em;overflow-wrap:anywhere}
 .atw-drawer-body{display:flex;flex-direction:column;gap:16px;flex:1;min-height:0;overflow:auto;padding:16px 18px 20px;scrollbar-width:thin}
+.atw-rel-chip--contract{color:var(--atw-brand);background:color-mix(in oklab,var(--atw-brand) 10%,var(--atw-paper));border:1px solid color-mix(in oklab,var(--atw-brand) 25%,transparent);cursor:pointer}
+.atw-rel-chip--contract:hover{background:color-mix(in oklab,var(--atw-brand) 20%,var(--atw-paper))}
+.atw-devkit{position:fixed;top:80px;right:16px;z-index:42;display:flex;flex-direction:column;box-sizing:border-box;width:min(520px,calc(100vw - 32px));max-height:calc(100vh - 180px);border:1px solid var(--atw-hairline);border-radius:var(--atw-radius-card);background:var(--atw-paper);box-shadow:0 12px 40px color-mix(in oklab,var(--atw-ink) 18%,transparent),0 0 0 1px color-mix(in oklab,var(--atw-ink) 5%,transparent);overflow:hidden}
+.atw-devkit-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;box-sizing:border-box;padding:16px 18px 12px;border-bottom:1px solid var(--atw-hairline-soft)}
+.atw-devkit-heading{display:flex;flex-direction:column;gap:4px;min-width:0}
+.atw-devkit-title{font-size:16px;line-height:1.43;font-weight:600;letter-spacing:-0.01em;overflow-wrap:anywhere}
+.atw-devkit-tabs{display:flex;align-items:center;gap:6px;box-sizing:border-box;padding:8px 18px;border-bottom:1px solid var(--atw-hairline-soft);background:var(--atw-fill)}
+.atw-devkit-tab{padding:4px 10px;font-size:12px;font-weight:500;border:none;border-radius:var(--atw-radius-pill);background:transparent;color:var(--atw-muted);cursor:pointer;transition:background-color .12s ease,color .12s ease}
+.atw-devkit-tab:hover{color:var(--atw-ink);background:color-mix(in oklab,var(--atw-ink) 6%,transparent)}
+.atw-devkit-tab--active{color:var(--atw-paper);background:var(--atw-brand);font-weight:600}
+.atw-devkit-tab--active:hover{color:var(--atw-paper);background:var(--atw-brand)}
+.atw-devkit-body{display:flex;flex-direction:column;gap:14px;flex:1;min-height:0;overflow:auto;padding:16px 18px 20px;scrollbar-width:thin}
+.atw-devkit-card{display:flex;flex-direction:column;gap:6px;box-sizing:border-box;padding:12px 14px;border:1px solid var(--atw-hairline);border-radius:var(--atw-radius-nested);background:var(--atw-paper);box-shadow:0 1px 3px color-mix(in oklab,var(--atw-ink) 4%,transparent)}
+.atw-devkit-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+.atw-devkit-card-title{font-size:14px;font-weight:600;letter-spacing:-0.01em;color:var(--atw-ink);overflow-wrap:anywhere}
+.atw-devkit-badge{display:inline-flex;align-items:center;padding:1px 6px;border-radius:var(--atw-radius-pill);font-size:11px;font-weight:600;background:color-mix(in oklab,var(--atw-brand) 12%,var(--atw-paper));color:var(--atw-brand)}
+.atw-devkit-methods{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px}
+.atw-devkit-method-chip{padding:1px 6px;border-radius:var(--atw-radius-nested);font-size:11px;font-family:monospace;background:var(--atw-fill);color:var(--atw-ink);border:1px solid var(--atw-hairline-soft)}
 .atw-section{display:flex;flex-direction:column;gap:8px;min-width:0}
 .atw-section-title{color:var(--atw-muted);font-size:11px;line-height:1.33;font-weight:500;letter-spacing:.05em;text-transform:uppercase}
 .atw-list{display:flex;flex-direction:column;gap:4px;margin:0;padding-left:18px;font-size:13px;line-height:1.43;overflow-wrap:anywhere}
@@ -2395,6 +2473,17 @@ window.__ModuleLoader__.load({
           h('span', { key: 'members', className: 'atw-meta' }, tr('header.members', { n: team.members.length })),
           view.paused ? badge(tr('header.paused'), 'warn', 'paused') : null,
           h('button', { key: 'refresh', className: 'atw-btn atw-btn--primary', type: 'button', onClick: view.actions.refresh }, tr('header.refresh')),
+          h(
+            'button',
+            {
+              key: 'devkit',
+              className: 'atw-btn atw-btn--ghost' + (view.devkitOpen ? ' atw-btn--active' : ''),
+              type: 'button',
+              onClick: view.actions.toggleDevkit,
+              title: tr('header.devkitTooltip'),
+            },
+            '🏛️ ' + tr('header.devkit'),
+          ),
           h(
             'button',
             { key: 'pause', className: 'atw-btn atw-btn--ghost', type: 'button', onClick: view.actions.togglePaused },
@@ -2778,6 +2867,21 @@ window.__ModuleLoader__.load({
                 : proposalsOpen
                   ? badge(tr('flow.proposalsOpen', { n: item.openProposals }), 'warn', 'proposals')
                   : null,
+          item.handoffPacket && item.handoffPacket.contractId
+            ? h(
+                'span',
+                {
+                  key: 'contract-chip',
+                  className: 'atw-rel-chip atw-rel-chip--contract',
+                  title: tr('card.contractTitle', { id: item.handoffPacket.contractId, entry: item.handoffPacket.entry || '' }),
+                  onClick: (e) => {
+                    e.stopPropagation()
+                    view.actions.openDevkit('handoffs')
+                  },
+                },
+                '📜 ' + item.handoffPacket.contractId,
+              )
+            : null,
         ),
       )
     }
@@ -3869,6 +3973,60 @@ window.__ModuleLoader__.load({
       }
       sections.push(h('div', { key: 'report', className: 'atw-section' }, h('div', { className: 'atw-section-title' }, tr('drawer.report')), reportRows))
 
+      if (item.handoffPacket && item.handoffPacket.contractId) {
+        const hp = item.handoffPacket
+        const hpRows = [
+          h(
+            'div',
+            { key: 'hp-contract', className: 'atw-kv' },
+            h('span', { className: 'atw-kv-key' }, tr('drawer.contractId')),
+            h('span', { className: 'atw-kv-value' }, h('code', null, hp.contractId)),
+          ),
+        ]
+        if (hp.entry) {
+          hpRows.push(
+            h(
+              'div',
+              { key: 'hp-entry', className: 'atw-kv' },
+              h('span', { className: 'atw-kv-key' }, tr('drawer.contractEntry')),
+              h('span', { className: 'atw-kv-value' }, hp.entry),
+            ),
+          )
+        }
+        if (Array.isArray(hp.exports) && hp.exports.length > 0) {
+          hpRows.push(
+            h(
+              'div',
+              { key: 'hp-exports', className: 'atw-section' },
+              h('div', { className: 'atw-section-title' }, tr('drawer.contractExports')),
+              h(
+                'div',
+                { className: 'atw-devkit-methods' },
+                hp.exports.map((e, ei) => h('span', { key: 'ex-' + ei, className: 'atw-devkit-method-chip' }, e)),
+              ),
+            ),
+          )
+        }
+        if (hp.notes) {
+          hpRows.push(
+            h(
+              'div',
+              { key: 'hp-notes', className: 'atw-kv' },
+              h('span', { className: 'atw-kv-key' }, tr('drawer.contractNotes')),
+              h('span', { className: 'atw-kv-value' }, hp.notes),
+            ),
+          )
+        }
+        sections.push(
+          h(
+            'div',
+            { key: 'handoff-packet', className: 'atw-section' },
+            h('div', { className: 'atw-section-title' }, tr('drawer.handoffPacket')),
+            hpRows,
+          ),
+        )
+      }
+
       const reviews = item.reviews
       const reviewRows = [
         h(
@@ -4367,6 +4525,239 @@ window.__ModuleLoader__.load({
       )
     }
 
+    function renderDevkitDrawer(view, devkit, items) {
+      const tr = view.tr
+      const d = devkit && typeof devkit === 'object' ? devkit : null
+      const project = d && d.project ? d.project : tr('common.unknown')
+      const runtime = d && d.runtime ? (d.runtime.type || 'node') + '/' + (d.runtime.module || 'esm') : 'node/esm'
+      const testRunner = d && d.runtime && d.runtime.testRunner ? d.runtime.testRunner : 'node --test'
+      const contracts = d && Array.isArray(d.contracts) ? d.contracts : []
+      const modules = d && d.modules && typeof d.modules === 'object' ? Object.entries(d.modules) : []
+      const activeTab = view.devkitTab || 'contracts'
+
+      const handoffItems = (items || []).filter((item) => item.handoffPacket && item.handoffPacket.contractId)
+
+      const tabs = [
+        h(
+          'button',
+          {
+            key: 'tab-contracts',
+            className: 'atw-devkit-tab' + (activeTab === 'contracts' ? ' atw-devkit-tab--active' : ''),
+            type: 'button',
+            onClick: () => view.actions.setDevkitTab('contracts'),
+          },
+          tr('devkit.tabContracts', { n: contracts.length }),
+        ),
+        h(
+          'button',
+          {
+            key: 'tab-modules',
+            className: 'atw-devkit-tab' + (activeTab === 'modules' ? ' atw-devkit-tab--active' : ''),
+            type: 'button',
+            onClick: () => view.actions.setDevkitTab('modules'),
+          },
+          tr('devkit.tabModules', { n: modules.length }),
+        ),
+        h(
+          'button',
+          {
+            key: 'tab-handoffs',
+            className: 'atw-devkit-tab' + (activeTab === 'handoffs' ? ' atw-devkit-tab--active' : ''),
+            type: 'button',
+            onClick: () => view.actions.setDevkitTab('handoffs'),
+          },
+          tr('devkit.tabHandoffs', { n: handoffItems.length }),
+        ),
+      ]
+
+      let body
+      if (activeTab === 'contracts') {
+        if (contracts.length === 0) {
+          body = h('div', { className: 'atw-muted' }, tr('devkit.noContracts'))
+        } else {
+          body = contracts.map((c, i) => {
+            const deliverers = handoffItems.filter((it) => it.handoffPacket.contractId === c.id)
+            return h(
+              'div',
+              { key: 'contract-' + i, className: 'atw-devkit-card' },
+              h(
+                'div',
+                { className: 'atw-devkit-card-head' },
+                h('div', { className: 'atw-devkit-card-title' }, c.title || c.id),
+                badge('v' + (c.version || '1.0.0'), 'brand'),
+              ),
+              h(
+                'div',
+                { className: 'atw-kv' },
+                h('span', { className: 'atw-kv-key' }, tr('drawer.contractId')),
+                h('span', { className: 'atw-kv-value' }, h('code', null, c.id)),
+              ),
+              c.file
+                ? h(
+                    'div',
+                    { className: 'atw-kv' },
+                    h('span', { className: 'atw-kv-key' }, tr('devkit.file')),
+                    h('span', { className: 'atw-kv-value' }, c.file),
+                  )
+                : null,
+              Array.isArray(c.methods) && c.methods.length > 0
+                ? h(
+                    'div',
+                    { className: 'atw-section' },
+                    h('div', { className: 'atw-section-title' }, tr('devkit.methods')),
+                    h(
+                      'div',
+                      { className: 'atw-devkit-methods' },
+                      c.methods.map((m, mi) => h('span', { key: 'm-' + mi, className: 'atw-devkit-method-chip' }, m + '()')),
+                    ),
+                  )
+                : null,
+              deliverers.length > 0
+                ? h(
+                    'div',
+                    { className: 'atw-section' },
+                    h('div', { className: 'atw-section-title' }, tr('devkit.deliveringItems')),
+                    h(
+                      'div',
+                      { className: 'atw-list' },
+                      deliverers.map((dItem) =>
+                        h(
+                          'button',
+                          {
+                            key: 'del-' + dItem.id,
+                            className: 'atw-btn atw-btn--ghost',
+                            type: 'button',
+                            style: { textAlign: 'left', padding: '4px 8px', width: '100%', boxSizing: 'border-box' },
+                            onClick: () => {
+                              view.actions.closeDevkit()
+                              view.actions.toggleItem(dItem.id)
+                            },
+                          },
+                          dItem.id + ': ' + dItem.subject + ' (' + dItem.owner + ')',
+                        ),
+                      ),
+                    ),
+                  )
+                : null,
+            )
+          })
+        }
+      } else if (activeTab === 'modules') {
+        if (modules.length === 0) {
+          body = h('div', { className: 'atw-muted' }, tr('devkit.noModules'))
+        } else {
+          body = modules.map(([name, mod], i) =>
+            h(
+              'div',
+              { key: 'module-' + i, className: 'atw-devkit-card' },
+              h(
+                'div',
+                { className: 'atw-devkit-card-head' },
+                h('div', { className: 'atw-devkit-card-title' }, name),
+                badge((mod.exportsCount || 0) + ' ' + tr('devkit.exports'), 'idle'),
+              ),
+              h(
+                'div',
+                { className: 'atw-kv' },
+                h('span', { className: 'atw-kv-key' }, tr('devkit.entry')),
+                h('span', { className: 'atw-kv-value' }, h('code', null, mod.entry || mod.path)),
+              ),
+              Array.isArray(mod.exports) && mod.exports.length > 0
+                ? h(
+                    'div',
+                    { className: 'atw-devkit-methods' },
+                    mod.exports.slice(0, 20).map((exp, ei) => h('span', { key: 'e-' + ei, className: 'atw-devkit-method-chip' }, exp)),
+                  )
+                : null,
+            ),
+          )
+        }
+      } else {
+        if (handoffItems.length === 0) {
+          body = h('div', { className: 'atw-muted' }, tr('devkit.noHandoffs'))
+        } else {
+          body = handoffItems.map((item) => {
+            const hp = item.handoffPacket
+            return h(
+              'div',
+              { key: 'hp-' + item.id, className: 'atw-devkit-card' },
+              h(
+                'div',
+                { className: 'atw-devkit-card-head' },
+                h('div', { className: 'atw-devkit-card-title' }, item.id + ': ' + item.subject),
+                badge(item.owner || tr('common.unknown'), 'brand'),
+              ),
+              h(
+                'div',
+                { className: 'atw-kv' },
+                h('span', { className: 'atw-kv-key' }, tr('drawer.contractId')),
+                h('span', { className: 'atw-kv-value' }, h('code', null, hp.contractId)),
+              ),
+              hp.entry
+                ? h(
+                    'div',
+                    { className: 'atw-kv' },
+                    h('span', { className: 'atw-kv-key' }, tr('drawer.contractEntry')),
+                    h('span', { className: 'atw-kv-value' }, hp.entry),
+                  )
+                : null,
+              Array.isArray(hp.exports) && hp.exports.length > 0
+                ? h(
+                    'div',
+                    { className: 'atw-section' },
+                    h('div', { className: 'atw-section-title' }, tr('drawer.contractExports')),
+                    h(
+                      'div',
+                      { className: 'atw-devkit-methods' },
+                      hp.exports.map((e, ei) => h('span', { key: 'hpe-' + ei, className: 'atw-devkit-method-chip' }, e)),
+                    ),
+                  )
+                : null,
+              hp.notes
+                ? h(
+                    'div',
+                    { className: 'atw-kv' },
+                    h('span', { className: 'atw-kv-key' }, tr('drawer.contractNotes')),
+                    h('span', { className: 'atw-kv-value' }, hp.notes),
+                  )
+                : null,
+              h(
+                'button',
+                {
+                  className: 'atw-btn atw-btn--ghost',
+                  type: 'button',
+                  style: { alignSelf: 'flex-start', marginTop: '4px' },
+                  onClick: () => {
+                    view.actions.closeDevkit()
+                    view.actions.toggleItem(item.id)
+                  },
+                },
+                tr('flow.hint') + ' (' + item.id + ')',
+              ),
+            )
+          })
+        }
+      }
+
+      return h(
+        'aside',
+        { className: 'atw-devkit', role: 'dialog', 'aria-label': tr('devkit.title'), 'aria-modal': false },
+        h(
+          'div',
+          { className: 'atw-devkit-head' },
+          h(
+            'div',
+            { className: 'atw-devkit-heading' },
+            h('div', { className: 'atw-devkit-title' }, tr('devkit.title')),
+            h('div', { className: 'atw-muted' }, project + ' · ' + runtime + ' · ' + testRunner),
+          ),
+          h('button', { className: 'atw-btn', type: 'button', onClick: () => view.actions.closeDevkit() }, tr('devkit.close')),
+        ),
+        h('div', { className: 'atw-devkit-tabs' }, tabs),
+        h('div', { className: 'atw-devkit-body' }, body),
+      )
+    }
+
     function renderBoard(view, snapshot) {
       const tr = view.tr
       const team = normalizeTeam(snapshot)
@@ -4379,6 +4770,7 @@ window.__ModuleLoader__.load({
         content.push(renderEmptyState(view, team, diagnostics))
         content.push(renderTopologyPanel(view, team, run))
         if (view.memberName !== null) content.push(renderMemberDrawer(view, team, null))
+        if (view.devkitOpen) content.push(renderDevkitDrawer(view, snapshot ? snapshot.devkit : null, []))
         const notes = renderDiagnostics(view, diagnostics)
         if (notes !== null) content.push(notes)
         return h('div', { className: 'atw-scroll' }, content)
@@ -4397,6 +4789,7 @@ window.__ModuleLoader__.load({
       const selected = view.selectedItemId === null ? null : items.find((item) => item.id === view.selectedItemId) || null
       if (selected !== null) content.push(renderDrawer(view, selected, collaboration))
       if (view.memberName !== null) content.push(renderMemberDrawer(view, team, collaboration))
+      if (view.devkitOpen) content.push(renderDevkitDrawer(view, snapshot ? snapshot.devkit : null, items))
       return h('div', { className: 'atw-scroll' }, content)
     }
 
@@ -4474,6 +4867,8 @@ window.__ModuleLoader__.load({
       const [memberSendState, setMemberSendState] = React.useState(null)
       const [memberReload, setMemberReload] = React.useState(0)
       const [copiedPath, setCopiedPath] = React.useState(null)
+      const [devkitOpen, setDevkitOpen] = React.useState(false)
+      const [devkitTab, setDevkitTab] = React.useState('contracts')
       /** Flow map zoom (CSS zoom keeps the scrollbars honest). */
       const [flowZoom, setFlowZoom] = React.useState(1)
 
@@ -4711,7 +5106,7 @@ window.__ModuleLoader__.load({
       }, [memberName, sessionId, lastUpdated, memberReload])
 
       React.useEffect(() => {
-        if (selectedItemId === null && memberName === null) return undefined
+        if (selectedItemId === null && memberName === null && !devkitOpen) return undefined
         const onKeyDown = (event) => {
           if (!event || event.key !== 'Escape') return
           setSelectedItemId(null)
@@ -4722,6 +5117,7 @@ window.__ModuleLoader__.load({
           setMemberMessage('')
           setMemberSendState(null)
           setExpandedTranscript([])
+          setDevkitOpen(false)
         }
         if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
           window.addEventListener('keydown', onKeyDown)
@@ -4731,7 +5127,7 @@ window.__ModuleLoader__.load({
             window.removeEventListener('keydown', onKeyDown)
           }
         }
-      }, [selectedItemId, memberName])
+      }, [selectedItemId, memberName, devkitOpen])
 
       React.useEffect(
         () => () => {
@@ -4748,12 +5144,22 @@ window.__ModuleLoader__.load({
           if (loadRef.current !== null) loadRef.current()
         },
         togglePaused: () => setPaused((value) => !value),
+        toggleDevkit: () => setDevkitOpen((value) => !value),
+        openDevkit: (tab) => {
+          if (typeof tab === 'string') setDevkitTab(tab)
+          setDevkitOpen(true)
+          setSelectedItemId(null)
+          setMemberName(null)
+        },
+        closeDevkit: () => setDevkitOpen(false),
+        setDevkitTab: (tab) => setDevkitTab(tab),
         toggleItem: (id) => {
           setSelectedItemId((value) => (value === id ? null : id))
           setMemberName(null)
           setMemberView(null)
           setMemberError(null)
           setMemberLoading(false)
+          setDevkitOpen(false)
         },
         openMember: (name) => {
           const value = str(name)
@@ -4766,6 +5172,7 @@ window.__ModuleLoader__.load({
           setMemberMessage('')
           setMemberSendState(null)
           setExpandedTranscript([])
+          setDevkitOpen(false)
         },
         closeMember: () => {
           setMemberName(null)
@@ -4908,6 +5315,8 @@ window.__ModuleLoader__.load({
         memberMessage,
         memberSendState,
         selectedItemId,
+        devkitOpen,
+        devkitTab,
         copiedPath,
         lastUpdated,
         error,

@@ -469,9 +469,74 @@ function buildItem(raw, id, context) {
     createdBy: isoOf(raw.createdBy),
     plan: buildPlan(raw.plan),
     git: buildItemGit(raw.git),
+    handoffPacket: buildHandoffPacket(raw.handoffPacket),
   }
   if (raw.archived === true) item.archived = true
   return item
+}
+
+/**
+ * Normalize an item's cross-agent handoff packet.
+ * @param raw - raw `item.handoffPacket`.
+ * @returns normalized handoff packet or null.
+ */
+function buildHandoffPacket(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  return {
+    contractId: textOf(raw.contract_id ?? raw.contractId) || null,
+    entry: textOf(raw.entry) || null,
+    exports: textList(raw.exports),
+    notes: typeof raw.notes === 'string' ? clip(raw.notes) : null,
+  }
+}
+
+/**
+ * Aggregate local devkit architecture manifest and registered contracts.
+ * @param raw - raw devkit object.
+ * @returns normalized devkit block or null.
+ */
+function buildDevkit(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const modules = {}
+  if (isRecord(raw.modules)) {
+    for (const [name, mod] of Object.entries(raw.modules)) {
+      if (isRecord(mod)) {
+        modules[name] = {
+          path: textOf(mod.path),
+          entry: textOf(mod.entry),
+          exportsCount: integerOf(mod.exportsCount ?? (Array.isArray(mod.exports) ? mod.exports.length : 0)),
+          testsCount: integerOf(mod.testsCount ?? (Array.isArray(mod.tests) ? mod.tests.length : 0)),
+          exports: Array.isArray(mod.exports) ? textList(mod.exports).slice(0, 50) : [],
+        }
+      }
+    }
+  }
+  const contracts = []
+  if (Array.isArray(raw.contracts)) {
+    for (const c of raw.contracts) {
+      if (isRecord(c)) {
+        contracts.push({
+          id: textOf(c.id ?? c.$id),
+          title: textOf(c.title),
+          version: textOf(c.version),
+          methods: textList(c.methods),
+          file: textOf(c.file),
+        })
+      }
+    }
+  }
+  return {
+    project: textOf(raw.project) || null,
+    runtime: isRecord(raw.runtime)
+      ? {
+          type: textOf(raw.runtime.type),
+          module: textOf(raw.runtime.module),
+          testRunner: textOf(raw.runtime.testRunner),
+        }
+      : null,
+    modules,
+    contracts,
+  }
 }
 
 /**
@@ -1350,6 +1415,7 @@ export function buildSnapshot(input) {
     sessionId,
     run,
     team,
+    devkit: buildDevkit(source.devkit),
     diagnostics: { boardSource, warnings },
   }
 }

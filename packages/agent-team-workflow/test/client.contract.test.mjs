@@ -2276,3 +2276,94 @@ test('dashboard enhancement: pipeline banner, finding previews, summary previews
     board.dispose()
   }
 })
+
+test('devkit and architecture view: devkit button, drawer, tabs, contract card chip and item handoff packet', async () => {
+  const devkitSnapshot = {
+    ...V2_SNAPSHOT,
+    devkit: {
+      project: 'devkit-demo',
+      runtime: { type: 'node', module: 'esm', testRunner: 'node --test' },
+      modules: {
+        root: { path: '.', entry: 'index.js', exportsCount: 2, exports: ['login', 'logout'] },
+      },
+      contracts: [
+        {
+          id: 'auth-contract',
+          title: 'Authentication Contract',
+          version: '1.0.0',
+          methods: ['login', 'logout'],
+          file: 'auth-contract.json',
+        },
+      ],
+    },
+    run: {
+      ...V2_SNAPSHOT.run,
+      items: [
+        {
+          ...V2_SNAPSHOT.run.items[0],
+          id: 'W1',
+          handoffPacket: {
+            contractId: 'auth-contract',
+            entry: 'src/auth.js',
+            exports: ['login', 'logout'],
+            notes: 'Requires token parameter',
+          },
+        },
+        ...V2_SNAPSHOT.run.items.slice(1),
+      ],
+    },
+  }
+
+  const board = await mountBoard(devkitSnapshot)
+  try {
+    let tree = await board.render()
+
+    // 1. Check card contract chip
+    const w1 = cardById(tree, 'W1')
+    const chips = findByClass(w1, 'atw-rel-chip--contract')
+    assert.equal(chips.length, 1, 'W1 has contract chip')
+    assert.ok(textOf(chips[0]).includes('auth-contract'))
+
+    // 2. Open item drawer -> check handoff packet block
+    w1.props.onClick()
+    tree = await board.render()
+    const itemDrawer = textOf(findByClass(tree, 'atw-drawer')[0])
+    assert.ok(itemDrawer.includes('k:drawer.handoffPacket'))
+    assert.ok(itemDrawer.includes('auth-contract'))
+    assert.ok(itemDrawer.includes('src/auth.js'))
+    assert.ok(itemDrawer.includes('Requires token parameter'))
+
+    // 3. Open devkit drawer via header button
+    const devkitBtn = findButtonByText(tree, '🏛️ k:header.devkit')
+    assert.ok(devkitBtn, 'header has devkit button')
+    devkitBtn.props.onClick()
+    tree = await board.render()
+
+    const devkitDrawer = findByClass(tree, 'atw-devkit')
+    assert.equal(devkitDrawer.length, 1, 'devkit drawer opens')
+    assert.ok(textOf(devkitDrawer[0]).includes('devkit-demo'))
+    assert.ok(textOf(devkitDrawer[0]).includes('Authentication Contract'))
+    assert.ok(textOf(devkitDrawer[0]).includes('login()'))
+
+    // 4. Switch to Modules tab
+    const modulesTab = findButtonByText(tree, 'k:devkit.tabModules')
+    assert.ok(modulesTab, 'modules tab exists')
+    modulesTab.props.onClick()
+    tree = await board.render()
+    assert.ok(textOf(findByClass(tree, 'atw-devkit')[0]).includes('index.js'))
+
+    // 5. Switch to Handoffs tab
+    const handoffsTab = findButtonByText(tree, 'k:devkit.tabHandoffs')
+    assert.ok(handoffsTab, 'handoffs tab exists')
+    handoffsTab.props.onClick()
+    tree = await board.render()
+    assert.ok(textOf(findByClass(tree, 'atw-devkit')[0]).includes('Requires token parameter'))
+
+    // 6. Escape closes devkit drawer
+    for (const handler of [...board.keydown]) handler({ key: 'Escape' })
+    tree = await board.render()
+    assert.equal(findByClass(tree, 'atw-devkit').length, 0, 'Escape closes devkit drawer')
+  } finally {
+    board.dispose()
+  }
+})
