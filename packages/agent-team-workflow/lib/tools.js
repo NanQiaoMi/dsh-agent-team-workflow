@@ -13,11 +13,13 @@ import path from 'node:path'
 import { runSettings } from './config.js'
 import {
   ensureDevkit,
+  generateContractStub,
   listContracts,
   lookupStructure,
   publishContract,
   readContract,
   validateContract,
+  validateItemHandoff,
 } from './devkit.js'
 import * as G from './git.js'
 import { fireHooks } from './hooks.js'
@@ -912,6 +914,8 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           review_round: {},
           reviewer: {},
           handoff_packet: {},
+          contract_validation: {},
+          contract_warnings: { type: 'array', items: { type: 'string' } },
           scope_warnings: { type: 'array', items: { type: 'string' } },
           sequence_warnings: { type: 'array', items: { type: 'string' } },
           sync_warnings: { type: 'array', items: { type: 'string' } },
@@ -929,6 +933,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           note: command?.note === undefined ? null : String(command.note),
         }))
         const files = (Array.isArray(args.files) ? args.files : []).map((file) => W.normalizePath(file)).filter((file) => file.length > 0)
+        const cwd = store.workingDir(agent)
         const handoffPacket = args.handoff_packet && typeof args.handoff_packet === 'object'
           ? {
               contract_id: args.handoff_packet.contract_id ? String(args.handoff_packet.contract_id).trim() : null,
@@ -937,6 +942,17 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
               notes: args.handoff_packet.notes ? clip(String(args.handoff_packet.notes).trim(), 1000) : null,
             }
           : null
+        const contractValidation = handoffPacket?.contract_id
+          ? await validateItemHandoff(cwd, handoffPacket)
+          : null
+        if (handoffPacket && contractValidation && contractValidation.skipped !== true) {
+          handoffPacket.validation = {
+            ok: contractValidation.ok,
+            contractId: contractValidation.contractId,
+            missing: contractValidation.missing ?? [],
+            error: contractValidation.error ?? null,
+          }
+        }
         const report = {
           summary: clip(String(args.summary ?? '').trim(), 4000),
           files,
@@ -945,6 +961,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           openQuestions: (Array.isArray(args.open_questions) ? args.open_questions : []).map((entry) => clip(entry, 1000)),
           risks: (Array.isArray(args.risks) ? args.risks : []).map((entry) => clip(entry, 1000)),
           deviation: args.deviation === undefined ? null : clip(args.deviation, 2000),
+          contractValidation: contractValidation && contractValidation.skipped !== true ? contractValidation : null,
         }
         const state = await store.mutateState(agent, (current) => {
           if (current === null) throw new Error('no workflow run exists yet; the Lead must call team_flow_plan first')
@@ -967,6 +984,10 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
               if (outside.length > 0 && !args.deviation) {
                 throw new Error(`team_flow_report rejected: modified files outside declared writeScopes (${outside.join(', ')}). In strictScopes mode, revert outside files or explain in "deviation".`)
               }
+            }
+            if (settings.strictContracts && contractValidation && !contractValidation.ok && !args.deviation) {
+              const summary = contractValidation.error || `missing required methods [${contractValidation.missing.join(', ')}]`
+              throw new Error(`team_flow_report rejected: contract "${contractValidation.contractId}" violation: ${summary}. Fix missing exports or explain in "deviation".`)
             }
           }
 
@@ -1010,12 +1031,17 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           artifacts: {},
         })
         triggerOrchestrator(agent)
+        const contractWarnings = contractValidation && !contractValidation.ok
+          ? [contractValidation.error || `contract "${contractValidation.contractId}" missing methods: [${contractValidation.missing.join(', ')}]`]
+          : []
         return {
           ...reportView(item),
           status: item.status,
           review_round: outcome.review?.round ?? null,
           reviewer: outcome.nextReviewer,
           handoff_packet: item.handoffPacket ?? null,
+          contract_validation: contractValidation && contractValidation.skipped !== true ? contractValidation : null,
+          contract_warnings: contractWarnings,
           scope_warnings: scopeWarnings,
           sequence_warnings: item.report?.sequenceWarnings ?? [],
           sync_warnings: syncWarnings,
@@ -2984,13 +3010,13 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_dev_contract',
       description:
-        'Manage standard interface contracts: read, publish, list, or validate exports against a contract.',
+        'Manage interface contracts: read, publish, list, validate, or generate mock stubs.',
       parameters: {
         type: 'object',
         properties: {
           action: {
             type: 'string',
-            enum: ['list', 'read', 'publish', 'validate'],
+            enum: ['list', 'read', 'publish', 'validate', 'stub'],
             description: 'Contract operation.',
           },
           contract_id: {
@@ -3004,7 +3030,16 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           exports: {
             type: 'array',
             items: { type: 'string' },
-            description: 'List of exported symbol names when validating against a contract.',
+            description: 'Exported symbol names when validating.',
+          },
+          format: {
+            type: 'string',
+            enum: ['esm', 'dts', 'json'],
+            description: 'Stub output format: esm (default), dts, or json.',
+          },
+          write_to: {
+            type: 'string',
+            description: 'Optional file path in workspace to write stub.',
           },
         },
         required: ['action'],
@@ -3016,6 +3051,8 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           ok: { type: 'boolean' },
           contract_id: { type: 'string' },
           path: { type: 'string' },
+          code: { type: 'string' },
+          written: { type: 'boolean' },
           contract: {},
           contracts: { type: 'array', items: {} },
           validation: {},
@@ -3049,7 +3086,17 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           const validation = validateContract(contract, args.exports ?? [])
           return { ok: validation.ok, contract_id: args.contract_id, validation }
         }
-        throw new Error(`unknown action "${action}"; use list, read, publish, or validate`)
+        if (action === 'stub' || action === 'mock') {
+          if (!args.contract_id) throw new Error('team_dev_contract { action: "stub" } requires contract_id')
+          const contract = await readContract(cwd, args.contract_id)
+          if (!contract) return { ok: false, error: `contract "${args.contract_id}" not found` }
+          const res = await generateContractStub(cwd, contract, {
+            format: args.format,
+            writeTo: args.write_to,
+          })
+          return { ok: true, contract_id: args.contract_id, ...res }
+        }
+        throw new Error(`unknown action "${action}"; use list, read, publish, validate, or stub`)
       },
     },
   ]

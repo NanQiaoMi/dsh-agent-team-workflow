@@ -482,11 +482,19 @@ function buildItem(raw, id, context) {
  */
 function buildHandoffPacket(raw) {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const val = isRecord(raw.validation) ? raw.validation : null
   return {
     contractId: textOf(raw.contract_id ?? raw.contractId) || null,
     entry: textOf(raw.entry) || null,
     exports: textList(raw.exports),
     notes: typeof raw.notes === 'string' ? clip(raw.notes) : null,
+    validation: val
+      ? {
+          ok: val.ok === true,
+          missing: textList(val.missing),
+          error: textOf(val.error) || null,
+        }
+      : null,
   }
 }
 
