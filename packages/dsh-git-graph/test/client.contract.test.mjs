@@ -115,4 +115,15 @@ test('client factory executes and registers slots and locale dictionaries', () =
   assert.equal(viewReg.options.id, 'dsh-git-graph')
   assert.equal(viewReg.options.order, 25)
   assert.equal(typeof viewReg.options.label, 'function')
+
+  // Verify component rendering safety when snapshot is null / offline
+  const GitGraphView = viewReg.component
+  assert.doesNotThrow(() => {
+    GitGraphView({ sessionId: 'test', t: (k) => k })
+  }, 'GitGraphView must never throw when snapshot is null')
+
+  const GitDock = dockReg.component
+  assert.doesNotThrow(() => {
+    GitDock({ sessionId: 'test', t: (k) => k })
+  }, 'GitDock must never throw when snapshot is null')
 })

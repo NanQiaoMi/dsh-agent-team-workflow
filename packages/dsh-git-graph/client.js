@@ -7,6 +7,7 @@
  *
  * Zero external require (strictly only `require('react')`).
  * Uses DSH host theme tokens (`--dsw-alias-*`) and self-contained styles.
+ * 100% fault-tolerant with error boundaries and scrollport normalization.
  */
 
 window.__ModuleLoader__.load({
@@ -38,6 +39,9 @@ window.__ModuleLoader__.load({
       'dock.copyBranch': '复制分支名',
       'dock.copySha': '复制 SHA',
       'dock.refresh': '刷新',
+      'dock.loading': '读取中...',
+      'dock.offline': 'Git 离线',
+      'dock.notGit': '未初始化',
       'graph.title': 'Git 提交关系与分支树',
       'graph.searchPlaceholder': '搜索提交信息、SHA、作者或分支...',
       'graph.uncommitted': '工作区未提交改动',
@@ -50,6 +54,7 @@ window.__ModuleLoader__.load({
       'graph.parents': '父提交:',
       'graph.noCommits': '没有找到匹配的提交',
       'graph.notGitRepo': '当前目录不是一个有效的 Git 仓库',
+      'graph.notGitRepoDesc': '在此工作区运行 git init 即可启用完整的 Git 树图与分支追踪。',
       'graph.loading': '正在读取 Git 树图...',
       'graph.copied': '已复制到剪贴板！',
       'graph.inspectCommit': '提交详情',
@@ -58,6 +63,9 @@ window.__ModuleLoader__.load({
       'graph.actions': '辅助操作',
       'graph.copyDiffCmd': '复制 Diff 命令',
       'graph.autoRefresh': '自动轮询',
+      'graph.retry': '重试连接',
+      'graph.connErrorTitle': 'Git 树图服务连接中或暂未就绪',
+      'graph.connErrorHint': '正在尝试与 Host 数据路由建立通信。若刚安装插件，可点击重试或重启 DSH Desktop。',
     }
 
     const en = {
@@ -71,6 +79,9 @@ window.__ModuleLoader__.load({
       'dock.copyBranch': 'Copy Branch Name',
       'dock.copySha': 'Copy SHA',
       'dock.refresh': 'Refresh',
+      'dock.loading': 'Loading...',
+      'dock.offline': 'Git Offline',
+      'dock.notGit': 'Not a repo',
       'graph.title': 'Git Commit DAG & Branch Tree',
       'graph.searchPlaceholder': 'Search message, SHA, author, branch...',
       'graph.uncommitted': 'Uncommitted Working Changes',
@@ -83,6 +94,7 @@ window.__ModuleLoader__.load({
       'graph.parents': 'Parents:',
       'graph.noCommits': 'No matching commits found',
       'graph.notGitRepo': 'Current directory is not a Git repository',
+      'graph.notGitRepoDesc': 'Run git init in this workspace to enable live Git tree tracking.',
       'graph.loading': 'Loading Git graph...',
       'graph.copied': 'Copied to clipboard!',
       'graph.inspectCommit': 'Commit Details',
@@ -91,6 +103,9 @@ window.__ModuleLoader__.load({
       'graph.actions': 'Developer Actions',
       'graph.copyDiffCmd': 'Copy Diff Command',
       'graph.autoRefresh': 'Auto Refresh',
+      'graph.retry': 'Retry Connection',
+      'graph.connErrorTitle': 'Git Graph service connecting or not yet ready',
+      'graph.connErrorHint': 'Connecting to Host snapshot route. If newly installed, click Retry or restart DSH.',
     }
 
     // -------------------------------------------------------------------------
@@ -111,11 +126,15 @@ window.__ModuleLoader__.load({
             credentials: 'same-origin',
             headers: { accept: 'application/json' },
           })
-          if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+          }
           const data = await res.json()
-          setSnapshot(data)
-          setError(null)
-          setLastUpdated(new Date())
+          if (data && typeof data === 'object') {
+            setSnapshot(data)
+            setError(null)
+            setLastUpdated(new Date())
+          }
         } catch (err) {
           setError(err?.message || 'Failed to fetch Git snapshot')
         } finally {
@@ -214,160 +233,242 @@ window.__ModuleLoader__.load({
     }
 
     // -------------------------------------------------------------------------
+    // Translation Helper
+    // -------------------------------------------------------------------------
+    function makeTr(callerT, fallbackLocale) {
+      return (key, params) => {
+        try {
+          if (typeof callerT === 'function') {
+            const res = callerT(key, params)
+            if (res && res !== key) return res
+          }
+          let text = (fallbackLocale && fallbackLocale[key]) || zh[key] || key
+          if (params && typeof params === 'object') {
+            for (const [k, v] of Object.entries(params)) {
+              text = text.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v))
+            }
+          }
+          return text
+        } catch {
+          return key
+        }
+      }
+    }
+
+    // -------------------------------------------------------------------------
     // Component: GitDock (Conversation Composer Dock Item)
     // -------------------------------------------------------------------------
 
     function GitDock(props) {
-      const { sessionId, t } = props
-      const { snapshot, loading, refresh } = useGitSnapshot(sessionId, 2000)
-      const [flyoutOpen, setFlyoutOpen] = useState(false)
-      const [copiedText, setCopiedText] = useState('')
+      try {
+        const source = props && typeof props === 'object' ? props : {}
+        const sessionId = source.sessionId || ''
+        const tr = makeTr(source.t, zh)
 
-      const copyToClipboard = (text, label) => {
-        if (navigator.clipboard) {
-          navigator.clipboard.writeText(text).then(() => {
-            setCopiedText(label)
-            setTimeout(() => setCopiedText(''), 1500)
-          })
+        const { snapshot, loading, error, refresh } = useGitSnapshot(sessionId, 2000)
+        const [flyoutOpen, setFlyoutOpen] = useState(false)
+        const [copiedText, setCopiedText] = useState('')
+
+        const copyToClipboard = (text, label) => {
+          if (navigator.clipboard) {
+            navigator.clipboard.writeText(text).then(() => {
+              setCopiedText(label)
+              setTimeout(() => setCopiedText(''), 1500)
+            })
+          }
         }
-      }
 
-      if (!snapshot || !snapshot.isGitRepo) {
-        return null // Don't clutter composer dock if not a Git repository
-      }
+        // Safe status values
+        const status = (snapshot && snapshot.status) || {}
+        const isGitRepo = Boolean(snapshot?.isGitRepo)
+        const branch = status.headBranch || 'Git'
+        const isDirty = Boolean(status.isDirty)
+        const changedCount = status.totalChanged || 0
+        const ahead = status.ahead || 0
+        const behind = status.behind || 0
 
-      const branch = snapshot.status?.headBranch || 'unknown'
-      const isDirty = Boolean(snapshot.status?.isDirty)
-      const changedCount = snapshot.status?.totalChanged || 0
-      const ahead = snapshot.status?.ahead || 0
-      const behind = snapshot.status?.behind || 0
-
-      return h(
-        'div',
-        { className: 'dsh-gg-dock-wrap' },
-        h(
-          'button',
-          {
-            type: 'button',
-            className: `dsh-gg-dock-pill ${isDirty ? 'is-dirty' : 'is-clean'} ${flyoutOpen ? 'is-active' : ''}`,
-            onClick: () => setFlyoutOpen(!flyoutOpen),
-            title: isDirty ? `Git: ${branch} (${changedCount} uncommitted)` : `Git: ${branch} (clean)`,
-          },
-          h(GitBranchIcon, { size: 13 }),
-          h('span', { className: 'dsh-gg-dock-branch' }, branch),
-          isDirty
-            ? h('span', { className: 'dsh-gg-dock-badge dirty' }, `● ${changedCount}`)
-            : h('span', { className: 'dsh-gg-dock-badge clean' }, '✓'),
-          ahead > 0 && h('span', { className: 'dsh-gg-dock-ahead' }, `↑${ahead}`),
-          behind > 0 && h('span', { className: 'dsh-gg-dock-behind' }, `↓${behind}`)
-        ),
-
-        // Quick Flyout Popover
-        flyoutOpen &&
-          h(
+        // Loading state
+        if (loading && !snapshot) {
+          return h(
             'div',
-            { className: 'dsh-gg-flyout' },
+            { className: 'dsh-gg-dock-wrap' },
+            h(
+              'button',
+              { type: 'button', className: 'dsh-gg-dock-pill is-loading', title: tr('dock.loading') },
+              h(GitBranchIcon, { size: 13 }),
+              h('span', { className: 'dsh-gg-dock-branch' }, tr('dock.loading'))
+            )
+          )
+        }
+
+        // Offline / route not ready state
+        if (error && !snapshot) {
+          return h(
+            'div',
+            { className: 'dsh-gg-dock-wrap' },
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'dsh-gg-dock-pill is-error',
+                onClick: () => refresh(),
+                title: `${error} (${tr('dock.refresh')})`,
+              },
+              h(GitBranchIcon, { size: 13, style: { color: '#f87171' } }),
+              h('span', { className: 'dsh-gg-dock-branch' }, tr('dock.offline'))
+            )
+          )
+        }
+
+        // Not a git repository
+        if (snapshot && !isGitRepo) {
+          return h(
+            'div',
+            { className: 'dsh-gg-dock-wrap' },
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'dsh-gg-dock-pill is-clean',
+                onClick: () => refresh(),
+                title: tr('graph.notGitRepo'),
+              },
+              h(GitBranchIcon, { size: 13, style: { opacity: 0.5 } }),
+              h('span', { className: 'dsh-gg-dock-branch' }, tr('dock.notGit'))
+            )
+          )
+        }
+
+        return h(
+          'div',
+          { className: 'dsh-gg-dock-wrap' },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: `dsh-gg-dock-pill ${isDirty ? 'is-dirty' : 'is-clean'} ${flyoutOpen ? 'is-active' : ''}`,
+              onClick: () => setFlyoutOpen(!flyoutOpen),
+              title: isDirty ? `Git: ${branch} (${changedCount} uncommitted)` : `Git: ${branch} (clean)`,
+            },
+            h(GitBranchIcon, { size: 13 }),
+            h('span', { className: 'dsh-gg-dock-branch' }, branch),
+            isDirty
+              ? h('span', { className: 'dsh-gg-dock-badge dirty' }, `● ${changedCount}`)
+              : h('span', { className: 'dsh-gg-dock-badge clean' }, '✓'),
+            ahead > 0 && h('span', { className: 'dsh-gg-dock-ahead' }, `↑${ahead}`),
+            behind > 0 && h('span', { className: 'dsh-gg-dock-behind' }, `↓${behind}`)
+          ),
+
+          // Quick Flyout Popover
+          flyoutOpen &&
             h(
               'div',
-              { className: 'dsh-gg-flyout-header' },
+              { className: 'dsh-gg-flyout' },
               h(
                 'div',
-                { className: 'dsh-gg-flyout-title' },
-                h(GitBranchIcon, { size: 14 }),
-                h('strong', null, branch)
-              ),
-              h(
-                'div',
-                { className: 'dsh-gg-flyout-actions' },
-                h(
-                  'button',
-                  {
-                    type: 'button',
-                    className: 'dsh-gg-icon-btn',
-                    onClick: () => refresh(),
-                    title: t('dock.refresh'),
-                  },
-                  h(RefreshIcon, { size: 12 })
-                ),
-                h(
-                  'button',
-                  {
-                    type: 'button',
-                    className: 'dsh-gg-icon-btn close',
-                    onClick: () => setFlyoutOpen(false),
-                  },
-                  '✕'
-                )
-              )
-            ),
-
-            h(
-              'div',
-              { className: 'dsh-gg-flyout-body' },
-              h(
-                'div',
-                { className: 'dsh-gg-flyout-status-row' },
-                h('span', { className: 'dsh-gg-status-label' }, 'HEAD Commit:'),
-                h(
-                  'span',
-                  { className: 'dsh-gg-sha-tag', onClick: () => copyToClipboard(snapshot.status?.headOid || '', 'sha') },
-                  snapshot.status?.headOid ? snapshot.status.headOid.slice(0, 7) : 'none',
-                  h(CopyIcon, { size: 11, style: { marginLeft: 4 } })
-                )
-              ),
-
-              isDirty &&
+                { className: 'dsh-gg-flyout-header' },
                 h(
                   'div',
-                  { className: 'dsh-gg-flyout-dirty-box' },
+                  { className: 'dsh-gg-flyout-title' },
+                  h(GitBranchIcon, { size: 14 }),
+                  h('strong', null, branch)
+                ),
+                h(
+                  'div',
+                  { className: 'dsh-gg-flyout-actions' },
                   h(
-                    'div',
-                    { className: 'dsh-gg-dirty-counts' },
-                    h('span', { className: 'staged' }, `Staged: ${snapshot.status.staged}`),
-                    h('span', { className: 'unstaged' }, `Unstaged: ${snapshot.status.unstaged}`),
-                    h('span', { className: 'untracked' }, `Untracked: ${snapshot.status.untracked}`)
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'dsh-gg-icon-btn',
+                      onClick: () => refresh(),
+                      title: tr('dock.refresh'),
+                    },
+                    h(RefreshIcon, { size: 12 })
                   ),
                   h(
-                    'ul',
-                    { className: 'dsh-gg-file-list' },
-                    (snapshot.status.files || []).slice(0, 6).map((f) =>
-                      h(
-                        'li',
-                        { key: f.path, className: 'dsh-gg-file-item' },
-                        h('span', { className: `status-tag ${f.status}` }, f.xy.trim()),
-                        h('span', { className: 'file-path', title: f.path }, f.path)
-                      )
-                    )
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'dsh-gg-icon-btn close',
+                      onClick: () => setFlyoutOpen(false),
+                    },
+                    '✕'
+                  )
+                )
+              ),
+
+              h(
+                'div',
+                { className: 'dsh-gg-flyout-body' },
+                h(
+                  'div',
+                  { className: 'dsh-gg-flyout-status-row' },
+                  h('span', { className: 'dsh-gg-status-label' }, 'HEAD Commit:'),
+                  h(
+                    'span',
+                    { className: 'dsh-gg-sha-tag', onClick: () => copyToClipboard(status.headOid || '', 'sha') },
+                    status.headOid ? status.headOid.slice(0, 7) : 'none',
+                    h(CopyIcon, { size: 11, style: { marginLeft: 4 } })
                   )
                 ),
 
-              copiedText && h('div', { className: 'dsh-gg-copied-notice' }, t('graph.copied'))
-            ),
+                isDirty &&
+                  h(
+                    'div',
+                    { className: 'dsh-gg-flyout-dirty-box' },
+                    h(
+                      'div',
+                      { className: 'dsh-gg-dirty-counts' },
+                      h('span', { className: 'staged' }, `Staged: ${status.staged || 0}`),
+                      h('span', { className: 'unstaged' }, `Unstaged: ${status.unstaged || 0}`),
+                      h('span', { className: 'untracked' }, `Untracked: ${status.untracked || 0}`)
+                    ),
+                    h(
+                      'ul',
+                      { className: 'dsh-gg-file-list' },
+                      (status.files || []).slice(0, 6).map((f) =>
+                        h(
+                          'li',
+                          { key: f.path, className: 'dsh-gg-file-item' },
+                          h('span', { className: `status-tag ${f.status}` }, (f.xy || '..').trim()),
+                          h('span', { className: 'file-path', title: f.path }, f.path)
+                        )
+                      )
+                    )
+                  ),
 
-            h(
-              'div',
-              { className: 'dsh-gg-flyout-footer' },
-              h(
-                'button',
-                {
-                  type: 'button',
-                  className: 'dsh-gg-btn secondary',
-                  onClick: () => copyToClipboard(branch, 'branch'),
-                },
-                t('dock.copyBranch')
+                copiedText && h('div', { className: 'dsh-gg-copied-notice' }, tr('graph.copied'))
               ),
+
               h(
-                'button',
-                {
-                  type: 'button',
-                  className: 'dsh-gg-btn secondary',
-                  onClick: () => copyToClipboard(`git diff`, 'diff'),
-                },
-                t('graph.copyDiffCmd')
+                'div',
+                { className: 'dsh-gg-flyout-footer' },
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'dsh-gg-btn secondary',
+                    onClick: () => copyToClipboard(branch, 'branch'),
+                  },
+                  tr('dock.copyBranch')
+                ),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'dsh-gg-btn secondary',
+                    onClick: () => copyToClipboard(`git diff`, 'diff'),
+                  },
+                  tr('graph.copyDiffCmd')
+                )
               )
             )
-          )
-      )
+        )
+      } catch (err) {
+        console.error('[dsh-git-graph] GitDock crash prevented:', err)
+        return null
+      }
     }
 
     // -------------------------------------------------------------------------
@@ -375,358 +476,457 @@ window.__ModuleLoader__.load({
     // -------------------------------------------------------------------------
 
     function GitGraphView(props) {
-      const { sessionId, t } = props
-      const { snapshot, loading, error, refresh, lastUpdated } = useGitSnapshot(sessionId, 2500)
-      const [searchQuery, setSearchQuery] = useState('')
-      const [selectedNode, setSelectedNode] = useState(null)
-      const [copyNotice, setCopyNotice] = useState('')
+      const rootRef = useRef(null)
 
-      const copyText = (text) => {
-        if (navigator.clipboard) {
-          navigator.clipboard.writeText(text).then(() => {
-            setCopyNotice(t('graph.copied'))
-            setTimeout(() => setCopyNotice(''), 1500)
-          })
+      try {
+        const source = props && typeof props === 'object' ? props : {}
+        const sessionId = source.sessionId || ''
+        const tr = makeTr(source.t, zh)
+
+        const { snapshot, loading, error, refresh } = useGitSnapshot(sessionId, 2500)
+        const [searchQuery, setSearchQuery] = useState('')
+        const [selectedNode, setSelectedNode] = useState(null)
+        const [copyNotice, setCopyNotice] = useState('')
+
+        // View switch reuses conversation scrollport: normalize scrollTop to 0 on mount
+        useEffect(() => {
+          const node = rootRef.current
+          if (!node || !node.parentElement) return
+          let cursor = node.parentElement
+          while (cursor) {
+            const style = typeof getComputedStyle === 'function' ? getComputedStyle(cursor) : null
+            const overflowY = style?.overflowY
+            if ((overflowY === 'auto' || overflowY === 'scroll') && cursor.scrollHeight > cursor.clientHeight) {
+              cursor.scrollTop = 0
+              return
+            }
+            cursor = cursor.parentElement
+          }
+        }, [])
+
+        const copyText = (text) => {
+          if (navigator.clipboard) {
+            navigator.clipboard.writeText(text).then(() => {
+              setCopyNotice(tr('graph.copied'))
+              setTimeout(() => setCopyNotice(''), 1500)
+            })
+          }
         }
-      }
 
-      // Filter nodes by query
-      const filteredNodes = useMemo(() => {
-        if (!snapshot?.graph?.nodes) return []
-        if (!searchQuery.trim()) return snapshot.graph.nodes
-        const q = searchQuery.toLowerCase()
-        return snapshot.graph.nodes.filter(
-          (n) =>
-            n.subject.toLowerCase().includes(q) ||
-            n.hash.toLowerCase().includes(q) ||
-            n.author.toLowerCase().includes(q) ||
-            (n.refs && n.refs.some((r) => r.name.toLowerCase().includes(q)))
-        )
-      }, [snapshot, searchQuery])
-
-      if (loading && !snapshot) {
-        return h('div', { className: 'dsh-gg-view-loading' }, t('graph.loading'))
-      }
-
-      if (snapshot && !snapshot.isGitRepo) {
-        return h(
-          'div',
-          { className: 'dsh-gg-empty-state' },
-          h(GitBranchIcon, { size: 36, style: { opacity: 0.4 } }),
-          h('h3', null, t('graph.notGitRepo')),
-          h('p', null, snapshot.cwd)
-        )
-      }
-
-      const nodes = filteredNodes
-      const connections = snapshot?.graph?.connections || []
-      const totalWidth = Math.max(snapshot?.graph?.totalWidth || 120, 160)
-      const totalHeight = snapshot?.graph?.totalHeight || (nodes.length + 1) * 40
-
-      return h(
-        'div',
-        { className: 'dsh-gg-container' },
-        // Top Toolbar
-        h(
-          'div',
-          { className: 'dsh-gg-toolbar' },
-          h(
-            'div',
-            { className: 'dsh-gg-toolbar-left' },
-            h(GitBranchIcon, { size: 16 }),
-            h('span', { className: 'dsh-gg-title' }, t('graph.title')),
-            h('span', { className: 'dsh-gg-branch-chip' }, snapshot.status?.headBranch || 'detached'),
-            snapshot.status?.isDirty &&
-              h('span', { className: 'dsh-gg-dirty-chip' }, `${snapshot.status.totalChanged} uncommitted`)
-          ),
-          h(
-            'div',
-            { className: 'dsh-gg-toolbar-right' },
-            h('input', {
-              type: 'text',
-              className: 'dsh-gg-search-input',
-              placeholder: t('graph.searchPlaceholder'),
-              value: searchQuery,
-              onChange: (e) => setSearchQuery(e.target.value),
-            }),
-            h(
-              'button',
-              {
-                type: 'button',
-                className: 'dsh-gg-btn icon',
-                onClick: () => refresh(),
-                title: t('dock.refresh'),
-              },
-              h(RefreshIcon, { size: 14 })
-            )
+        // Filter nodes by query
+        const filteredNodes = useMemo(() => {
+          if (!snapshot?.graph?.nodes) return []
+          if (!searchQuery.trim()) return snapshot.graph.nodes
+          const q = searchQuery.toLowerCase()
+          return snapshot.graph.nodes.filter(
+            (n) =>
+              (n.subject && n.subject.toLowerCase().includes(q)) ||
+              (n.hash && n.hash.toLowerCase().includes(q)) ||
+              (n.author && n.author.toLowerCase().includes(q)) ||
+              (n.refs && n.refs.some((r) => r.name && r.name.toLowerCase().includes(q)))
           )
-        ),
+        }, [snapshot, searchQuery])
 
-        // Main Two-Column Layout: Left DAG Graph, Right Details Drawer
-        h(
-          'div',
-          { className: 'dsh-gg-main' },
-          // Left: Graph Scroll Area
-          h(
+        // 1. Loading State
+        if (loading && !snapshot) {
+          return h(
             'div',
-            { className: 'dsh-gg-graph-area' },
+            { ref: rootRef, className: 'dsh-gg-container' },
+            h('div', { className: 'dsh-gg-view-loading' }, tr('graph.loading')),
+            h('style', null, CSS_STYLES)
+          )
+        }
+
+        // 2. Offline / Connection Error State
+        if (error && !snapshot) {
+          return h(
+            'div',
+            { ref: rootRef, className: 'dsh-gg-container' },
             h(
               'div',
-              { className: 'dsh-gg-svg-wrap', style: { width: totalWidth, minHeight: totalHeight } },
+              { className: 'dsh-gg-empty-state is-error' },
+              h(GitBranchIcon, { size: 40, style: { color: '#f87171', opacity: 0.8 } }),
+              h('h3', null, tr('graph.connErrorTitle')),
+              h('p', { style: { color: 'var(--dsw-alias-label-tertiary, #888)', maxWidth: 440, textAlign: 'center' } }, error),
+              h('p', { style: { color: 'var(--dsw-alias-label-secondary, #aaa)', fontSize: 12, maxWidth: 440, textAlign: 'center' } }, tr('graph.connErrorHint')),
               h(
-                'svg',
+                'button',
                 {
-                  className: 'dsh-gg-svg-layer',
-                  width: totalWidth,
-                  height: totalHeight,
+                  type: 'button',
+                  className: 'dsh-gg-btn primary',
+                  onClick: () => refresh(),
+                  style: { marginTop: 12, padding: '6px 16px' },
                 },
-                // Render Connection Curves
-                connections.map((conn, idx) =>
-                  h('path', {
-                    key: `conn-${idx}`,
-                    d: conn.path,
-                    stroke: conn.color || 'var(--dsw-alias-border-l1)',
-                    strokeWidth: conn.isMerge ? 1.5 : 2,
-                    strokeDasharray: conn.isMerge ? '3,2' : 'none',
-                    fill: 'none',
-                    opacity: 0.85,
+                tr('graph.retry')
+              )
+            ),
+            h('style', null, CSS_STYLES)
+          )
+        }
+
+        // 3. Not a Git repository
+        if (snapshot && !snapshot.isGitRepo) {
+          return h(
+            'div',
+            { ref: rootRef, className: 'dsh-gg-container' },
+            h(
+              'div',
+              { className: 'dsh-gg-empty-state' },
+              h(GitBranchIcon, { size: 40, style: { opacity: 0.4 } }),
+              h('h3', null, tr('graph.notGitRepo')),
+              h('p', { style: { color: 'var(--dsw-alias-label-secondary, #888)', fontSize: 13 } }, snapshot.cwd || ''),
+              h('p', { style: { color: 'var(--dsw-alias-label-tertiary, #666)', fontSize: 12, marginTop: 4 } }, tr('graph.notGitRepoDesc')),
+              h('code', { style: { background: 'rgba(255,255,255,0.06)', padding: '4px 10px', borderRadius: 4, marginTop: 10, fontFamily: 'monospace' } }, 'git init')
+            ),
+            h('style', null, CSS_STYLES)
+          )
+        }
+
+        // 4. Fallback for unexpected empty snapshot
+        if (!snapshot) {
+          return h(
+            'div',
+            { ref: rootRef, className: 'dsh-gg-container' },
+            h('div', { className: 'dsh-gg-view-loading' }, tr('graph.loading')),
+            h('style', null, CSS_STYLES)
+          )
+        }
+
+        // Safe status and graph attributes
+        const status = snapshot.status || {}
+        const nodes = filteredNodes || []
+        const connections = snapshot.graph?.connections || []
+        const totalWidth = Math.max(snapshot.graph?.totalWidth || 120, 160)
+        const totalHeight = snapshot.graph?.totalHeight || (nodes.length + 1) * 40
+        const isDirty = Boolean(status.isDirty)
+        const totalChanged = status.totalChanged || 0
+        const currentBranch = status.headBranch || 'detached'
+
+        return h(
+          'div',
+          { ref: rootRef, className: 'dsh-gg-container' },
+          // Top Toolbar
+          h(
+            'div',
+            { className: 'dsh-gg-toolbar' },
+            h(
+              'div',
+              { className: 'dsh-gg-toolbar-left' },
+              h(GitBranchIcon, { size: 16 }),
+              h('span', { className: 'dsh-gg-title' }, tr('graph.title')),
+              h('span', { className: 'dsh-gg-branch-chip' }, currentBranch),
+              isDirty &&
+                h('span', { className: 'dsh-gg-dirty-chip' }, `${totalChanged} uncommitted`)
+            ),
+            h(
+              'div',
+              { className: 'dsh-gg-toolbar-right' },
+              h('input', {
+                type: 'text',
+                className: 'dsh-gg-search-input',
+                placeholder: tr('graph.searchPlaceholder'),
+                value: searchQuery,
+                onChange: (e) => setSearchQuery(e.target.value),
+              }),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'dsh-gg-btn icon',
+                  onClick: () => refresh(),
+                  title: tr('dock.refresh'),
+                },
+                h(RefreshIcon, { size: 14 })
+              )
+            )
+          ),
+
+          // Main Two-Column Layout: Left DAG Graph, Right Details Drawer
+          h(
+            'div',
+            { className: 'dsh-gg-main' },
+            // Left: Graph Scroll Area
+            h(
+              'div',
+              { className: 'dsh-gg-graph-area' },
+              h(
+                'div',
+                { className: 'dsh-gg-svg-wrap', style: { width: totalWidth, minHeight: totalHeight } },
+                h(
+                  'svg',
+                  {
+                    className: 'dsh-gg-svg-layer',
+                    width: totalWidth,
+                    height: totalHeight,
+                  },
+                  // Render Connection Curves
+                  connections.map((conn, idx) =>
+                    h('path', {
+                      key: `conn-${idx}`,
+                      d: conn.path,
+                      stroke: conn.color || 'var(--dsw-alias-border-l1)',
+                      strokeWidth: conn.isMerge ? 1.5 : 2,
+                      strokeDasharray: conn.isMerge ? '3,2' : 'none',
+                      fill: 'none',
+                      opacity: 0.85,
+                    })
+                  ),
+                  // Render Node Points
+                  nodes.map((node) => {
+                    const isSelected = selectedNode?.hash === node.hash
+                    return h(
+                      'g',
+                      {
+                        key: `node-${node.hash}`,
+                        className: `dsh-gg-node-dot ${isSelected ? 'is-selected' : ''}`,
+                        onClick: () => setSelectedNode(node),
+                        style: { cursor: 'pointer' },
+                      },
+                      node.isWorkingTree
+                        ? h('polygon', {
+                            points: `${node.x},${node.y - 6} ${node.x + 6},${node.y} ${node.x},${node.y + 6} ${node.x - 6},${node.y}`,
+                            fill: node.color,
+                            stroke: '#fff',
+                            strokeWidth: 1.5,
+                          })
+                        : h('circle', {
+                            cx: node.x,
+                            cy: node.y,
+                            r: node.isHead ? 6 : node.isMerge ? 5.5 : 4.5,
+                            fill: node.color,
+                            stroke: node.isHead ? '#fff' : isSelected ? '#fff' : 'rgba(0,0,0,0.3)',
+                            strokeWidth: node.isHead ? 2 : 1,
+                          }),
+                      node.isHead &&
+                        h('circle', {
+                          cx: node.x,
+                          cy: node.y,
+                          r: 9,
+                          fill: 'none',
+                          stroke: node.color,
+                          strokeWidth: 1.2,
+                          opacity: 0.6,
+                        })
+                    )
                   })
-                ),
-                // Render Node Points
+                )
+              ),
+
+              // Rows Overlay aligned with Y positions
+              h(
+                'div',
+                { className: 'dsh-gg-rows-layer', style: { minHeight: totalHeight } },
                 nodes.map((node) => {
                   const isSelected = selectedNode?.hash === node.hash
                   return h(
-                    'g',
+                    'div',
                     {
-                      key: `node-${node.hash}`,
-                      className: `dsh-gg-node-dot ${isSelected ? 'is-selected' : ''}`,
+                      key: `row-${node.hash}`,
+                      className: `dsh-gg-commit-row ${isSelected ? 'is-selected' : ''} ${node.isWorkingTree ? 'is-working' : ''}`,
+                      style: { top: node.y - 18, left: totalWidth },
                       onClick: () => setSelectedNode(node),
-                      style: { cursor: 'pointer' },
                     },
-                    node.isWorkingTree
-                      ? h('polygon', {
-                          points: `${node.x},${node.y - 6} ${node.x + 6},${node.y} ${node.x},${node.y + 6} ${node.x - 6},${node.y}`,
-                          fill: node.color,
-                          stroke: '#fff',
-                          strokeWidth: 1.5,
-                        })
-                      : h('circle', {
-                          cx: node.x,
-                          cy: node.y,
-                          r: node.isHead ? 6 : node.isMerge ? 5.5 : 4.5,
-                          fill: node.color,
-                          stroke: node.isHead ? '#fff' : isSelected ? '#fff' : 'rgba(0,0,0,0.3)',
-                          strokeWidth: node.isHead ? 2 : 1,
-                        }),
-                    node.isHead &&
-                      h('circle', {
-                        cx: node.x,
-                        cy: node.y,
-                        r: 9,
-                        fill: 'none',
-                        stroke: node.color,
-                        strokeWidth: 1.2,
-                        opacity: 0.6,
-                      })
+                    // Badges: HEAD, Branches, Tags
+                    node.refs &&
+                      node.refs.map((ref, rIdx) =>
+                        h(
+                          'span',
+                          {
+                            key: `ref-${rIdx}`,
+                            className: `dsh-gg-ref-badge ${ref.type}`,
+                          },
+                          ref.name
+                        )
+                      ),
+                    // Short Hash
+                    h('span', { className: 'dsh-gg-hash' }, node.shortHash),
+                    // Subject
+                    h('span', { className: 'dsh-gg-subject', title: node.subject }, node.subject),
+                    // Author & Time
+                    h('span', { className: 'dsh-gg-author' }, node.author),
+                    h('span', { className: 'dsh-gg-time' }, node.relativeTime)
                   )
                 })
               )
             ),
 
-            // Rows Overlay aligned with Y positions
+            // Right: Detail Panel / Drawer
             h(
               'div',
-              { className: 'dsh-gg-rows-layer', style: { minHeight: totalHeight } },
-              nodes.map((node) => {
-                const isSelected = selectedNode?.hash === node.hash
-                return h(
-                  'div',
-                  {
-                    key: `row-${node.hash}`,
-                    className: `dsh-gg-commit-row ${isSelected ? 'is-selected' : ''} ${node.isWorkingTree ? 'is-working' : ''}`,
-                    style: { top: node.y - 18, left: totalWidth },
-                    onClick: () => setSelectedNode(node),
-                  },
-                  // Badges: HEAD, Branches, Tags
-                  node.refs &&
-                    node.refs.map((ref, rIdx) =>
+              { className: 'dsh-gg-detail-drawer' },
+              selectedNode
+                ? h(
+                    'div',
+                    { className: 'dsh-gg-drawer-inner' },
+                    h(
+                      'div',
+                      { className: 'dsh-gg-drawer-header' },
                       h(
-                        'span',
+                        'h4',
+                        null,
+                        selectedNode.isWorkingTree ? tr('graph.inspectWorking') : tr('graph.inspectCommit')
+                      ),
+                      h(
+                        'button',
                         {
-                          key: `ref-${rIdx}`,
-                          className: `dsh-gg-ref-badge ${ref.type}`,
+                          type: 'button',
+                          className: 'dsh-gg-icon-btn',
+                          onClick: () => setSelectedNode(null),
                         },
-                        ref.name
+                        '✕'
                       )
                     ),
-                  // Short Hash
-                  h('span', { className: 'dsh-gg-hash' }, node.shortHash),
-                  // Subject
-                  h('span', { className: 'dsh-gg-subject', title: node.subject }, node.subject),
-                  // Author & Time
-                  h('span', { className: 'dsh-gg-author' }, node.author),
-                  h('span', { className: 'dsh-gg-time' }, node.relativeTime)
-                )
-              })
+
+                    h(
+                      'div',
+                      { className: 'dsh-gg-drawer-body' },
+                      // Hash & Copy
+                      h(
+                        'div',
+                        { className: 'dsh-gg-meta-item' },
+                        h('span', { className: 'label' }, 'Commit:'),
+                        h(
+                          'code',
+                          { className: 'sha', onClick: () => copyText(selectedNode.hash) },
+                          selectedNode.hash,
+                          h(CopyIcon, { size: 12, style: { marginLeft: 6 } })
+                        )
+                      ),
+
+                      // Subject
+                      h(
+                        'div',
+                        { className: 'dsh-gg-meta-item full' },
+                        h('div', { className: 'subject' }, selectedNode.subject)
+                      ),
+
+                      // Author & Date
+                      !selectedNode.isWorkingTree &&
+                        h(
+                          'div',
+                          { className: 'dsh-gg-meta-item' },
+                          h('span', { className: 'label' }, 'Author:'),
+                          h('span', { className: 'val' }, `${selectedNode.author} <${selectedNode.email}>`)
+                        ),
+                      !selectedNode.isWorkingTree &&
+                        h(
+                          'div',
+                          { className: 'dsh-gg-meta-item' },
+                          h('span', { className: 'label' }, 'Date:'),
+                          h('span', { className: 'val' }, selectedNode.date)
+                        ),
+
+                      // Parents
+                      selectedNode.parents &&
+                        selectedNode.parents.length > 0 &&
+                        h(
+                          'div',
+                          { className: 'dsh-gg-meta-item' },
+                          h('span', { className: 'label' }, 'Parents:'),
+                          h(
+                            'div',
+                            { className: 'parents-wrap' },
+                            selectedNode.parents.map((p) =>
+                              h('code', { key: p, className: 'parent-sha', onClick: () => copyText(p) }, p.slice(0, 7))
+                            )
+                          )
+                        ),
+
+                      // Working tree files list
+                      selectedNode.isWorkingTree &&
+                        status.files &&
+                        h(
+                          'div',
+                          { className: 'dsh-gg-files-box' },
+                          h(
+                            'h5',
+                            null,
+                            tr('graph.filesChanged', { n: status.files.length })
+                          ),
+                          h(
+                            'div',
+                            { className: 'dsh-gg-files-scroll' },
+                            status.files.map((file) =>
+                              h(
+                                'div',
+                                { key: file.path, className: 'dsh-gg-file-row' },
+                                h('span', { className: `tag ${file.status}` }, (file.xy || '..').trim()),
+                                h('span', { className: 'name', title: file.path }, file.path)
+                              )
+                            )
+                          )
+                        ),
+
+                      // Copy notice
+                      copyNotice && h('div', { className: 'dsh-gg-notice' }, copyNotice)
+                    ),
+
+                    // Actions
+                    h(
+                      'div',
+                      { className: 'dsh-gg-drawer-actions' },
+                      h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'dsh-gg-btn primary',
+                          onClick: () => copyText(selectedNode.hash),
+                        },
+                        tr('dock.copySha')
+                      ),
+                      h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'dsh-gg-btn secondary',
+                          onClick: () => copyText(`git show ${selectedNode.hash}`),
+                        },
+                        'git show'
+                      ),
+                      h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'dsh-gg-btn secondary',
+                          onClick: () => copyText(`git diff ${selectedNode.hash}^!`),
+                        },
+                        'git diff'
+                      )
+                    )
+                  )
+                : h(
+                    'div',
+                    { className: 'dsh-gg-drawer-empty' },
+                    h(GitCommitIcon, { size: 32, style: { opacity: 0.3 } }),
+                    h('p', null, 'Click on any commit or working change node to inspect details')
+                  )
             )
           ),
 
-          // Right: Detail Panel / Drawer
+          // Scoped Stylesheet
+          h('style', null, CSS_STYLES)
+        )
+      } catch (err) {
+        console.error('[dsh-git-graph] GitGraphView crash prevented:', err)
+        return h(
+          'div',
+          { ref: rootRef, className: 'dsh-gg-container' },
           h(
             'div',
-            { className: 'dsh-gg-detail-drawer' },
-            selectedNode
-              ? h(
-                  'div',
-                  { className: 'dsh-gg-drawer-inner' },
-                  h(
-                    'div',
-                    { className: 'dsh-gg-drawer-header' },
-                    h(
-                      'h4',
-                      null,
-                      selectedNode.isWorkingTree ? t('graph.inspectWorking') : t('graph.inspectCommit')
-                    ),
-                    h(
-                      'button',
-                      {
-                        type: 'button',
-                        className: 'dsh-gg-icon-btn',
-                        onClick: () => setSelectedNode(null),
-                      },
-                      '✕'
-                    )
-                  ),
-
-                  h(
-                    'div',
-                    { className: 'dsh-gg-drawer-body' },
-                    // Hash & Copy
-                    h(
-                      'div',
-                      { className: 'dsh-gg-meta-item' },
-                      h('span', { className: 'label' }, 'Commit:'),
-                      h(
-                        'code',
-                        { className: 'sha', onClick: () => copyText(selectedNode.hash) },
-                        selectedNode.hash,
-                        h(CopyIcon, { size: 12, style: { marginLeft: 6 } })
-                      )
-                    ),
-
-                    // Subject
-                    h(
-                      'div',
-                      { className: 'dsh-gg-meta-item full' },
-                      h('div', { className: 'subject' }, selectedNode.subject)
-                    ),
-
-                    // Author & Date
-                    !selectedNode.isWorkingTree &&
-                      h(
-                        'div',
-                        { className: 'dsh-gg-meta-item' },
-                        h('span', { className: 'label' }, 'Author:'),
-                        h('span', { className: 'val' }, `${selectedNode.author} <${selectedNode.email}>`)
-                      ),
-                    !selectedNode.isWorkingTree &&
-                      h(
-                        'div',
-                        { className: 'dsh-gg-meta-item' },
-                        h('span', { className: 'label' }, 'Date:'),
-                        h('span', { className: 'val' }, selectedNode.date)
-                      ),
-
-                    // Parents
-                    selectedNode.parents &&
-                      selectedNode.parents.length > 0 &&
-                      h(
-                        'div',
-                        { className: 'dsh-gg-meta-item' },
-                        h('span', { className: 'label' }, 'Parents:'),
-                        h(
-                          'div',
-                          { className: 'parents-wrap' },
-                          selectedNode.parents.map((p) =>
-                            h('code', { key: p, className: 'parent-sha', onClick: () => copyText(p) }, p.slice(0, 7))
-                          )
-                        )
-                      ),
-
-                    // Working tree files list
-                    selectedNode.isWorkingTree &&
-                      snapshot.status?.files &&
-                      h(
-                        'div',
-                        { className: 'dsh-gg-files-box' },
-                        h(
-                          'h5',
-                          null,
-                          t('graph.filesChanged', { n: snapshot.status.files.length })
-                        ),
-                        h(
-                          'div',
-                          { className: 'dsh-gg-files-scroll' },
-                          snapshot.status.files.map((file) =>
-                            h(
-                              'div',
-                              { key: file.path, className: 'dsh-gg-file-row' },
-                              h('span', { className: `tag ${file.status}` }, file.xy.trim()),
-                              h('span', { className: 'name', title: file.path }, file.path)
-                            )
-                          )
-                        )
-                      ),
-
-                    // Copy notice
-                    copyNotice && h('div', { className: 'dsh-gg-notice' }, copyNotice)
-                  ),
-
-                  // Actions
-                  h(
-                    'div',
-                    { className: 'dsh-gg-drawer-actions' },
-                    h(
-                      'button',
-                      {
-                        type: 'button',
-                        className: 'dsh-gg-btn primary',
-                        onClick: () => copyText(selectedNode.hash),
-                      },
-                      t('dock.copySha')
-                    ),
-                    h(
-                      'button',
-                      {
-                        type: 'button',
-                        className: 'dsh-gg-btn secondary',
-                        onClick: () => copyText(`git show ${selectedNode.hash}`),
-                      },
-                      'git show'
-                    ),
-                    h(
-                      'button',
-                      {
-                        type: 'button',
-                        className: 'dsh-gg-btn secondary',
-                        onClick: () => copyText(`git diff ${selectedNode.hash}^!`),
-                      },
-                      'git diff'
-                    )
-                  )
-                )
-              : h(
-                  'div',
-                  { className: 'dsh-gg-drawer-empty' },
-                  h(GitCommitIcon, { size: 32, style: { opacity: 0.3 } }),
-                  h('p', null, 'Click on any commit or working change node to inspect details')
-                )
-          )
-        ),
-
-        // Scoped Stylesheet
-        h('style', null, CSS_STYLES)
-      )
+            { className: 'dsh-gg-empty-state is-error' },
+            h(GitBranchIcon, { size: 40, style: { color: '#f87171' } }),
+            h('h3', null, 'Git 树图渲染捕获到异常'),
+            h('p', { style: { color: '#aaa', fontSize: 12, maxWidth: 440, textAlign: 'center' } }, err?.message || String(err)),
+            h('button', {
+              type: 'button',
+              className: 'dsh-gg-btn primary',
+              onClick: () => window.location.reload(),
+              style: { marginTop: 12 },
+            }, '刷新页面')
+          ),
+          h('style', null, CSS_STYLES)
+        )
+      }
     }
 
     // -------------------------------------------------------------------------
@@ -744,6 +944,8 @@ window.__ModuleLoader__.load({
         background: var(--dsw-alias-interactive-bg-hover, #333);
         border-color: var(--dsw-alias-border-l1, #555);
       }
+      .dsh-gg-dock-pill.is-loading { opacity: 0.7; cursor: wait; }
+      .dsh-gg-dock-pill.is-error { border-color: rgba(248, 113, 113, 0.4); color: #f87171; }
       .dsh-gg-dock-branch { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .dsh-gg-dock-badge { font-size: 11px; padding: 1px 5px; border-radius: 9px; }
       .dsh-gg-dock-badge.dirty { background: rgba(245, 158, 11, 0.2); color: #f59e0b; font-weight: 600; }
@@ -790,7 +992,7 @@ window.__ModuleLoader__.load({
       .dsh-gg-flyout-footer { display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--dsw-alias-border-l2, #333); background: var(--dsw-alias-bg-layer-2, #242424); }
 
       /* Full View Styles */
-      .dsh-gg-container { display: flex; flex-direction: column; height: 100%; width: 100%; background: var(--dsw-alias-bg-base, #121212); color: var(--dsw-alias-label-primary, #eee); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+      .dsh-gg-container { display: flex; flex-direction: column; height: 100%; width: 100%; min-height: 480px; background: var(--dsw-alias-bg-base, #121212); color: var(--dsw-alias-label-primary, #eee); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; position: relative; }
       .dsh-gg-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--dsw-alias-border-l1, #2c2c2c); background: var(--dsw-alias-bg-layer-1, #1a1a1a); }
       .dsh-gg-toolbar-left { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; }
       .dsh-gg-title { font-weight: 600; font-size: 14px; }
@@ -799,12 +1001,12 @@ window.__ModuleLoader__.load({
       .dsh-gg-toolbar-right { display: flex; align-items: center; gap: 8px; }
       .dsh-gg-search-input { background: var(--dsw-alias-bg-layer-2, #262626); border: 1px solid var(--dsw-alias-border-l2, #3a3a3a); border-radius: 6px; padding: 5px 10px; font-size: 12px; color: #fff; width: 220px; outline: none; }
       .dsh-gg-search-input:focus { border-color: var(--dsw-alias-brand-primary, #38bdf8); }
-      .dsh-gg-btn { padding: 4px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; border: 1px solid transparent; }
+      .dsh-gg-btn { padding: 4px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; border: 1px solid transparent; font-weight: 500; }
       .dsh-gg-btn.primary { background: var(--dsw-alias-brand-primary, #2563eb); color: #fff; }
       .dsh-gg-btn.secondary { background: var(--dsw-alias-bg-layer-2, #333); color: #ddd; border-color: var(--dsw-alias-border-l2, #444); }
       .dsh-gg-btn.icon { background: var(--dsw-alias-bg-layer-2, #262626); border: 1px solid var(--dsw-alias-border-l2, #3a3a3a); color: #aaa; display: flex; align-items: center; justify-content: center; padding: 5px; }
 
-      .dsh-gg-main { display: flex; flex: 1; overflow: hidden; position: relative; }
+      .dsh-gg-main { display: flex; flex: 1; overflow: hidden; position: relative; min-height: 400px; }
       .dsh-gg-graph-area { flex: 1; overflow: auto; position: relative; background: var(--dsw-alias-bg-base, #141414); }
       .dsh-gg-svg-wrap { position: absolute; top: 0; left: 0; z-index: 1; pointer-events: none; }
       .dsh-gg-svg-layer { display: block; overflow: visible; }
@@ -855,8 +1057,9 @@ window.__ModuleLoader__.load({
       .dsh-gg-notice { color: #10b981; font-size: 11px; text-align: center; }
       .dsh-gg-drawer-actions { padding: 12px; border-top: 1px solid var(--dsw-alias-border-l2, #2c2c2c); display: flex; gap: 6px; }
       .dsh-gg-drawer-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: #666; font-size: 12px; padding: 20px; text-align: center; }
-      .dsh-gg-view-loading { display: flex; align-items: center; justify-content: center; height: 100%; color: #888; font-size: 13px; }
-      .dsh-gg-empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: #777; gap: 10px; }
+      .dsh-gg-view-loading { display: flex; align-items: center; justify-content: center; height: 320px; color: #888; font-size: 13px; }
+      .dsh-gg-empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 360px; color: #777; gap: 10px; padding: 24px; text-align: center; }
+      .dsh-gg-empty-state.is-error h3 { color: #f87171; }
     `
 
     // -------------------------------------------------------------------------
