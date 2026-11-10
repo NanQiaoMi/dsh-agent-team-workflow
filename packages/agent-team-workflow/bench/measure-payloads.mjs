@@ -12,6 +12,8 @@
 import { resolveSettings } from '../lib/config.js'
 import { buildBriefStatus, buildStatus, WORKFLOW_VERSION } from '../lib/workflow.js'
 import { buildPolicy, renderQueueBrief, renderReviewerBrief, renderWorkerBrief } from '../lib/protocol.js'
+import { buildTools } from '../lib/tools.js'
+import { filterToolsByRole, resolveAllowedToolNames } from '../lib/tool-matrix.js'
 import * as W from '../lib/workflow.js'
 
 const CHECK = process.argv.includes('--check')
@@ -48,6 +50,10 @@ const input = {
   artifacts: {}, tasksById: new Map(),
 }
 
+const fakeCtx = { agentTeams: {}, agents: {}, tools: {} }
+const allTools = buildTools({ ctx: fakeCtx, settings: SETTINGS, store: {}, version: '1.25.0', tokenUsage: () => null, orchestrator: {} })
+const toolSchemas = (toolList) => toolList.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters }))
+
 const rows = [
   ['status.full', bytes(buildStatus(state, { ...input, detailItemId: null }))],
   ['status.detail', bytes(buildStatus(state, { ...input, detailItemId: 'W1' }))],
@@ -60,6 +66,10 @@ const rows = [
   ['policy.worker', bytes(buildPolicy(SETTINGS, 'implementer'))],
   ['policy.reviewer', bytes(buildPolicy(SETTINGS, 'reviewer'))],
   ['policy.lead', bytes(buildPolicy(SETTINGS))],
+  ['tools.lead', bytes(toolSchemas(allTools))],
+  ['tools.worker', bytes(toolSchemas(filterToolsByRole(allTools, resolveAllowedToolNames({ role: 'implementer', settings: SETTINGS }))))],
+  ['tools.reviewer', bytes(toolSchemas(filterToolsByRole(allTools, resolveAllowedToolNames({ role: 'reviewer', settings: SETTINGS }))))],
+  ['tools.verifier', bytes(toolSchemas(filterToolsByRole(allTools, resolveAllowedToolNames({ role: 'verifier', settings: SETTINGS }))))],
 ]
 
 const budgets = {
@@ -74,6 +84,10 @@ const budgets = {
   'policy.worker': 2200,
   'policy.reviewer': 1800,
   'policy.lead': 6200,
+  'tools.lead': 25000,
+  'tools.worker': 14000,
+  'tools.reviewer': 8500,
+  'tools.verifier': 5000,
 }
 
 let failed = false

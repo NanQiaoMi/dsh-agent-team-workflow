@@ -15,6 +15,12 @@ import { resolveSettings } from '../lib/config.js'
 import { buildBriefStatus, buildStatus } from '../lib/workflow.js'
 import { buildPolicy, renderQueueBrief, renderReviewerBrief, renderWorkerBrief } from '../lib/protocol.js'
 import { createStore } from '../lib/store.js'
+import { buildTools } from '../lib/tools.js'
+import { filterToolsByRole, resolveAllowedToolNames } from '../lib/tool-matrix.js'
+import { createOrchestrator } from '../lib/orchestrator.js'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import * as W from '../lib/workflow.js'
 
 const SETTINGS = resolveSettings({})
@@ -135,4 +141,112 @@ test('the board client sends If-None-Match, handles 304 and backs off', async ()
   assert.match(source, /pollDelay/)
   assert.match(source, /idleTicksRef/)
   assert.match(source, /const POLL_MS = 1200/)
+})
+
+test('role-scoped tools drop schema size significantly', () => {
+  const fakeCtx = { agentTeams: {}, agents: {}, tools: {} }
+  const tools = buildTools({ ctx: fakeCtx, settings: SETTINGS, store: {}, version: '1.25.0', tokenUsage: () => null, orchestrator: {} })
+  const toolSchemas = (toolList) => toolList.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters }))
+
+  const leadTools = tools
+  const workerTools = filterToolsByRole(tools, resolveAllowedToolNames({ role: 'implementer', settings: SETTINGS }))
+  const reviewerTools = filterToolsByRole(tools, resolveAllowedToolNames({ role: 'reviewer', settings: SETTINGS }))
+  const verifierTools = filterToolsByRole(tools, resolveAllowedToolNames({ role: 'verifier', settings: SETTINGS }))
+
+  assert.equal(leadTools.length, 17)
+  assert.equal(workerTools.length, 10)
+  assert.equal(reviewerTools.length, 6)
+  assert.equal(verifierTools.length, 4)
+
+  const leadBytes = bytes(toolSchemas(leadTools))
+  const workerBytes = bytes(toolSchemas(workerTools))
+  const reviewerBytes = bytes(toolSchemas(reviewerTools))
+  const verifierBytes = bytes(toolSchemas(verifierTools))
+
+  assert.ok(workerBytes < leadBytes * 0.65, `worker tools should drop schema size by >35%: ${workerBytes} vs ${leadBytes}`)
+  assert.ok(reviewerBytes < leadBytes * 0.40, `reviewer tools should drop schema size by >60%: ${reviewerBytes} vs ${leadBytes}`)
+  assert.ok(verifierBytes < leadBytes * 0.25, `verifier tools should drop schema size by >75%: ${verifierBytes} vs ${leadBytes}`)
+})
+
+test('pre-report gate rejects non-zero exit codes fail-fast unless deviation explained', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'atw-report-gate-'))
+  try {
+    const lead = { id: 'session-lead', session: { id: 'session-lead' } }
+    const impl = { id: 'session-impl', session: { id: 'session-impl' } }
+    const members = [
+      { name: 'lead', role: 'lead', id: lead.id, status: 'running' },
+      { name: 'impl', role: 'implementer', id: impl.id, status: 'running' },
+    ]
+    const ctx = {
+      agents: { list: () => [lead, impl] },
+      agentTeams: {
+        tryMembership: (agent) => {
+          const m = members.find((cand) => cand.id === agent.id)
+          return m ? { root: lead, id: m.id, name: m.name, role: m.role } : undefined
+        },
+        membership: (agent) => {
+          const m = members.find((cand) => cand.id === agent.id)
+          return { root: lead, id: m.id, name: m.name, role: m.role }
+        },
+        listMembers: () => members,
+        listTasks: () => [],
+        createTask: async (_caller, req) => ({ id: 'task-1', revision: 1, status: 'pending', ...req }),
+        updateTask: async () => ({}),
+      },
+      workingDirectory: { get: () => cwd, defaultDirectory: cwd },
+    }
+    const settings = resolveSettings({ writeArtifacts: false, preReportCheck: true })
+    const store = createStore({ ctx, settings })
+    const tools = buildTools({ ctx, settings, store, version: '1.25.0', orchestrator: {} })
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+
+    await planTool.execute(
+      {
+        objective: 'Test pre-report gate',
+        acceptance_criteria: ['Check exit codes'],
+        items: [
+          {
+            id: 'W1',
+            subject: 'Implement check',
+            owner: 'impl',
+            write_scopes: ['src/'],
+            definition_of_done: ['Tests pass'],
+            reviewers: ['lead'],
+          },
+        ],
+      },
+      { agent: lead, signal: new AbortController().signal },
+    )
+
+    // 1. Reporting with non-zero exit code without deviation must be rejected
+    await assert.rejects(
+      reportTool.execute(
+        {
+          item_id: 'W1',
+          summary: 'Attempted implementation',
+          files: ['src/index.js'],
+          commands: [{ command: 'npm test', exit_code: 1 }],
+        },
+        { agent: impl, signal: new AbortController().signal },
+      ),
+      /verification command failed: "npm test" \(exit code 1\)/,
+    )
+
+    // 2. Reporting with deviation explains why and is accepted
+    const success = await reportTool.execute(
+      {
+        item_id: 'W1',
+        summary: 'Implementation with known test failure',
+        files: ['src/index.js'],
+        commands: [{ command: 'npm test', exit_code: 1 }],
+        deviation: 'Known test failure expected in this phase',
+      },
+      { agent: impl, signal: new AbortController().signal },
+    )
+    assert.equal(success.reported, true)
+    assert.equal(success.status, 'in_review')
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
 })
