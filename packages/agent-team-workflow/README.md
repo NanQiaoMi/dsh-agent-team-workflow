@@ -21,13 +21,13 @@
 - Client：`client.js` 注册 `conversation.view`「团队看板」——执行流程图（波次/依赖箭头/评审自循环）、协作拓扑、事件流、门禁、升级、详情抽屉；1.2s 轮询、页面隐藏时暂停。
 - 打开方式：会话头部 View 切换 →「团队看板」。
 
-**17 个模型工具**
+**19 个模型工具**
 
 | 工具 | 权限 | 作用 |
 | --- | --- | --- |
 | `team_flow_plan` | Lead | 建 run：分解工作项、校验独立性、创建 backing 任务、算出波次、产出逐字可用的 spawn 简报 |
 | `team_flow_status` | 成员 | 读黑板 + 该成员自己的 `next_actions` |
-| `team_flow_report` | owner | 结构化交付（文件、命令+退出码、证据、风险），自动指派评审并通知 |
+| `team_flow_report` | owner | 结构化交付（文件、命令+退出码、证据、风险、handoff_packet），自动指派评审并通知 |
 | `team_flow_review_submit` | 指派 reviewer | verdict + 分级 findings + 审查证据 |
 | `team_flow_review_respond` | owner | 逐条回应 finding（fixed/rebut/accepted_risk + 证据），开下一轮或升级 |
 | `team_flow_gate` | Lead | 六类门禁检查；通过且 `finalize:true` 时写报告并收敛 |
@@ -41,7 +41,15 @@
 | `team_flow_talk` | 成员 | 对等频道：向某成员或全队发消息（提问/回答/状态/反对），走原生 sendMessage 直投并写黑板 |
 | `team_flow_work` | 成员 | 认领/释放开放队列项、邀请/接受评审、任务交接（offer/accept/decline） |
 | `team_flow_decide` | 成员（resolve 仅 Lead） | 提案（DoD/范围/重规划/评审策略）与投票；平票升级，Lead 仲裁 |
-| `team_flow_read` | 成员 | 拉取频道、提案、待认领、邀请、交接、未答问题与该 item 线程 |
+| `team_flow_read` | 成员 | 拉取频道、提案、待认领、邀请、交接、未答问题与该 item 线程（含 handoff_packet） |
+| `team_dev_lookup` | 成员/Lead | 零 grep 代码库结构速查：清单、模块、脚本命令、标准合同、任务原型模板、导出符号定位 |
+| `team_dev_contract` | 成员/Lead | 标准接口合同管理：发布、读取、列表、校验导出符号（支持跨智能体无缝对接） |
+
+**本地开发协助系统与结构库（devkit）**
+- 静态结构扫描器：`bin/scan-devkit.mjs`，自动解析 `package.json`、模块入口、导出符号、测试套件与执行脚本，生成 `.agentteam/devkit/manifest.json`；
+- 标准结构合同库：`.agentteam/devkit/contracts/*.json`，固化智能体间方法契约与模拟数据；
+- 任务原型模板库：内置 5 大高频任务模式（`module_interface`、`core_implementation`、`integration_wiring`、`repro_bugfix`、`refactor_safe`）；
+- 跨任务交接包：`team_flow_report` 支持 `handoff_packet`，唤醒后续智能体时自动注入上游合同与入口信息，彻底消除反复搜索与猜测。
 
 **门禁**：报告存在、证据合格（非空命令+整数退出码+evidence）、依赖已批准、评审全批准且批准带 `evidence_checked`、findings 清零、写范围纪律（基于自报）、独立性与升级。
 

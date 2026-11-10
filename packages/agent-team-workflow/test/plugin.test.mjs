@@ -22,6 +22,8 @@ import { createStore } from '../lib/store.js'
 import * as W from '../lib/workflow.js'
 
 const EXPECTED_TOOLS = [
+  'team_dev_contract',
+  'team_dev_lookup',
   'team_flow_decide',
   'team_flow_escalate',
   'team_flow_gate',
@@ -42,6 +44,8 @@ const EXPECTED_TOOLS = [
 ]
 
 const EXPECTED_IMPLEMENTER_TOOLS = [
+  'team_dev_contract',
+  'team_dev_lookup',
   'team_flow_decide',
   'team_flow_escalate',
   'team_flow_git',
@@ -55,6 +59,8 @@ const EXPECTED_IMPLEMENTER_TOOLS = [
 ]
 
 const EXPECTED_REVIEWER_TOOLS = [
+  'team_dev_contract',
+  'team_dev_lookup',
   'team_flow_decide',
   'team_flow_git',
   'team_flow_read',
@@ -235,7 +241,7 @@ test('applies workflow tools and prompt inputs only to Team members', () => {
     assert.deepEqual(names, EXPECTED_TOOLS)
     const teammateNames = harness.tools.filter((entry) => entry.agent === harness.teammate.id).map((entry) => entry.name).sort()
     assert.deepEqual(teammateNames, EXPECTED_IMPLEMENTER_TOOLS)
-    assert.equal(harness.tools.filter((entry) => entry.agent === harness.teammate.id).length, 10, 'teammate gets scoped implementer tools')
+    assert.equal(harness.tools.filter((entry) => entry.agent === harness.teammate.id).length, 12, 'teammate gets scoped implementer tools')
     assert.equal(harness.tools.filter((entry) => entry.agent === harness.outsider.id).length, 0, 'non-Team subagents never see the workflow tools')
 
     const leadSections = harness.sections.filter((entry) => entry.agent === harness.lead.id)
@@ -271,7 +277,7 @@ test('a newly created teammate is installed and disposal unwinds every registrat
     harness.membership.set(late.id, { root: harness.lead, id: late.id, name: 'late', role: 'teammate' })
 
     harness.ctx.emit('agent/created', { agent: late })
-    assert.equal(harness.tools.filter((entry) => entry.agent === late.id).length, 10)
+    assert.equal(harness.tools.filter((entry) => entry.agent === late.id).length, 12)
     assert.equal(harness.sections.filter((entry) => entry.agent === late.id).length, 1)
 
     harness.ctx.emit('agent/disposed', { agent: late })
@@ -319,7 +325,7 @@ test('injectPolicy=false installs tools without prompt inputs', () => {
   return withWorkspace(async (cwd) => {
     const harness = createContext(cwd)
     apply(harness.ctx, { injectPolicy: false })
-    assert.equal(harness.tools.filter((entry) => entry.agent === harness.lead.id).length, 17)
+    assert.equal(harness.tools.filter((entry) => entry.agent === harness.lead.id).length, 19)
     assert.equal(harness.sections.length, 0)
     assert.equal(harness.contexts.length, 0)
   })
@@ -430,12 +436,12 @@ test('role-adaptive policy tailors prompt sections for implementer and reviewer'
   })
 })
 
-test('legacyAllTools restores all 17 tools for teammates', () => {
+test('legacyAllTools restores all tools for teammates', () => {
   return withWorkspace(async (cwd) => {
     const harness = createContext(cwd)
     apply(harness.ctx, { legacyAllTools: true })
-    assert.equal(harness.tools.filter((entry) => entry.agent === harness.teammate.id).length, 17)
-    assert.equal(harness.tools.filter((entry) => entry.agent === harness.lead.id).length, 17)
+    assert.equal(harness.tools.filter((entry) => entry.agent === harness.teammate.id).length, 19)
+    assert.equal(harness.tools.filter((entry) => entry.agent === harness.lead.id).length, 19)
   })
 })
 

@@ -97,6 +97,7 @@ export function ensureCollaboration(state) {
       if (item.claim === undefined) item.claim = null
       if (!Array.isArray(item.reviewRequests)) item.reviewRequests = []
       if (!Array.isArray(item.handoffs)) item.handoffs = []
+      if (item.handoffPacket === undefined) item.handoffPacket = null
       if (item.pendingReviewer === undefined) item.pendingReviewer = null
       if (item.origin !== 'member') item.origin = 'plan'
       if (item.createdBy === undefined) item.createdBy = null
@@ -523,6 +524,9 @@ export function applyReport(state, input) {
     )
   }
   item.reportSeq = currentReportSeq(item) + 1
+  if (input.handoffPacket !== undefined) {
+    item.handoffPacket = input.handoffPacket
+  }
   item.report = {
     summary: report.summary,
     files: report.files,
@@ -1148,6 +1152,7 @@ export function buildStatus(state, input) {
             // report cannot flood a model context with megabytes.
             report: trimReport(item.report),
             review_records: trimReviews(item.reviews),
+            handoff_packet: item.handoffPacket ?? null,
           }
         : {}),
     }
@@ -1968,6 +1973,7 @@ export function createItem(state, input) {
     claim: null,
     reviewRequests: [],
     handoffs: [],
+    handoffPacket: null,
     pendingReviewer: null,
     role: String(input.role ?? 'implementer').trim() || 'implementer',
     writeScopes,

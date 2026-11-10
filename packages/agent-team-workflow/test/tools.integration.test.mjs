@@ -182,7 +182,7 @@ test('every tool declares a supported output schema', () => {
   return withWorkspace(async (cwd) => {
     const { ctx } = createHarness(cwd)
     const tools = buildTools({ ctx, settings, store: createStore({ ctx, settings }), version: 'test' })
-    assert.equal(tools.length, 17)
+    assert.equal(tools.length, 19)
     for (const tool of tools) assertSupportedJsonSchema(tool.output.schema)
   })
 })
