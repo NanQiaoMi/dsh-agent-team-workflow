@@ -13,7 +13,9 @@ import test from 'node:test'
 
 import { resolveSettings } from '../lib/config.js'
 import { buildBriefStatus, buildStatus } from '../lib/workflow.js'
-import { buildPolicy, renderQueueBrief, renderReviewerBrief, renderWorkerBrief } from '../lib/protocol.js'
+import { buildPolicy, renderQueueBrief, renderReportMarkdown, renderReviewerBrief, renderWorkerBrief } from '../lib/protocol.js'
+import { buildSnapshot } from '../lib/dashboard.js'
+import { computeUsage } from '../lib/telemetry.js'
 import { createStore } from '../lib/store.js'
 import { buildTools } from '../lib/tools.js'
 import { filterToolsByRole, resolveAllowedToolNames } from '../lib/tool-matrix.js'
@@ -334,4 +336,184 @@ test('nit tolerance rejects request_changes with pure nits to prevent wasted rew
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }
+})
+
+test('archiveApprovedItems evicts heavy evidence and reviews to cold storage and team_flow_read retrieves them on demand', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'atw-cold-archive-'))
+  try {
+    const lead = { id: 'session-lead', session: { id: 'session-lead' } }
+    const impl = { id: 'session-impl', session: { id: 'session-impl' } }
+    const rev = { id: 'session-rev', session: { id: 'session-rev' } }
+    const members = [
+      { name: 'lead', role: 'lead', id: lead.id, status: 'running' },
+      { name: 'impl', role: 'implementer', id: impl.id, status: 'running' },
+      { name: 'rev', role: 'reviewer', id: rev.id, status: 'running' },
+    ]
+    const ctx = {
+      agents: { list: () => [lead, impl, rev], get: (id) => [lead, impl, rev].find((a) => a.id === id) },
+      agentTeams: {
+        tryMembership: (agent) => {
+          const m = members.find((cand) => cand.id === agent.id)
+          return m ? { root: lead, id: m.id, name: m.name, role: m.role } : undefined
+        },
+        membership: (agent) => {
+          const m = members.find((cand) => cand.id === agent.id)
+          return { root: lead, id: m.id, name: m.name, role: m.role }
+        },
+        listMembers: () => members,
+        listTasks: () => [],
+        createTask: async (_caller, req) => ({ id: 'task-1', revision: 1, status: 'pending', ...req }),
+        updateTask: async () => ({}),
+      },
+      workingDirectory: { get: () => cwd, defaultDirectory: cwd },
+    }
+    const settings = resolveSettings({ writeArtifacts: true, archiveApprovedItems: true })
+    const store = createStore({ ctx, settings })
+    const tools = buildTools({ ctx, settings, store, version: '1.26.0', orchestrator: {} })
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const reviewTool = tools.find((t) => t.name === 'team_flow_review_submit')
+    const readTool = tools.find((t) => t.name === 'team_flow_read')
+    const gateTool = tools.find((t) => t.name === 'team_flow_gate')
+
+    await planTool.execute(
+      {
+        objective: 'Test cold archiving of approved items',
+        acceptance_criteria: ['Archive approved item evidence'],
+        items: [{ id: 'W1', subject: 'Work with heavy evidence', owner: 'impl', write_scopes: ['src/'], definition_of_done: ['Done'], reviewers: ['rev'] }],
+      },
+      { agent: lead, signal: new AbortController().signal },
+    )
+
+    await reportTool.execute(
+      {
+        item_id: 'W1',
+        summary: 'Heavy implementation report',
+        files: ['src/heavy.js'],
+        commands: [{ command: 'npm test', exit_code: 0, note: 'all pass' }],
+        evidence: ['Detailed log line 1', 'Detailed log line 2', 'Large benchmark output data...'],
+        open_questions: ['Q1: can we optimize?'],
+        risks: ['R1: potential latency'],
+      },
+      { agent: impl, signal: new AbortController().signal },
+    )
+
+    // Approve the item
+    const outcome = await reviewTool.execute(
+      {
+        item_id: 'W1',
+        verdict: 'approve',
+        summary: 'Looks great to me',
+        findings: [],
+        evidence_checked: ['verified src/heavy.js logs'],
+      },
+      { agent: rev, signal: new AbortController().signal },
+    )
+    assert.equal(outcome.item_status, 'approved')
+
+    // Read live state: heavy evidence and detailed reviews should be evicted
+    const state = await store.readState(lead)
+    const liveItem = state.items.find((i) => i.id === 'W1')
+    assert.equal(liveItem.archived, true)
+    assert.equal(liveItem.report.archived, true)
+    assert.ok(liveItem.report.archivePath.includes('archive/W1.json'))
+    assert.deepEqual(liveItem.report.evidence, [])
+    assert.deepEqual(liveItem.report.openQuestions, [])
+    assert.deepEqual(liveItem.report.risks, [])
+    assert.equal(liveItem.reviews[0].archived, true)
+    assert.deepEqual(liveItem.reviews[0].findings, [])
+
+    // Cold storage record can be retrieved directly via store.readArchivedItem
+    const archiveRecord = await store.readArchivedItem(lead, 'W1')
+    assert.equal(archiveRecord.id, 'W1')
+    assert.equal(archiveRecord.status, 'approved')
+    assert.equal(archiveRecord.report.evidence.length, 3)
+    assert.equal(archiveRecord.report.evidence[0], 'Detailed log line 1')
+    assert.equal(archiveRecord.reviews[0].summary, 'Looks great to me')
+
+    // On-demand retrieval via team_flow_read
+    const readResult = await readTool.execute(
+      { archive_item_id: 'W1' },
+      { agent: impl, signal: new AbortController().signal },
+    )
+    assert.ok(readResult.archived_item !== null)
+    assert.equal(readResult.archived_item.id, 'W1')
+    assert.equal(readResult.archived_item.report.evidence.length, 3)
+
+    // Quality gate should still pass on the archived item and finalize smoothly
+    const gateResult = await gateTool.execute(
+      { finalize: true },
+      { agent: lead, signal: new AbortController().signal },
+    )
+    assert.equal(gateResult.pass, true)
+    assert.equal(gateResult.finalized, true)
+    const finalizedState = await store.readState(lead)
+    assert.equal(finalizedState.phase, 'finalized')
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('telemetry computeUsage breaks down tokens by role and reports token share', () => {
+  const members = [
+    { name: 'lead', role: 'lead', agent: { id: 'lead' } },
+    { name: 'worker1', role: 'implementer', agent: { id: 'w1' } },
+    { name: 'worker2', role: 'worker', agent: { id: 'w2' } },
+    { name: 'reviewer1', role: 'reviewer', agent: { id: 'r1' } },
+  ]
+  const tokenTable = {
+    lead: { uncachedInputTokens: 100, outputTokens: 50, cacheReadTokens: 50, cacheWriteTokens: 0 }, // total 200 (20%)
+    w1: { uncachedInputTokens: 200, outputTokens: 100, cacheReadTokens: 100, cacheWriteTokens: 0 }, // total 400
+    w2: { uncachedInputTokens: 100, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0 }, // total 200 -> worker total 600 (60%)
+    r1: { uncachedInputTokens: 100, outputTokens: 50, cacheReadTokens: 50, cacheWriteTokens: 0 }, // total 200 (20%)
+  }
+  const read = (agent) => ({ totals: tokenTable[agent.id] })
+  const usage = computeUsage({ members, read, state: null })
+
+  assert.equal(usage.totals.uncachedInputTokens, 500)
+  assert.equal(usage.totals.outputTokens, 300)
+  assert.equal(usage.totals.cacheReadTokens, 200)
+
+  // Roles breakdown
+  assert.equal(usage.byRole.lead.totalTokens, 200)
+  assert.equal(usage.byRole.worker.totalTokens, 600)
+  assert.equal(usage.byRole.reviewer.totalTokens, 200)
+
+  // Shares
+  assert.equal(usage.tokenShare.lead, 0.2)
+  assert.equal(usage.tokenShare.worker, 0.6)
+  assert.equal(usage.tokenShare.reviewer, 0.2)
+
+  // Render markdown report with attribution section
+  const mockState = {
+    runId: 'run-usage-1',
+    phase: 'finalized',
+    objective: 'Test',
+    acceptanceCriteria: [],
+    constraints: [],
+    items: [],
+    escalations: [],
+    events: [],
+    usage,
+  }
+  const mockGate = { pass: true, itemGates: [], teamFailures: [] }
+  const markdown = renderReportMarkdown(mockState, mockGate)
+  assert.ok(markdown.includes('## Token attribution by role'))
+  assert.ok(markdown.includes('| lead | 100 | 50 | 50 | 0 | 200 | 20.0% |'))
+  assert.ok(markdown.includes('| worker | 300 | 200 | 100 | 0 | 600 | 60.0% |'))
+  assert.ok(markdown.includes('| reviewer | 100 | 50 | 50 | 0 | 200 | 20.0% |'))
+
+  // Dashboard snapshot reflects byRole and tokenShare
+  const snapshot = buildSnapshot({
+    state: mockState,
+    team: { me: { name: 'lead', role: 'lead' }, members: [], tasks: [] },
+    artifacts: {},
+    diagnostics: { warnings: [] },
+    sessionId: 'session-lead',
+    now: '2026-11-01T00:00:00.000Z',
+  })
+  assert.equal(snapshot.run.usage.byRole.lead.totalTokens, 200)
+  assert.equal(snapshot.run.usage.tokenShare.lead, 0.2)
+  assert.equal(snapshot.run.usage.byRole.worker.totalTokens, 600)
+  assert.equal(snapshot.run.usage.tokenShare.worker, 0.6)
 })

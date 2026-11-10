@@ -69,6 +69,8 @@ plugin_manager(action: "install_bundle", target: "<此目录绝对路径>")
 | `allowScopeOverlap` | `false` | 允许同波次写范围重叠（warning） |
 | `autoNotify` | `true` | 自动通知评审/作者 |
 | `requireReviewEvidence` | `true` | 批准型评审必须声明 `evidence_checked`，否则拒绝/门禁失败 |
+| `nitTolerance` | `true` | 纯挑刺评审禁止打回（强制转为 approve_with_nits 避免无谓返工） |
+| `archiveApprovedItems` | `false` | 已批准工作项详细证据沉降至冷存储（.agentteam/teams/<id>/archive/），减小热态体积 |
 
 无 `Config` 导出（避免 schemastery 依赖）；配置在 `resolveSettings` 中收敛并夹紧范围，生效值回显在 `team_flow_status.settings`。
 
@@ -81,6 +83,8 @@ lib/store.js        黑板持久化：原子写 + 进程内锁 + 路径解析
 lib/workflow.js     纯状态机：计划校验、版本绑定、返修轮、门禁、next_actions（零依赖，可独立测试）
 lib/protocol.js     注入文本：L1 协议、worker/reviewer 简报、通知、最终报告
 lib/tools.js        17 个工具定义与执行
+lib/tool-matrix.js  基于角色裁剪工具装配矩阵（Lead 17/Worker 10/Reviewer 6/Verifier 4）
+lib/telemetry.js    细粒度 Token 消耗归因度量与分角色占比统计
 locale/{en,zh}.json 插件管理器展示元数据
 icon.svg            插件图标
 cordis.patch.yml    bundle 补丁（新增一行，不覆盖原生 Team 行）

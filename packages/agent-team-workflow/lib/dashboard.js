@@ -360,7 +360,7 @@ function buildReport(report) {
     exitCode: integerOf(command.exitCode),
     note: command.note === null || command.note === undefined ? null : clip(command.note),
   }))
-  return {
+  const rep = {
     summary: clip(report.summary),
     files: textList(report.files),
     commands,
@@ -370,6 +370,11 @@ function buildReport(report) {
     deviation: typeof report.deviation === 'string' ? clip(report.deviation) : null,
     submittedAt: isoOf(report.submittedAt),
   }
+  if (report.archived === true) {
+    rep.archived = true
+    if (report.archivePath) rep.archivePath = textOf(report.archivePath)
+  }
+  return rep
 }
 
 /**
@@ -414,7 +419,7 @@ function buildItem(raw, id, context) {
   if (thread.length > MAX_THREAD) context.stats.threadClipped += 1
   const report = buildReport(raw.report)
   const summaryPreview = report && report.summary ? clip(report.summary, 140) : null
-  return {
+  const item = {
     id,
     subject: clip(raw.subject),
     owner: textOf(raw.owner),
@@ -465,6 +470,8 @@ function buildItem(raw, id, context) {
     plan: buildPlan(raw.plan),
     git: buildItemGit(raw.git),
   }
+  if (raw.archived === true) item.archived = true
+  return item
 }
 
 /**
@@ -581,7 +588,33 @@ function buildUsage(raw) {
   }
   const totals = bucket(raw.totals)
   if (totals === null && Object.keys(members).length === 0) return null
-  return { capturedAt: isoOf(raw.capturedAt), members, totals }
+
+  const byRole = {}
+  if (raw.byRole !== null && typeof raw.byRole === 'object' && !Array.isArray(raw.byRole)) {
+    for (const [role, data] of Object.entries(raw.byRole).slice(0, 8)) {
+      const normalized = bucket(data)
+      if (normalized !== null) {
+        normalized.totalTokens = integerOf(data.totalTokens ?? (normalized.uncachedInputTokens + normalized.outputTokens + normalized.cacheReadTokens + normalized.cacheWriteTokens))
+        byRole[String(role)] = normalized
+      }
+    }
+  }
+
+  const tokenShare = {}
+  if (raw.tokenShare !== null && typeof raw.tokenShare === 'object' && !Array.isArray(raw.tokenShare)) {
+    for (const [role, share] of Object.entries(raw.tokenShare).slice(0, 8)) {
+      const num = typeof share === 'number' && Number.isFinite(share) ? share : Number.parseFloat(String(share ?? ''))
+      if (Number.isFinite(num)) tokenShare[String(role)] = Math.round(num * 10000) / 10000
+    }
+  }
+
+  return {
+    capturedAt: isoOf(raw.capturedAt),
+    members,
+    totals,
+    byRole: Object.keys(byRole).length > 0 ? byRole : undefined,
+    tokenShare: Object.keys(tokenShare).length > 0 ? tokenShare : undefined,
+  }
 }
 
 /**

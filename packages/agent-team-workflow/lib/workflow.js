@@ -408,6 +408,7 @@ export function isApproving(verdict) {
 /** @returns whether every declared reviewer of an item has approved. */
 export function allReviewersApproved(item) {
   if (item.needsReview === false) return true
+  if (item.archived === true) return true
   if (item.reviewers.length === 0) return false
   return item.reviewers.every((reviewer) => {
     const latest = lastReviewOf(item, reviewer)
@@ -417,7 +418,7 @@ export function allReviewersApproved(item) {
 
 /** @returns the reviewers of one item that have not approved yet. */
 export function outstandingReviewers(item) {
-  if (item.needsReview === false) return []
+  if (item.needsReview === false || item.archived === true) return []
   return item.reviewers.filter((reviewer) => {
     const latest = lastReviewOf(item, reviewer)
     return latest === null || !isApproving(latest.verdict)
@@ -447,6 +448,7 @@ export function reworkRounds(item) {
 
 /** @returns unresolved findings across the current report's submitted reviews. */
 export function unresolvedFindings(item) {
+  if (item.archived === true) return []
   const seq = currentReportSeq(item)
   const result = []
   for (const review of item.reviews) {
@@ -800,7 +802,7 @@ export function evaluateGates(state, input) {
     const commands = item.report?.commands ?? []
     const missingExit = commands.filter((command) => !Number.isInteger(command.exitCode))
     const emptyCommand = commands.filter((command) => String(command.command ?? '').trim().length === 0)
-    if (item.evidenceOptional !== true) {
+    if (item.evidenceOptional !== true && item.archived !== true) {
       if (commands.length === 0) failures.push('no verification command recorded')
       else if (missingExit.length > 0) failures.push(`${missingExit.length} command(s) recorded without an integer exit_code`)
       if (emptyCommand.length > 0) failures.push(`${emptyCommand.length} command(s) recorded with an empty command line`)

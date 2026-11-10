@@ -115,6 +115,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   preReportCheck: true,
   /** Require at least one minor/major finding for request_changes (disallows pure nit rework). */
   nitTolerance: true,
+  /** Archive full reports and reviews of approved items to disk to reduce state payload. */
+  archiveApprovedItems: false,
 })
 
 function clampInt(value, fallback, min, max) {
@@ -269,6 +271,7 @@ export function resolveSettings(raw = {}) {
     roleToolScoping: readBool(config.roleToolScoping, DEFAULT_SETTINGS.roleToolScoping),
     preReportCheck: readBool(config.preReportCheck, DEFAULT_SETTINGS.preReportCheck),
     nitTolerance: readBool(config.nitTolerance, DEFAULT_SETTINGS.nitTolerance),
+    archiveApprovedItems: readBool(config.archiveApprovedItems, DEFAULT_SETTINGS.archiveApprovedItems),
   })
 }
 
@@ -319,5 +322,6 @@ export function runSettings(settings) {
     roleToolScoping: settings.roleToolScoping,
     preReportCheck: settings.preReportCheck,
     nitTolerance: settings.nitTolerance,
+    archiveApprovedItems: settings.archiveApprovedItems,
   }
 }
