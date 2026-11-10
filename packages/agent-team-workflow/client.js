@@ -51,6 +51,9 @@ window.__ModuleLoader__.load({
       'drawer.contractEntry': '入口文件',
       'drawer.contractExports': '导出符号',
       'drawer.contractNotes': '交付说明',
+      'drawer.contractValidation': '契约校验',
+      'drawer.contractValid': '满足契约',
+      'drawer.contractInvalid': '缺失导出: {missing}',
       'devkit.title': '工程架构与标准接口契约',
       'devkit.close': '关闭',
       'devkit.tabContracts': '标准契约 ({n})',
@@ -425,6 +428,9 @@ window.__ModuleLoader__.load({
       'drawer.contractEntry': 'Entry Point',
       'drawer.contractExports': 'Exported Symbols',
       'drawer.contractNotes': 'Usage Notes',
+      'drawer.contractValidation': 'Contract Validation',
+      'drawer.contractValid': 'Satisfied',
+      'drawer.contractInvalid': 'Missing exports: {missing}',
       'devkit.title': 'Architecture & Interface Contracts',
       'devkit.close': 'Close',
       'devkit.tabContracts': 'Contracts ({n})',
@@ -1262,11 +1268,19 @@ window.__ModuleLoader__.load({
       if (!isRecord(raw)) return null
       const contractId = str(raw.contractId || raw.contract_id)
       if (!contractId) return null
+      const val = isRecord(raw.validation) ? raw.validation : null
       return {
         contractId,
         entry: str(raw.entry) || null,
         exports: toArray(raw.exports).map((v) => str(v)).filter(Boolean),
         notes: typeof raw.notes === 'string' && raw.notes.trim() !== '' ? raw.notes.trim() : null,
+        validation: val
+          ? {
+              ok: val.ok === true,
+              missing: toArray(val.missing).map((v) => str(v)).filter(Boolean),
+              error: str(val.error) || null,
+            }
+          : null,
       }
     }
 
@@ -4014,6 +4028,27 @@ window.__ModuleLoader__.load({
               { key: 'hp-notes', className: 'atw-kv' },
               h('span', { className: 'atw-kv-key' }, tr('drawer.contractNotes')),
               h('span', { className: 'atw-kv-value' }, hp.notes),
+            ),
+          )
+        }
+        if (hp.validation) {
+          hpRows.push(
+            h(
+              'div',
+              { key: 'hp-val', className: 'atw-kv' },
+              h('span', { className: 'atw-kv-key' }, tr('drawer.contractValidation')),
+              h(
+                'span',
+                { className: 'atw-kv-value' },
+                hp.validation.ok
+                  ? badge(tr('drawer.contractValid'), 'brand')
+                  : badge(
+                      tr('drawer.contractInvalid', {
+                        missing: (hp.validation.missing || []).join(', ') || hp.validation.error || '',
+                      }),
+                      'warn',
+                    ),
+              ),
             ),
           )
         }

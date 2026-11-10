@@ -22,12 +22,14 @@ import { resolveSettings } from '../lib/config.js'
 import {
   ensureDevkit,
   extractExports,
+  generateContractStub,
   listContracts,
   lookupStructure,
   publishContract,
   readContract,
   scanCodebase,
   validateContract,
+  validateItemHandoff,
 } from '../lib/devkit.js'
 import { createOrchestrator } from '../lib/orchestrator.js'
 import { createStore } from '../lib/store.js'
@@ -470,6 +472,315 @@ test('orchestrator transmits upstream handoff packets when waking unblocked work
     assert.match(text, /entry: src\/auth\/index\.js/)
     assert.match(text, /exports: login, logout/)
     assert.match(text, /notes: Requires token parameter/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('generateContractStub produces ESM, DTS, and JSON stubs, and writes to workspace', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'devkit-stub-'))
+  try {
+    const contract = {
+      $id: 'billing-service-v1',
+      title: 'Billing Service Contract',
+      version: '1.2.0',
+      methods: {
+        chargeCustomer: {
+          description: 'Charge a customer credit card or wallet',
+          input: {
+            type: 'object',
+            required: ['customerId', 'amount'],
+            properties: {
+              customerId: { type: 'string' },
+              amount: { type: 'number' },
+              currency: { type: 'string' },
+            },
+          },
+          output: {
+            type: 'object',
+            required: ['success', 'transactionId'],
+            properties: {
+              success: { type: 'boolean' },
+              transactionId: { type: 'string' },
+            },
+          },
+        },
+        refundTransaction: {
+          description: 'Refund a previous transaction',
+          input: {
+            type: 'object',
+            required: ['transactionId'],
+            properties: {
+              transactionId: { type: 'string' },
+            },
+          },
+        },
+      },
+      mock: {
+        chargeCustomer: {
+          success: true,
+          transactionId: 'tx-mock-12345',
+        },
+      },
+    }
+
+    // 1. ESM format (default)
+    const esmRes = await generateContractStub(root, contract, { format: 'esm' })
+    assert.match(esmRes.code, /export const CONTRACT_ID = "billing-service-v1"/)
+    assert.match(esmRes.code, /export const MOCK_FIXTURES = /)
+    assert.match(esmRes.code, /export async function chargeCustomer\(args\)/)
+    assert.match(esmRes.code, /export async function refundTransaction\(args\)/)
+    assert.equal(esmRes.written, false)
+
+    // 2. TypeScript DTS format
+    const dtsRes = await generateContractStub(root, contract, { format: 'dts' })
+    assert.match(dtsRes.code, /export interface ChargeCustomerInput/)
+    assert.match(dtsRes.code, /customerId: string;/)
+    assert.match(dtsRes.code, /amount: number;/)
+    assert.match(dtsRes.code, /currency\?: string;/)
+    assert.match(dtsRes.code, /export interface ChargeCustomerOutput/)
+    assert.match(dtsRes.code, /export declare function chargeCustomer/)
+    assert.match(dtsRes.code, /export declare function refundTransaction/)
+
+    // 3. JSON format
+    const jsonRes = await generateContractStub(root, contract, { format: 'json' })
+    const parsed = JSON.parse(jsonRes.code)
+    assert.equal(parsed.$id, 'billing-service-v1')
+    assert.equal(parsed.mock.chargeCustomer.transactionId, 'tx-mock-12345')
+
+    // 4. Write to file
+    const writeRes = await generateContractStub(root, contract, {
+      format: 'esm',
+      writeTo: 'src/mocks/billing.mock.js',
+    })
+    assert.equal(writeRes.written, true)
+    assert.equal(writeRes.path, 'src/mocks/billing.mock.js')
+
+    const fileContent = await readFile(join(root, 'src/mocks/billing.mock.js'), 'utf8')
+    assert.equal(fileContent, writeRes.code)
+
+    // 5. Path traversal guard
+    await assert.rejects(
+      async () => {
+        await generateContractStub(root, contract, {
+          format: 'esm',
+          writeTo: '../escaped.js',
+        })
+      },
+      /escapes workspace root/,
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('validateItemHandoff inspects entry file exports and flags missing contract methods', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'devkit-handoff-val-'))
+  try {
+    const contract = {
+      $id: 'crypto-service',
+      title: 'Crypto Service',
+      methods: {
+        hashSha256: {},
+        generateKey: {},
+        signPayload: {},
+      },
+    }
+    await publishContract(root, contract)
+
+    // Case 1: Missing contract
+    const resNoContract = await validateItemHandoff(root, { contract_id: 'unknown-contract' })
+    assert.equal(resNoContract.ok, false)
+    assert.match(resNoContract.error, /not found in devkit registry/)
+
+    // Case 2: Incomplete exports (only 2 out of 3 methods)
+    await mkdir(join(root, 'src'), { recursive: true })
+    await writeFile(
+      join(root, 'src/crypto.js'),
+      `
+      export function hashSha256(data) { return 'hash' }
+      export function generateKey() { return 'key' }
+      export function helper() {}
+      `,
+      'utf8',
+    )
+
+    const resIncomplete = await validateItemHandoff(root, {
+      contract_id: 'crypto-service',
+      entry: 'src/crypto.js',
+    })
+    assert.equal(resIncomplete.ok, false)
+    assert.deepEqual(resIncomplete.missing, ['signPayload'])
+    assert.equal(resIncomplete.entryExists, true)
+
+    // Case 3: Complete exports via entry file
+    await writeFile(
+      join(root, 'src/crypto.js'),
+      `
+      export function hashSha256(data) { return 'hash' }
+      export function generateKey() { return 'key' }
+      export function signPayload(data, key) { return 'sig' }
+      `,
+      'utf8',
+    )
+
+    const resComplete = await validateItemHandoff(root, {
+      contract_id: 'crypto-service',
+      entry: 'src/crypto.js',
+    })
+    assert.equal(resComplete.ok, true)
+    assert.deepEqual(resComplete.missing, [])
+
+    // Case 4: Complete exports supplied explicitly via exports array
+    const resExplicit = await validateItemHandoff(root, {
+      contract_id: 'crypto-service',
+      exports: ['hashSha256', 'generateKey', 'signPayload'],
+    })
+    assert.equal(resExplicit.ok, true)
+    assert.deepEqual(resExplicit.missing, [])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('team_dev_contract action stub and team_flow_report auto-validation with strictContracts', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'devkit-tools-val-'))
+  try {
+    const leadAgent = { id: 'agent-lead' }
+    const workerAgent = { id: 'agent-worker' }
+    const members = [
+      { name: 'lead', role: 'lead', id: leadAgent.id },
+      { name: 'alice', role: 'implementer', id: workerAgent.id },
+    ]
+
+    const ctx = {
+      workingDirectory: { get: () => root, defaultDirectory: root },
+      agentTeams: {
+        tryMembership(agent) {
+          const m = members.find((x) => x.id === agent.id)
+          if (!m) return undefined
+          return { root: leadAgent, id: agent.id, name: m.name, role: m.role }
+        },
+        membership(agent) {
+          const res = this.tryMembership(agent)
+          if (!res) throw new Error('not a team member')
+          return res
+        },
+        listMembers() {
+          return members.map((m) => ({ name: m.name, role: m.role, status: 'running' }))
+        },
+        sendMessage: async () => {},
+        getTask: () => null,
+        createTask: async (_agent, task) => ({ id: `task-${Date.now()}`, ...task }),
+        updateTask: async () => {},
+      },
+    }
+
+    const settings = resolveSettings({ strictContracts: true })
+    const store = createStore({ ctx, settings })
+    const tools = buildTools({ ctx, settings, store, version: '1.27.0' })
+    const contractTool = tools.find((t) => t.name === 'team_dev_contract')
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+
+    // 1. Publish contract
+    await contractTool.execute(
+      {
+        action: 'publish',
+        contract: {
+          $id: 'storage-contract',
+          title: 'Storage Service',
+          methods: { getFile: {}, putFile: {}, deleteFile: {} },
+          mock: { getFile: { content: 'mock-file' } },
+        },
+      },
+      { agent: workerAgent },
+    )
+
+    // 2. Generate stub via team_dev_contract { action: 'stub' }
+    const stubRes = await contractTool.execute(
+      {
+        action: 'stub',
+        contract_id: 'storage-contract',
+        format: 'esm',
+        write_to: 'mocks/storage.mock.js',
+      },
+      { agent: workerAgent },
+    )
+    assert.equal(stubRes.ok, true)
+    assert.equal(stubRes.written, true)
+    assert.match(stubRes.code, /export async function getFile/)
+
+    // 3. Plan item
+    await planTool.execute(
+      {
+        objective: 'Implement storage service',
+        acceptance_criteria: ['contract fulfilled'],
+        items: [
+          {
+            id: 'W1',
+            subject: 'Storage implementation',
+            owner: 'alice',
+            needs_review: false,
+            write_scopes: ['storage.js'],
+            definition_of_done: ['exports all methods'],
+          },
+        ],
+      },
+      { agent: leadAgent },
+    )
+
+    // Write partial implementation missing deleteFile
+    await writeFile(
+      join(root, 'storage.js'),
+      'export function getFile() {}\nexport function putFile() {}',
+      'utf8',
+    )
+
+    // 4. In strictContracts mode: reporting with missing method throws!
+    await assert.rejects(
+      async () => {
+        await reportTool.execute(
+          {
+            item_id: 'W1',
+            summary: 'Storage partially done',
+            files: ['storage.js'],
+            commands: [{ command: 'node storage.js', exit_code: 0 }],
+            handoff_packet: {
+              contract_id: 'storage-contract',
+              entry: 'storage.js',
+            },
+          },
+          { agent: workerAgent },
+        )
+      },
+      /contract "storage-contract" violation.*deleteFile/,
+    )
+
+    // 5. Complete implementation with deleteFile
+    await writeFile(
+      join(root, 'storage.js'),
+      'export function getFile() {}\nexport function putFile() {}\nexport function deleteFile() {}',
+      'utf8',
+    )
+
+    const goodReport = await reportTool.execute(
+      {
+        item_id: 'W1',
+        summary: 'Storage fully implemented',
+        files: ['storage.js'],
+        commands: [{ command: 'node storage.js', exit_code: 0 }],
+        handoff_packet: {
+          contract_id: 'storage-contract',
+          entry: 'storage.js',
+        },
+      },
+      { agent: workerAgent },
+    )
+    assert.equal(goodReport.status, W.ITEM_STATUS.APPROVED)
+    assert.equal(goodReport.contract_validation.ok, true)
+    assert.deepEqual(goodReport.contract_warnings, [])
+    assert.equal(goodReport.handoff_packet.validation.ok, true)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

@@ -836,6 +836,15 @@ export function evaluateGates(state, input) {
       failures.push('no peer reviewer was ever assigned; the owner must invite one with team_flow_work {action:"request_review"}')
     }
     if (planPending(state, item)) failures.push('plan-first item has no approved plan')
+    const contractVal = item.report?.contractValidation ?? item.handoffPacket?.validation ?? null
+    if (contractVal && contractVal.ok === false) {
+      const detail = contractVal.error || `missing required methods: [${(contractVal.missing || []).join(', ')}]`
+      if (input.settings.strictContracts === true) {
+        failures.push(`contract "${contractVal.contractId}" violation: ${detail}`)
+      } else {
+        warnings.push(`contract "${contractVal.contractId}" warning: ${detail}`)
+      }
+    }
     if (input.settings.gitRequireVerify === true) {
       const git = item.git ?? null
       if (git === null || git.verify === null || git.verify === undefined) failures.push('git verification missing (gitRequireVerify is on)')
