@@ -6,6 +6,7 @@ import {
   formatRelativeTime,
   layoutGitGraph,
   getGitSnapshot,
+  getCommitDetails,
 } from '../lib/git-engine.js'
 
 test('parseGitStatus parses porcelain v2 status correctly', () => {
@@ -139,3 +140,20 @@ test('getGitSnapshot executes on real working directory', async () => {
   assert.ok(snap.graph.nodes.length > 0)
   assert.ok(typeof snap.status.headBranch === 'string')
 })
+
+test('getCommitDetails retrieves metadata and changed files for a real commit', async () => {
+  const snap = await getGitSnapshot(process.cwd(), 3)
+  const realCommit = snap.graph.nodes.find((n) => !n.isWorkingTree)
+  assert.ok(realCommit, 'should have at least one real commit')
+
+  const details = await getCommitDetails(process.cwd(), realCommit.hash)
+  assert.equal(details.ok, true)
+  assert.equal(details.hash, realCommit.hash)
+  assert.equal(details.shortHash, realCommit.shortHash)
+  assert.ok(details.author)
+  assert.ok(details.date)
+  assert.ok(Array.isArray(details.files))
+  assert.ok(details.stats)
+  assert.ok(typeof details.stats.filesChanged === 'number')
+})
+
