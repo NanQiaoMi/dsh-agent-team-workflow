@@ -158,10 +158,10 @@ test('role-scoped tools drop schema size significantly', () => {
   const reviewerTools = filterToolsByRole(tools, resolveAllowedToolNames({ role: 'reviewer', settings: SETTINGS }))
   const verifierTools = filterToolsByRole(tools, resolveAllowedToolNames({ role: 'verifier', settings: SETTINGS }))
 
-  assert.equal(leadTools.length, 17)
-  assert.equal(workerTools.length, 10)
-  assert.equal(reviewerTools.length, 6)
-  assert.equal(verifierTools.length, 4)
+  assert.equal(leadTools.length, 19)
+  assert.equal(workerTools.length, 12)
+  assert.equal(reviewerTools.length, 8)
+  assert.equal(verifierTools.length, 5)
 
   const leadBytes = bytes(toolSchemas(leadTools))
   const workerBytes = bytes(toolSchemas(workerTools))

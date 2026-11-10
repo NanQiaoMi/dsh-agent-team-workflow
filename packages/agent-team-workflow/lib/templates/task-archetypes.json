@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": 1,
+  "archetypes": {
+    "module_interface": {
+      "id": "module_interface",
+      "name": "Module Interface & Contract Definition",
+      "description": "Define module API surface, machine-readable contract JSON, TypeScript/JSDoc types, and mock fixtures before writing implementation.",
+      "suggestedDefinitionOfDone": [
+        "Interface contract defined with inputs, outputs, and errors in devkit",
+        "Exported function signatures and types declared",
+        "Mock fixtures or test doubles created for consumer testing"
+      ],
+      "deliverables": [
+        "Contract schema in devkit",
+        "Type definitions or interface facade",
+        "Mock fixture data"
+      ]
+    },
+    "core_implementation": {
+      "id": "core_implementation",
+      "name": "Core Module Implementation",
+      "description": "Implement business logic satisfying declared interface contract with full unit test coverage.",
+      "suggestedDefinitionOfDone": [
+        "All declared contract methods implemented cleanly",
+        "Unit test suite passing with 0 exit code",
+        "No unexpected external package dependencies added",
+        "Clear verification evidence recorded"
+      ],
+      "deliverables": [
+        "Implementation source files in declared write scope",
+        "Unit test files"
+      ]
+    },
+    "integration_wiring": {
+      "id": "integration_wiring",
+      "name": "Cross-Module Integration Wiring",
+      "description": "Connect upstream producer module to downstream consumer module and verify cross-boundary data flow.",
+      "suggestedDefinitionOfDone": [
+        "Consumer cleanly calls producer via contract API",
+        "Integration test passes with real components wired",
+        "Boundary error handling and failure modes verified"
+      ],
+      "deliverables": [
+        "Consumer/adapter implementation",
+        "Integration test suite"
+      ]
+    },
+    "repro_bugfix": {
+      "id": "repro_bugfix",
+      "name": "Repro-First Bug Fix",
+      "description": "Write a reproducing test that fails first (Red), apply minimal fix to make it pass (Green), and preserve all existing regressions.",
+      "suggestedDefinitionOfDone": [
+        "Reproducing test created that fails on baseline code",
+        "Targeted fix applied making reproducer pass",
+        "Full project regression tests pass with 0 exit code"
+      ],
+      "deliverables": [
+        "Regression test case",
+        "Code fix"
+      ]
+    },
+    "refactor_safe": {
+      "id": "refactor_safe",
+      "name": "Safe Architectural Refactoring",
+      "description": "Refactor module structure, state management, or performance while strictly preserving 100% of existing contracts and behavioral tests.",
+      "suggestedDefinitionOfDone": [
+        "Existing public API contracts and signatures 100% preserved",
+        "All pre-existing test suites pass without modifications to test logic",
+        "Target structural, modularity, or performance improvement verified"
+      ],
+      "deliverables": [
+        "Refactored source files",
+        "Verification evidence comparison"
+      ]
+    }
+  }
+}

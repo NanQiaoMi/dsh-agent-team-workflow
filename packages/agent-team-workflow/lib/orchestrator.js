@@ -215,7 +215,22 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
                   const dod = Array.isArray(item.definitionOfDone) && item.definitionOfDone.length > 0
                     ? ` Definition of done:\n${item.definitionOfDone.map((d) => `  - ${d}`).join('\n')}`
                     : ''
-                  msg = `[AUTO_DISPATCH] Task ${item.id} "${item.subject}" is ready and unblocked.${wt} The backing task has been automatically claimed for you. Declared write scopes: ${scopes}.${dod}\n\nDo NOT call team_flow_status or claim again. Start work directly inside your worktree, verify with real commands, and call team_flow_report when done.`
+                  const upstreamHandoffs = blockers
+                    .map((bid) => state.items.find((it) => it.id === bid))
+                    .filter((it) => it && it.handoffPacket)
+                    .map((it) => {
+                      const hp = it.handoffPacket
+                      const parts = [`Item ${it.id}`]
+                      if (hp.contract_id) parts.push(`contract: ${hp.contract_id}`)
+                      if (hp.entry) parts.push(`entry: ${hp.entry}`)
+                      if (Array.isArray(hp.exports) && hp.exports.length > 0) parts.push(`exports: ${hp.exports.join(', ')}`)
+                      if (hp.notes) parts.push(`notes: ${hp.notes}`)
+                      return parts.join(' | ')
+                    })
+                  const handoffInfo = upstreamHandoffs.length > 0
+                    ? `\nUpstream handoffs:\n${upstreamHandoffs.map((h) => `  - ${h}`).join('\n')}`
+                    : ''
+                  msg = `[AUTO_DISPATCH] Task ${item.id} "${item.subject}" is ready and unblocked.${wt} The backing task has been automatically claimed for you. Declared write scopes: ${scopes}.${dod}${handoffInfo}\n\nDo NOT call team_flow_status or claim again. Start work directly inside your worktree, verify with real commands, and call team_flow_report when done.`
                 }
 
                 const ok = await sendNotice(root, item.owner, msg)
