@@ -1,0 +1,7 @@
+- insert:
+    - id: dsh-git-graph
+      name: '@local/dsh-git-graph'
+      config:
+        maxCommits: 50
+        pollMs: 2000
+        injectPrompt: true
