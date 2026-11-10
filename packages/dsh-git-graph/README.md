@@ -21,7 +21,21 @@
    - 搜索过滤栏：支持按 commit 信息、SHA 散列、作者名称快速筛选；
    - 右侧详情抽屉：点击任一节点可展开完整提交信息、父提交列表、变更文件清单并提供便捷辅助操作。
 
-3. **双向 Agent 协同与提示词辅助**：
+3. **动态交互与状态动画系统（新增 / 修改 / 合并）**：
+   - **新增（New Commits / Added Files）**：
+     - 新节点阶梯式入场（`dsh-gg-node-enter`）与行缓动滑入（`dsh-gg-row-enter`）；
+     - 轮询捕获到全新提交时触发绿色发光脉冲（`dsh-gg-new-glow`）并自动标记高亮 `NEW` 徽章；
+     - 文件抽屉中新增文件显示翠绿色高亮标签（`A`）。
+   - **修改（Modifications / Dirty Working Tree）**：
+     - 工作区未提交改动采用菱形节点搭配琥珀色呼吸扩散光晕（`dsh-gg-aura-wave`）；
+     - 当本地修改文件数变动时，Dock 徽章与统计计数器触发弹性弹跳动画（`dsh-gg-bounce-number`）；
+     - 文件抽屉中修改文件显示醒目黄色标签（`M`）。
+   - **合并（Merge Commits / Dual-Parent Branch Convergence）**：
+     - 合并 Bezier 曲线具备动态沿路径流动的发光虚线流（`dsh-gg-dash-flow`），形象展示代码流汇入；
+     - 合并提交节点拥有外层同心双环与旋转光晕（`dsh-gg-merge-ring`），附带 `MERGE` 醒目徽章；
+     - 鼠标悬停在合并节点时，双亲谱系连接线自适应高亮发光，其余无关路径淡化，清晰展现合流脉络。
+
+4. **双向 Agent 协同与提示词辅助**：
    - **模型侧工具**：注册 `git_graph_status` 与 `git_graph_inspect`，让对话模型在需要时能直接以结构化 JSON 查询 Git 状态与提交 DAG；
    - **系统提示词注入**：通过 `ctx.systemPrompt.section` 声明 Git 可视化上下文，避免模型盲目频繁运行 `git status`。
 
