@@ -27,6 +27,7 @@ import {
   lookupStructure,
   publishContract,
   readContract,
+  scaffoldContract,
   scanCodebase,
   validateContract,
   validateItemHandoff,
@@ -781,6 +782,96 @@ test('team_dev_contract action stub and team_flow_report auto-validation with st
     assert.equal(goodReport.contract_validation.ok, true)
     assert.deepEqual(goodReport.contract_warnings, [])
     assert.equal(goodReport.handoff_packet.validation.ok, true)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('scaffoldContract discovers methods & signatures and team_dev_contract scaffolds', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'devkit-scaffold-'))
+  try {
+    const pkgJson = {
+      name: 'auth-service',
+      version: '1.2.0',
+      type: 'module',
+      main: 'service.js',
+    }
+    await writeFile(join(root, 'package.json'), JSON.stringify(pkgJson, null, 2), 'utf8')
+
+    const serviceCode = `
+/** Session manager service */
+export async function createSession(userId, { ttl = 3600, scope = 'read' } = {}) {
+  return { sessionId: 's-123', userId, ttl, scope }
+}
+
+export function verifySession(sessionId) {
+  return { valid: true, sessionId }
+}
+
+export function revokeSession(sessionId) {
+  return { revoked: true }
+}
+`
+    await writeFile(join(root, 'service.js'), serviceCode, 'utf8')
+
+    // 1. Direct scaffoldContract call
+    const res = await scaffoldContract(root, {
+      entry: 'service.js',
+      contractId: 'auth-service-contract',
+      title: 'Auth Service API',
+      version: '2.0.0',
+    })
+
+    assert.equal(res.ok, true)
+    assert.equal(res.contractId, 'auth-service-contract')
+    assert.equal(res.methodCount, 3)
+    assert.deepEqual(res.methods, ['createSession', 'revokeSession', 'verifySession'])
+
+    // Read back saved contract
+    const saved = await readContract(root, 'auth-service-contract')
+    assert.ok(saved)
+    assert.equal(saved.$id, 'auth-service-contract')
+    assert.equal(saved.title, 'Auth Service API')
+    assert.equal(saved.version, '2.0.0')
+    assert.ok(saved.methods.createSession)
+    assert.ok(saved.methods.createSession.input.properties.userId)
+    assert.ok(saved.methods.createSession.input.properties.ttl)
+    assert.ok(saved.methods.createSession.input.properties.scope)
+    assert.ok(saved.methods.verifySession.input.properties.sessionId)
+
+    // 2. Test via team_dev_contract tool with action: 'scaffold'
+    const leadAgent = { id: 'agent-lead' }
+    const ctx = {
+      workingDirectory: { get: () => root, defaultDirectory: root },
+      agentTeams: {
+        tryMembership: () => ({ name: 'lead', role: 'lead' }),
+        membership(agent) {
+          return this.tryMembership(agent)
+        },
+      },
+    }
+    const store = createStore({ ctx, settings: resolveSettings({}) })
+    const tools = buildTools({ ctx, settings: resolveSettings({}), store, version: '1.0.0' })
+    const contractTool = tools.find((t) => t.name === 'team_dev_contract')
+    assert.ok(contractTool)
+
+    const toolRes = await contractTool.execute(
+      {
+        action: 'scaffold',
+        entry: 'service.js',
+        contract_id: 'tool-scaffolded-contract',
+      },
+      { agent: leadAgent },
+    )
+
+    assert.equal(toolRes.ok, true)
+    assert.equal(toolRes.contract_id, 'tool-scaffolded-contract')
+    assert.equal(toolRes.method_count, 3)
+    assert.deepEqual(toolRes.methods, ['createSession', 'revokeSession', 'verifySession'])
+
+    const toolSaved = await readContract(root, 'tool-scaffolded-contract')
+    assert.ok(toolSaved)
+    assert.equal(toolSaved.$id, 'tool-scaffolded-contract')
   } finally {
     await rm(root, { recursive: true, force: true })
   }

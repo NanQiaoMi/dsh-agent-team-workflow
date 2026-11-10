@@ -21,6 +21,7 @@ import {
   listContracts,
   lookupStructure,
   readContract,
+  scaffoldContract,
   validateItemHandoff,
 } from '../lib/devkit.js'
 
@@ -36,6 +37,7 @@ Commands:
   inspect [module]                                     Inspect project structure or a specific module
   contracts                                            List all registered interface contracts
   contract <contract-id>                               View full contract specification
+  scaffold <module|file> [--id <id>]                   Auto-scaffold contract from module or file
   stub <contract-id> [--format <fmt>] [--write <path>] Generate mock/dts stub (esm|dts|json)
   validate <contract-id> [--entry <file>] [--exports <a,b>] Validate exports against a contract
 
@@ -154,6 +156,32 @@ async function run() {
         if (contract.mock) {
           console.log(`Mocks available: ${Object.keys(contract.mock).join(', ')}`)
         }
+      }
+      break
+    }
+    case 'scaffold': {
+      const target = argv.slice(1).find((a) => !a.startsWith('--'))
+      if (!target) {
+        console.error('Error: missing module or file path. Usage: agent-team-dev scaffold <module|file> [--id <id>]')
+        process.exit(1)
+      }
+      const isFile = target.endsWith('.js') || target.endsWith('.mjs') || target.endsWith('.ts')
+      const contractId = getFlag('--id')
+      const title = getFlag('--title')
+      const res = await scaffoldContract(cwd, {
+        entry: isFile ? target : undefined,
+        module: !isFile ? target : undefined,
+        contractId,
+        title,
+      })
+      if (isJson) {
+        console.log(JSON.stringify(res, null, 2))
+      } else {
+        console.log(`[devkit] Scaffolded contract "${res.contractId}" with ${res.methodCount} methods:`)
+        for (const m of res.methods) {
+          console.log(`  - ${m}`)
+        }
+        console.log(`[devkit] Saved to: ${res.path}`)
       }
       break
     }

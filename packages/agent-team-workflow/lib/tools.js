@@ -18,6 +18,7 @@ import {
   lookupStructure,
   publishContract,
   readContract,
+  scaffoldContract,
   validateContract,
   validateItemHandoff,
 } from './devkit.js'
@@ -3013,36 +3014,44 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_dev_contract',
       description:
-        'Manage interface contracts: read, publish, list, validate, or generate mock stubs.',
+        'Manage interface contracts: read, publish, list, validate, stub, or scaffold.',
       parameters: {
         type: 'object',
         properties: {
           action: {
             type: 'string',
-            enum: ['list', 'read', 'publish', 'validate', 'stub'],
+            enum: ['list', 'read', 'publish', 'validate', 'stub', 'scaffold'],
             description: 'Contract operation.',
           },
           contract_id: {
             type: 'string',
-            description: 'Unique contract ID (e.g. devkit-api-contract).',
+            description: 'Contract ID.',
+          },
+          module: {
+            type: 'string',
+            description: 'Module in manifest to scaffold.',
+          },
+          entry: {
+            type: 'string',
+            description: 'Entry file to scaffold.',
           },
           contract: {
             type: 'object',
-            description: 'Contract definition when publishing ($id, title, version, methods, mock).',
+            description: 'Contract object.',
           },
           exports: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Exported symbol names when validating.',
+            description: 'Symbol names to validate.',
           },
           format: {
             type: 'string',
             enum: ['esm', 'dts', 'json'],
-            description: 'Stub output format: esm (default), dts, or json.',
+            description: 'Stub format: esm, dts, json.',
           },
           write_to: {
             type: 'string',
-            description: 'Optional file path in workspace to write stub.',
+            description: 'File path to write stub.',
           },
         },
         required: ['action'],
@@ -3056,6 +3065,8 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           path: { type: 'string' },
           code: { type: 'string' },
           written: { type: 'boolean' },
+          methods: { type: 'array', items: { type: 'string' } },
+          method_count: { type: 'number' },
           contract: {},
           contracts: { type: 'array', items: {} },
           validation: {},
@@ -3099,7 +3110,23 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           })
           return { ok: true, contract_id: args.contract_id, ...res }
         }
-        throw new Error(`unknown action "${action}"; use list, read, publish, validate, or stub`)
+        if (action === 'scaffold') {
+          const res = await scaffoldContract(cwd, {
+            module: args.module,
+            entry: args.entry,
+            contractId: args.contract_id,
+            title: args.contract?.title,
+            version: args.contract?.version,
+          })
+          return {
+            ok: true,
+            contract_id: res.contractId,
+            path: res.path,
+            methods: res.methods,
+            method_count: res.methodCount,
+          }
+        }
+        throw new Error(`unknown action "${action}"; use list, read, publish, validate, stub, or scaffold`)
       },
     },
   ]

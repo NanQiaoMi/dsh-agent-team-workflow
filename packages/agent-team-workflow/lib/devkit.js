@@ -31,16 +31,21 @@ export function extractExports(source) {
   const exports = new Set()
   if (typeof source !== 'string' || source.length === 0) return []
 
+  // Remove block comments and line comments so commented-out code is ignored
+  const clean = source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/.*$/gm, '')
+
   // export function foo / export async function foo / export class Foo
-  const fnMatches = source.matchAll(/export\s+(?:async\s+)?(?:function\*?|class)\s+([A-Za-z0-9_$]+)/g)
+  const fnMatches = clean.matchAll(/(?:^|\n)[ \t]*export\s+(?:async\s+)?(?:function\*?|class)\s+([A-Za-z0-9_$]+)/g)
   for (const m of fnMatches) if (m[1]) exports.add(m[1])
 
   // export const foo = / export let foo =
-  const varMatches = source.matchAll(/export\s+(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=/g)
+  const varMatches = clean.matchAll(/(?:^|\n)[ \t]*export\s+(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=/g)
   for (const m of varMatches) if (m[1]) exports.add(m[1])
 
   // export { foo, bar as baz }
-  const blockMatches = source.matchAll(/export\s*\{([^}]+)\}/g)
+  const blockMatches = clean.matchAll(/(?:^|\n)[ \t]*export\s*\{([^}]+)\}/g)
   for (const block of blockMatches) {
     if (!block[1]) continue
     const items = block[1].split(',')
@@ -435,6 +440,120 @@ export async function publishContract(cwd, contract) {
   await rename(tmp, target)
 
   return { ok: true, contractId: id, path: target }
+}
+
+/**
+ * Scaffold an interface contract from an existing module or source file.
+ * Automatically discovers exported functions and basic parameter signatures.
+ *
+ * @param {string} cwd - workspace root.
+ * @param {object} options
+ * @param {string} [options.entry] - source file path to parse.
+ * @param {string} [options.module] - module name in manifest to resolve entry from.
+ * @param {string} [options.contractId] - target contract ID.
+ * @param {string} [options.title] - human-readable contract title.
+ * @param {string} [options.version='1.0.0'] - contract version.
+ * @returns {Promise<{ ok: boolean, contractId: string, path: string, methods: string[], methodCount: number }>}
+ */
+export async function scaffoldContract(cwd, options = {}) {
+  const root = isAbsolute(cwd) ? cwd : join(process.cwd(), cwd)
+  let targetEntry = null
+
+  if (options.entry && typeof options.entry === 'string') {
+    targetEntry = resolve(root, options.entry)
+  } else if (options.module && typeof options.module === 'string') {
+    const { manifest } = await ensureDevkit(root)
+    const mod = manifest.modules[options.module]
+    if (!mod || !mod.entry) {
+      throw new Error(`Module "${options.module}" not found or has no entry in devkit manifest`)
+    }
+    targetEntry = resolve(root, mod.entry)
+  } else {
+    throw new Error('scaffoldContract requires either "entry" (file path) or "module" (name)')
+  }
+
+  let code = ''
+  try {
+    code = await readFile(targetEntry, 'utf8')
+  } catch (err) {
+    throw new Error(`Failed to read source entry "${targetEntry}": ${err.message}`)
+  }
+
+  const exportedSymbols = extractExports(code)
+  if (exportedSymbols.length === 0) {
+    throw new Error(`No exported symbols found in "${targetEntry}"`)
+  }
+
+  // Derive default contractId if not supplied
+  const baseName = basename(targetEntry, '.js').replace(/\.mjs$/, '').replace(/\.ts$/, '')
+  const derivedId = options.module
+    ? options.module.replace(/[^A-Za-z0-9._-]/g, '-').replace(/^-+|-+$/g, '') + '-contract'
+    : `${baseName}-contract`
+  const contractId = String(options.contractId ?? options.contract_id ?? derivedId).trim()
+
+  const title = String(options.title ?? `${contractId} Interface`).trim()
+  const version = String(options.version ?? '1.0.0').trim()
+
+  const methods = {}
+  const mock = {}
+
+  for (const name of exportedSymbols) {
+    // Attempt to extract parameter list for functions
+    const fnRegex = new RegExp(
+      `(?:export\\s+)?(?:async\\s+)?(?:function\\s+${name}|const\\s+${name}\\s*=\\s*(?:async\\s*)?)\\s*\\(([^)]*)\\)`,
+    )
+    const match = fnRegex.exec(code)
+    const paramNames = []
+    if (match && match[1]) {
+      const rawParams = match[1].trim()
+      let s = rawParams
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/\/\/.*$/gm, '')
+        .replace(/'[^']*'|"[^"]*"|`[^`]*`/g, '')
+        .replace(/[{}[\]]/g, ',')
+      for (const part of s.split(',')) {
+        const left = part.split(/[=:]/)[0].trim()
+        const clean = left.replace(/^\.\.\./, '').trim()
+        if (/^[A-Za-z0-9_$]+$/.test(clean) && !['true', 'false', 'null', 'undefined'].includes(clean)) {
+          if (!paramNames.includes(clean)) paramNames.push(clean)
+        }
+      }
+    }
+
+    const properties = {}
+    for (const p of paramNames) {
+      properties[p] = { type: 'any' }
+    }
+
+    methods[name] = {
+      description: `Exported from ${relative(root, targetEntry)}`,
+      input: {
+        type: 'object',
+        properties,
+      },
+      output: {
+        type: 'object',
+      },
+    }
+    mock[name] = {}
+  }
+
+  const contract = {
+    $id: contractId,
+    title,
+    version,
+    methods,
+    mock,
+  }
+
+  const pubResult = await publishContract(root, contract)
+  return {
+    ok: true,
+    contractId: pubResult.contractId,
+    path: pubResult.path,
+    methods: Object.keys(methods),
+    methodCount: Object.keys(methods).length,
+  }
 }
 
 /**
