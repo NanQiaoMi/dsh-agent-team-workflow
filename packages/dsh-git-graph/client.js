@@ -84,6 +84,15 @@ window.__ModuleLoader__.load({
       'graph.colAuthor': '作者',
       'graph.colDate': '时间',
       'graph.colSha': '哈希',
+      'graph.askAgentReview': '🤖 审查此提交',
+      'graph.askAgentSuggest': '🤖 分析改动并生成 Commit',
+      'graph.askAgentState': '🤖 注入当前 Git 状态到对话',
+      'graph.promptInjected': '已填入输入框（并已复制）！',
+      'graph.commitFiles': '变更文件 ({n})',
+      'graph.commitBody': '提交详细说明',
+      'graph.copyCheckout': '检出新分支',
+      'graph.copyCherryPick': '挑选提交',
+      'graph.loadingCommit': '正在读取提交详情...',
     }
 
     const en = {
@@ -136,6 +145,15 @@ window.__ModuleLoader__.load({
       'graph.colAuthor': 'Author',
       'graph.colDate': 'Date',
       'graph.colSha': 'SHA',
+      'graph.askAgentReview': '🤖 Review with Agent',
+      'graph.askAgentSuggest': '🤖 Suggest Commit with Agent',
+      'graph.askAgentState': '🤖 Send Git State to Agent',
+      'graph.promptInjected': 'Inserted into chat (and copied)!',
+      'graph.commitFiles': 'Changed Files ({n})',
+      'graph.commitBody': 'Commit Body',
+      'graph.copyCheckout': 'Checkout Branch',
+      'graph.copyCherryPick': 'Cherry-pick',
+      'graph.loadingCommit': 'Loading commit details...',
     }
 
     // -------------------------------------------------------------------------
@@ -212,6 +230,69 @@ window.__ModuleLoader__.load({
       }, [refresh, pollMs])
 
       return { snapshot, loading, error, refresh, lastUpdated, newHashes, dirtyPulse }
+    }
+
+    /** Helper to inject prompt text into chat input textarea and copy to clipboard */
+    function injectPromptIntoChat(promptText) {
+      if (typeof navigator !== 'undefined' && navigator.clipboard) {
+        navigator.clipboard.writeText(promptText).catch(() => {})
+      }
+      try {
+        if (typeof document !== 'undefined') {
+          const textarea =
+            document.querySelector('.dsh-client-ui-conversation textarea') ||
+            document.querySelector('textarea')
+          if (textarea) {
+            textarea.value = promptText
+            textarea.dispatchEvent(new Event('input', { bubbles: true }))
+            textarea.dispatchEvent(new Event('change', { bubbles: true }))
+            textarea.focus()
+            if (typeof textarea.setSelectionRange === 'function') {
+              const len = promptText.length
+              textarea.setSelectionRange(len, len)
+            }
+            return true
+          }
+        }
+      } catch {
+        /* fallback */
+      }
+      return false
+    }
+
+    /** Hook to fetch full commit details on demand */
+    function useCommitDetails(selectedHash, sessionId) {
+      const [details, setDetails] = useState(null)
+      const [loading, setLoading] = useState(false)
+
+      useEffect(() => {
+        if (!selectedHash || selectedHash === 'working-tree') {
+          setDetails(null)
+          return
+        }
+
+        let active = true
+        setLoading(true)
+        const url = `${SNAPSHOT_PATH}?session=${encodeURIComponent(sessionId || '')}&commit=${encodeURIComponent(selectedHash)}`
+
+        fetch(url, { headers: { accept: 'application/json' } })
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => {
+            if (active && data?.ok) {
+              setDetails(data)
+            }
+          })
+          .catch(() => {})
+          .finally(() => {
+            if (active) setLoading(false)
+          })
+
+        return () => {
+          active = false
+        }
+      }, [selectedHash, sessionId])
+
+      return { details, loading }
     }
 
     // -------------------------------------------------------------------------
@@ -567,6 +648,21 @@ window.__ModuleLoader__.load({
                   'button',
                   {
                     type: 'button',
+                    className: 'dsh-gg-btn prompt mini',
+                    onClick: () => {
+                      const promptText = `【当前 Git 状态】分支: ${branch}${status.ahead ? ` (超前 ${status.ahead})` : ''}${status.behind ? ` (落后 ${status.behind})` : ''}。${isDirty ? `工作区有 ${totalChanged} 项未提交改动（暂存 ${status.staged || 0}，未暂存 ${status.unstaged || 0}，未跟踪 ${status.untracked || 0}）。` : '工作区当前干净。'}`
+                      injectPromptIntoChat(promptText)
+                      setCopiedText('prompt')
+                      setTimeout(() => setCopiedText(''), 2000)
+                    },
+                    title: tr('graph.askAgentState'),
+                  },
+                  tr('graph.askAgentState')
+                ),
+                h(
+                  'button',
+                  {
+                    type: 'button',
                     className: 'dsh-gg-btn secondary mini',
                     onClick: () => copyToClipboard(branch, 'branch'),
                   },
@@ -611,6 +707,8 @@ window.__ModuleLoader__.load({
         const [filterMode, setFilterMode] = useState('all') // 'all' | 'branch' | 'dirty'
         const [expandedGroups, setExpandedGroups] = useState({ staged: true, unstaged: true, untracked: true })
 
+        const { details: commitDetails, loading: commitDetailsLoading } = useCommitDetails(selectedNode?.hash, sessionId)
+
         // Normalize scrollport on mount
         useEffect(() => {
           const node = rootRef.current
@@ -639,6 +737,25 @@ window.__ModuleLoader__.load({
               setTimeout(() => setCopyNotice(''), 1500)
             })
           }
+        }
+
+        const askAgentAboutCommit = (commit) => {
+          const fileNames = commitDetails?.files?.map((f) => f.path).slice(0, 8).join(', ') || ''
+          const totalFiles = commitDetails?.files?.length || 0
+          const promptText = `请帮我审查提交 ${commit.shortHash || commit.hash.slice(0, 7)} ("${commit.subject}")：\n- 作者: ${commit.author} (${commit.date})\n${fileNames ? `- 涉及文件: ${fileNames}${totalFiles > 8 ? ` 等共 ${totalFiles} 个文件` : ''}\n` : ''}请分析代码实现意图，评估改动影响，指出潜在缺陷或边界风险。`
+          const injected = injectPromptIntoChat(promptText)
+          setCopyNotice(injected ? tr('graph.promptInjected') : tr('graph.copied'))
+          setTimeout(() => setCopyNotice(''), 2500)
+        }
+
+        const askAgentAboutWorking = () => {
+          const staged = stagedFiles.map((f) => f.path).slice(0, 10).join(', ')
+          const unstaged = unstagedFiles.map((f) => f.path).slice(0, 10).join(', ')
+          const untracked = untrackedFiles.map((f) => f.path).slice(0, 10).join(', ')
+          const promptText = `请帮我分析当前工作区未提交的代码改动（共 ${files.length} 个文件）：\n${staged ? `- 暂存文件 (${stagedFiles.length}): ${staged}\n` : ''}${unstaged ? `- 未暂存文件 (${unstagedFiles.length}): ${unstaged}\n` : ''}${untracked ? `- 未跟踪文件 (${untrackedFiles.length}): ${untracked}\n` : ''}请评估改动质量与风险，并建议规范的 Conventional Commits 格式提交信息。`
+          const injected = injectPromptIntoChat(promptText)
+          setCopyNotice(injected ? tr('graph.promptInjected') : tr('graph.copied'))
+          setTimeout(() => setCopyNotice(''), 2500)
         }
 
         const toggleGroup = (key) => {
@@ -1168,6 +1285,69 @@ window.__ModuleLoader__.load({
                         )
                       ),
 
+                    // Historical Commit Body & Changed Files
+                    !selectedNode.isWorkingTree &&
+                      commitDetails?.body &&
+                      h(
+                        'div',
+                        { className: 'dsh-gg-commit-body-box' },
+                        h('div', { className: 'label' }, tr('graph.commitBody')),
+                        h('pre', { className: 'body-content' }, commitDetails.body)
+                      ),
+
+                    !selectedNode.isWorkingTree && commitDetailsLoading &&
+                      h('div', { className: 'dsh-gg-commit-loading' }, tr('graph.loadingCommit')),
+
+                    !selectedNode.isWorkingTree &&
+                      commitDetails?.files &&
+                      commitDetails.files.length > 0 &&
+                      h(
+                        'div',
+                        { className: 'dsh-gg-files-box' },
+                        h(
+                          'div',
+                          { className: 'dsh-gg-files-summary' },
+                          h('h5', null, tr('graph.commitFiles', { n: commitDetails.files.length })),
+                          commitDetails.stats &&
+                            h(
+                              'span',
+                              { className: 'stat-chips' },
+                              h('span', { className: 'ins' }, `+${commitDetails.stats.insertions}`),
+                              h('span', { className: 'del' }, `-${commitDetails.stats.deletions}`)
+                            )
+                        ),
+                        h(
+                          'div',
+                          { className: 'dsh-gg-files-scroll' },
+                          commitDetails.files.map((file) =>
+                            h(
+                              'div',
+                              { key: file.path, className: 'dsh-gg-file-row' },
+                              h('span', { className: `tag ${file.status}` }, file.status),
+                              h('span', { className: 'name', title: file.path }, file.path),
+                              file.insertions !== undefined &&
+                                h(
+                                  'span',
+                                  { className: 'file-diff-stat' },
+                                  file.insertions > 0 && h('span', { className: 'ins' }, `+${file.insertions}`),
+                                  file.deletions > 0 && h('span', { className: 'del' }, `-${file.deletions}`)
+                                ),
+                              h(
+                                'button',
+                                {
+                                  type: 'button',
+                                  className: 'copy-path-btn',
+                                  onClick: () => copyText(file.path),
+                                  title: tr('graph.copyPath'),
+                                },
+                                h(CopyIcon, { size: 11 })
+                              )
+                            )
+                          )
+                        )
+                      ),
+
+                    // Working Tree Accordions
                     selectedNode.isWorkingTree &&
                       h(
                         'div',
@@ -1304,33 +1484,84 @@ window.__ModuleLoader__.load({
                   h(
                     'div',
                     { className: 'dsh-gg-drawer-actions' },
-                    h(
-                      'button',
-                      {
-                        type: 'button',
-                        className: 'dsh-gg-btn primary',
-                        onClick: () => copyText(selectedNode.hash),
-                      },
-                      tr('dock.copySha')
-                    ),
-                    h(
-                      'button',
-                      {
-                        type: 'button',
-                        className: 'dsh-gg-btn secondary',
-                        onClick: () => copyText(`git show ${selectedNode.hash}`),
-                      },
-                      'git show'
-                    ),
-                    h(
-                      'button',
-                      {
-                        type: 'button',
-                        className: 'dsh-gg-btn secondary',
-                        onClick: () => copyText(`git diff ${selectedNode.hash}^!`),
-                      },
-                      'git diff'
-                    )
+                    selectedNode.isWorkingTree
+                      ? [
+                          h(
+                            'button',
+                            {
+                              key: 'action-suggest',
+                              type: 'button',
+                              className: 'dsh-gg-btn prompt',
+                              onClick: askAgentAboutWorking,
+                            },
+                            tr('graph.askAgentSuggest')
+                          ),
+                          h(
+                            'button',
+                            {
+                              key: 'action-add',
+                              type: 'button',
+                              className: 'dsh-gg-btn secondary mini',
+                              onClick: () => copyText('git add -A'),
+                            },
+                            'git add -A'
+                          ),
+                          h(
+                            'button',
+                            {
+                              key: 'action-diff',
+                              type: 'button',
+                              className: 'dsh-gg-btn secondary mini',
+                              onClick: () => copyText('git diff'),
+                            },
+                            'git diff'
+                          ),
+                        ]
+                      : [
+                          h(
+                            'button',
+                            {
+                              key: 'action-review',
+                              type: 'button',
+                              className: 'dsh-gg-btn prompt',
+                              onClick: () => askAgentAboutCommit(selectedNode),
+                            },
+                            tr('graph.askAgentReview')
+                          ),
+                          h(
+                            'button',
+                            {
+                              key: 'action-sha',
+                              type: 'button',
+                              className: 'dsh-gg-btn secondary mini',
+                              onClick: () => copyText(selectedNode.hash),
+                            },
+                            tr('dock.copySha')
+                          ),
+                          h(
+                            'button',
+                            {
+                              key: 'action-checkout',
+                              type: 'button',
+                              className: 'dsh-gg-btn secondary mini',
+                              onClick: () =>
+                                copyText(
+                                  `git checkout -b feature/from-${selectedNode.shortHash} ${selectedNode.shortHash}`
+                                ),
+                            },
+                            tr('graph.copyCheckout')
+                          ),
+                          h(
+                            'button',
+                            {
+                              key: 'action-cherry',
+                              type: 'button',
+                              className: 'dsh-gg-btn secondary mini',
+                              onClick: () => copyText(`git cherry-pick ${selectedNode.shortHash}`),
+                            },
+                            tr('graph.copyCherryPick')
+                          ),
+                        ]
                   )
                 )
               )
@@ -1555,6 +1786,11 @@ window.__ModuleLoader__.load({
       .dsh-gg-btn.mini { padding: 3px 8px; font-size: 11px; }
       .dsh-gg-btn.primary { background: #2563eb; color: #fff; }
       .dsh-gg-btn.primary:hover { opacity: 0.9; transform: translateY(-1px); }
+      .dsh-gg-btn.prompt {
+        background: linear-gradient(135deg, #2563eb, #7c3aed); color: #fff; font-weight: 600;
+        border: 1px solid rgba(167, 139, 250, 0.4); box-shadow: 0 2px 8px rgba(124, 58, 237, 0.25);
+      }
+      .dsh-gg-btn.prompt:hover { opacity: 0.95; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(124, 58, 237, 0.45); }
       .dsh-gg-btn.secondary { background: #2a2e39; color: #cbd5e1; border-color: #3f4453; }
       .dsh-gg-btn.secondary:hover { background: #383d4c; color: #fff; }
       .dsh-gg-btn.icon { background: #20232b; border: 1px solid #313542; color: #94a3b8; display: flex; align-items: center; justify-content: center; padding: 5px; }
@@ -1587,7 +1823,9 @@ window.__ModuleLoader__.load({
       .dsh-gg-conn-path.is-hover-highlight { filter: drop-shadow(0 0 5px currentColor); }
       .dsh-gg-merge-particle-stream { animation: dsh-gg-dash-flow 1.2s linear infinite; pointer-events: none; }
       .dsh-gg-node-dot { pointer-events: auto; transform-origin: center; animation: dsh-gg-node-enter 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) backwards; }
-      .dsh-gg-node-dot:hover .dsh-gg-commit-circle { transform: scale(1.35); stroke: #fff; stroke-width: 2.5; filter: drop-shadow(0 0 6px currentColor); }
+      .dsh-gg-node-dot:hover .dsh-gg-commit-circle, .dsh-gg-node-dot.is-hovered .dsh-gg-commit-circle {
+        transform: scale(1.35); stroke: #fff; stroke-width: 2.5; filter: drop-shadow(0 0 6px currentColor);
+      }
       .dsh-gg-commit-circle { transition: transform 0.2s ease, stroke-width 0.2s ease; transform-origin: center; }
       .dsh-gg-aura-wave { animation: dsh-gg-aura-wave 2s cubic-bezier(0.25, 1, 0.5, 1) infinite; }
       .dsh-gg-diamond-working { animation: dsh-gg-pulse-amber 2.5s ease-in-out infinite; }
@@ -1695,8 +1933,25 @@ window.__ModuleLoader__.load({
       .dsh-gg-file-row:hover .copy-path-btn { display: flex; color: #aaa; }
       .dsh-gg-file-row .copy-path-btn:hover { color: #fff; background: rgba(255,255,255,0.1); }
 
+      .dsh-gg-commit-body-box {
+        background: rgba(0,0,0,0.25); border-radius: 6px; padding: 8px 10px; border: 1px solid #252830;
+      }
+      .dsh-gg-commit-body-box .label { color: #94a3b8; font-size: 11px; font-weight: 600; margin-bottom: 4px; }
+      .dsh-gg-commit-body-box .body-content {
+        margin: 0; font-size: 11px; color: #cbd5e1; font-family: -apple-system, sans-serif;
+        white-space: pre-wrap; line-height: 1.45; max-height: 120px; overflow-y: auto;
+      }
+      .dsh-gg-files-summary { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+      .dsh-gg-files-summary .stat-chips { font-size: 10px; font-family: monospace; display: flex; gap: 6px; }
+      .dsh-gg-files-summary .stat-chips .ins { color: #34d399; font-weight: bold; }
+      .dsh-gg-files-summary .stat-chips .del { color: #f87171; font-weight: bold; }
+      .file-diff-stat { display: flex; gap: 4px; font-size: 10px; font-family: monospace; margin-right: 6px; }
+      .file-diff-stat .ins { color: #34d399; }
+      .file-diff-stat .del { color: #f87171; }
+      .dsh-gg-commit-loading { color: #888; font-size: 11px; padding: 8px 0; text-align: center; font-style: italic; }
+
       .dsh-gg-notice { color: #10b981; font-size: 11px; text-align: center; animation: dsh-gg-fade-in 0.2s ease; }
-      .dsh-gg-drawer-actions { padding: 12px; border-top: 1px solid #252830; display: flex; gap: 6px; }
+      .dsh-gg-drawer-actions { padding: 12px; border-top: 1px solid #252830; display: flex; flex-wrap: wrap; gap: 6px; }
       .dsh-gg-view-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 320px; color: #888; font-size: 13px; }
       .dsh-gg-empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 360px; color: #777; gap: 10px; padding: 24px; text-align: center; }
       .dsh-gg-empty-state.is-error h3 { color: #f87171; }

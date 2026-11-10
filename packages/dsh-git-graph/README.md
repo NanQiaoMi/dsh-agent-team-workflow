@@ -23,7 +23,12 @@
    - **节点悬浮轻量卡片（Hover Tooltip Card）**：鼠标移动至任一提交节点即可浮层查看完整 Commit 消息、作者及相对时间；
    - 细粒度 Ref 徽章：区分 `[HEAD]`、`[local branch]`、`[remote branch]`、`[tag]`；
    - 搜索过滤栏：支持按 commit 信息、SHA 散列、作者名称快速筛选；
-   - 右侧详情抽屉：提供 Staged / Unstaged / Untracked 文件手风琴折叠、路径一键复制与 `git show` / `git diff` 快捷操作。
+   - 右侧详情抽屉：提供 Staged / Unstaged / Untracked 文件手风琴折叠、路径一键复制与 `git show` / `git diff` 快捷操作；
+   - **历史提交文件级 Diff 展开**：点击任意历史 Commit，即刻异步按需拉取变更文件清单、代码增删统计（+N / -N）与完整提交说明（Body）；
+   - **对话界面 Agent 深度协同辅助开发**：
+     - 一键生成并自动回填针对当前工作区改动的 Agent 审查提示词（`🤖 评估改动并生成 Commit`）；
+     - 一键生成并自动回填针对历史提交的 Agent 代码审查提示词（`🤖 审查此提交`）；
+     - Dock 输入框胶囊内一键注入当前分支状态（`🤖 注入当前 Git 状态到对话`），实现图谱与大模型对话的无缝闭环。
 
 3. **动态交互与状态动画系统（新增 / 修改 / 合并）**：
    - **新增（New Commits / Added Files）**：
