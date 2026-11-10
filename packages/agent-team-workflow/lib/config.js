@@ -113,6 +113,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   roleToolScoping: true,
   /** Pre-flight check in team_flow_report: fail fast on non-zero exit codes. */
   preReportCheck: true,
+  /** Require at least one minor/major finding for request_changes (disallows pure nit rework). */
+  nitTolerance: true,
 })
 
 function clampInt(value, fallback, min, max) {
@@ -266,6 +268,7 @@ export function resolveSettings(raw = {}) {
     legacyAllTools: readBool(config.legacyAllTools, DEFAULT_SETTINGS.legacyAllTools),
     roleToolScoping: readBool(config.roleToolScoping, DEFAULT_SETTINGS.roleToolScoping),
     preReportCheck: readBool(config.preReportCheck, DEFAULT_SETTINGS.preReportCheck),
+    nitTolerance: readBool(config.nitTolerance, DEFAULT_SETTINGS.nitTolerance),
   })
 }
 
@@ -315,5 +318,6 @@ export function runSettings(settings) {
     legacyAllTools: settings.legacyAllTools,
     roleToolScoping: settings.roleToolScoping,
     preReportCheck: settings.preReportCheck,
+    nitTolerance: settings.nitTolerance,
   }
 }

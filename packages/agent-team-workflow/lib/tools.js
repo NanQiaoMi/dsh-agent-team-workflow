@@ -1055,6 +1055,18 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           if (finding.claim.length === 0) throw new Error(`finding "${finding.id}" needs a non-empty claim`)
         }
         if (!W.VERDICTS.includes(args.verdict)) throw new Error(`verdict must be one of ${W.VERDICTS.join('/')}`)
+
+        if (
+          settings.nitTolerance !== false &&
+          args.verdict === 'request_changes' &&
+          findings.length > 0 &&
+          findings.every((f) => f.severity === 'nit')
+        ) {
+          throw new Error(
+            'team_flow_review_submit: all findings have "nit" severity. Non-blocking stylistic notes do not justify a blocking rework cycle. Use verdict: "approve_with_nits" to record observations without blocking the run, or elevate at least one finding to "minor", "major", or "blocker" if author rework is necessary.'
+          )
+        }
+
         let outcome = null
         let state = await store.mutateState(agent, async (current) => {
           if (current === null) throw new Error('no workflow run exists yet')
