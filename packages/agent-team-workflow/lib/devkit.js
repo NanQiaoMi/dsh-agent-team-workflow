@@ -144,6 +144,47 @@ export async function scanCodebase(cwd) {
     }
   }
 
+  // Scan src/*, lib/*, modules/* subdirectories for modular architectures
+  for (const srcFolder of ['src', 'lib', 'modules']) {
+    try {
+      const parentDir = join(root, srcFolder)
+      const entries = await readdir(parentDir, { withFileTypes: true })
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue
+        const modDir = join(parentDir, entry.name)
+        let modEntry = null
+        for (const candidate of ['index.js', 'index.mjs', 'index.ts', `${entry.name}.js`, `${entry.name}.mjs`]) {
+          try {
+            const s = await stat(join(modDir, candidate))
+            if (s.isFile()) {
+              modEntry = join(srcFolder, entry.name, candidate)
+              break
+            }
+          } catch {}
+        }
+        let modExports = []
+        if (modEntry) {
+          try {
+            const code = await readFile(join(root, modEntry), 'utf8')
+            modExports = extractExports(code)
+          } catch {}
+        }
+        const modTests = await findTestFiles(join(root, 'test', entry.name), root)
+        if (!manifest.modules[entry.name]) {
+          manifest.modules[entry.name] = {
+            path: join(srcFolder, entry.name),
+            entry: modEntry,
+            exports: modExports,
+            tests: modTests,
+            dependencies: [],
+          }
+        }
+      }
+    } catch {
+      /* folder does not exist */
+    }
+  }
+
   // Scan packages/* directory if present (monorepo structure)
   try {
     const packagesDir = join(root, 'packages')

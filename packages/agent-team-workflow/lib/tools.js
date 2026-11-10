@@ -946,6 +946,9 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           ? await validateItemHandoff(cwd, handoffPacket)
           : null
         if (handoffPacket && contractValidation && contractValidation.skipped !== true) {
+          if ((!handoffPacket.exports || handoffPacket.exports.length === 0) && Array.isArray(contractValidation.actualExports)) {
+            handoffPacket.exports = contractValidation.actualExports
+          }
           handoffPacket.validation = {
             ok: contractValidation.ok,
             contractId: contractValidation.contractId,
