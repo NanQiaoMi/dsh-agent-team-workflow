@@ -5,7 +5,7 @@
  * `ctx.connection.fetch.register({ path, methods: ['GET'], requestBody: 'buffered', fetch })`
  */
 
-import { getGitSnapshot } from './git-engine.js'
+import { getGitSnapshot, getCommitDetails } from './git-engine.js'
 
 export const GIT_GRAPH_SNAPSHOT_PATH = '/api/git-graph.snapshot'
 
@@ -77,6 +77,12 @@ export function registerGitGraphRoute({ connection, ctx }) {
 
         if (!cwd) {
           cwd = process.env.DSH_WORKSPACE_DIR || process.cwd()
+        }
+
+        const commitHash = url.searchParams.get('commit')
+        if (commitHash) {
+          const details = await getCommitDetails(cwd, commitHash)
+          return jsonResponse(200, details)
         }
 
         const snapshot = await getGitSnapshot(cwd, limit)

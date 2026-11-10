@@ -499,3 +499,132 @@ export async function getGitSnapshot(cwd, limit = 60) {
     graph,
   }
 }
+
+/**
+ * Retrieve detailed metadata and file diff for a single commit.
+ *
+ * @param {string} cwd - Working directory
+ * @param {string} hash - Commit hash
+ * @returns {Promise<object>} Commit details
+ */
+export async function getCommitDetails(cwd, hash) {
+  if (!hash || typeof hash !== 'string' || !/^[0-9a-fA-F]{4,40}$/.test(hash)) {
+    throw new Error('Invalid commit hash format')
+  }
+
+  let repoRoot = cwd
+  try {
+    const { stdout } = await runGit(['rev-parse', '--show-toplevel'], cwd, 2000)
+    repoRoot = stdout.trim() || cwd
+  } catch {
+    /* fallback to cwd */
+  }
+
+  // 1. Commit metadata & body
+  const format = `%H${RECORD_SEP}%h${RECORD_SEP}%an${RECORD_SEP}%ae${RECORD_SEP}%aI${RECORD_SEP}%s${RECORD_SEP}%b${RECORD_SEP}%P`
+  const { stdout: metaRaw } = await runGit(
+    ['log', '-1', '--date=iso-strict', `--format=${format}`, hash],
+    repoRoot,
+    3000
+  )
+
+  const metaParts = metaRaw.trim().split(RECORD_SEP)
+  if (metaParts.length < 6) {
+    throw new Error(`Commit ${hash} not found`)
+  }
+
+  const commitHash = metaParts[0]
+  const shortHash = metaParts[1]
+  const author = metaParts[2]
+  const email = metaParts[3]
+  const date = metaParts[4]
+  const subject = metaParts[5]
+  const body = metaParts[6] ? metaParts[6].trim() : ''
+  const parents = metaParts[7] ? metaParts[7].split(' ').filter(Boolean) : []
+
+  // 2. Name-status of changed files
+  const fileStatusMap = new Map()
+  try {
+    const { stdout: nameStatusOut } = await runGit(
+      ['show', '-m', '--name-status', '--format=', hash],
+      repoRoot,
+      3000
+    )
+    for (const line of nameStatusOut.split('\n')) {
+      if (!line.trim()) continue
+      const parts = line.split('\t')
+      const code = parts[0]?.trim() || 'M'
+      const filePath = parts[parts.length - 1]?.trim()
+      if (filePath) {
+        fileStatusMap.set(filePath, code)
+      }
+    }
+  } catch {
+    /* name-status best-effort */
+  }
+
+  // 3. Numstat of changed files
+  const files = []
+  let totalInsertions = 0
+  let totalDeletions = 0
+
+  try {
+    const { stdout: numstatOut } = await runGit(
+      ['show', '-m', '--numstat', '--format=', hash],
+      repoRoot,
+      3000
+    )
+    for (const line of numstatOut.split('\n')) {
+      if (!line.trim()) continue
+      const parts = line.split('\t')
+      if (parts.length >= 3) {
+        const ins = parts[0] === '-' ? 0 : parseInt(parts[0], 10) || 0
+        const del = parts[1] === '-' ? 0 : parseInt(parts[1], 10) || 0
+        const filePath = parts.slice(2).join('\t').trim()
+        totalInsertions += ins
+        totalDeletions += del
+
+        files.push({
+          path: filePath,
+          status: fileStatusMap.get(filePath) || 'M',
+          insertions: ins,
+          deletions: del,
+        })
+      }
+    }
+  } catch {
+    /* numstat best-effort */
+  }
+
+  // If numstat was empty (e.g. empty commit or file rename only), fallback to fileStatusMap
+  if (files.length === 0 && fileStatusMap.size > 0) {
+    for (const [filePath, status] of fileStatusMap.entries()) {
+      files.push({
+        path: filePath,
+        status,
+        insertions: 0,
+        deletions: 0,
+      })
+    }
+  }
+
+  return {
+    ok: true,
+    hash: commitHash,
+    shortHash,
+    author,
+    email,
+    date,
+    relativeTime: formatRelativeTime(date),
+    subject,
+    body,
+    parents,
+    files: files.slice(0, 100),
+    stats: {
+      filesChanged: files.length,
+      insertions: totalInsertions,
+      deletions: totalDeletions,
+    },
+  }
+}
+
