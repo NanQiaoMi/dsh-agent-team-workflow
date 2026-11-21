@@ -438,6 +438,7 @@ export function renderReportMarkdown(state, gate) {
   lines.push(`# Agent Team Workflow Report — ${state.runId}`)
   lines.push('')
   lines.push(`- Phase: **${state.phase}**`)
+  if (state.preset) lines.push(`- Preset: **${state.preset}**`)
   lines.push(`- Created: ${state.createdAt}`)
   lines.push(`- Finalized: ${state.finalizedAt ?? '(not finalized)'}`)
   lines.push(`- Team Lead: ${state.teamId ? 'recorded' : 'unrecorded'}`)
@@ -569,6 +570,32 @@ export function renderReportMarkdown(state, gate) {
       const modelLabel = entry.provider && entry.model ? `${entry.provider}/${entry.model}` : (entry.model ?? '-')
       lines.push(`| ${memberName} | ${entry.role ?? '-'} | ${modelLabel} | ${entry.resolvedEffort ?? 'default'} | ${entry.stage ?? '-'} | ${entry.calls ?? 0} |`)
     }
+    lines.push('')
+  }
+  const runStartMs = Date.parse(state.createdAt ?? '')
+  const runEndMs = Date.parse(state.finalizedAt ?? state.updatedAt ?? '')
+  const implDurations = []
+  const reviewDurations = []
+  let totalRework = 0
+  for (const item of state.items ?? []) {
+    totalRework += Array.isArray(item.reviews)
+      ? item.reviews.filter((r) => r.status === 'submitted' && r.verdict !== 'approve' && r.verdict !== 'approve_with_nits').length
+      : 0
+    const created = Date.parse(item.createdAt ?? state.createdAt ?? '')
+    const reported = Date.parse(item.reportedAt ?? '')
+    const approved = Date.parse(item.approvedAt ?? '')
+    if (Number.isFinite(created) && Number.isFinite(reported) && reported >= created) implDurations.push(reported - created)
+    if (Number.isFinite(reported) && Number.isFinite(approved) && approved >= reported) reviewDurations.push(approved - reported)
+  }
+  if (Number.isFinite(runStartMs) && Number.isFinite(runEndMs) && runEndMs >= runStartMs) {
+    const fmtSec = (ms) => (ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`)
+    const avg = (list) => (list.length === 0 ? '-' : fmtSec(Math.round(list.reduce((a, b) => a + b, 0) / list.length)))
+    lines.push('## Phase timings')
+    lines.push('')
+    lines.push(`- Total run duration: ${fmtSec(runEndMs - runStartMs)}`)
+    lines.push(`- Avg implement time: ${avg(implDurations)}`)
+    lines.push(`- Avg review time: ${avg(reviewDurations)}`)
+    lines.push(`- Total rework rounds: ${totalRework}`)
     lines.push('')
   }
   lines.push('## Audit trail (tail)')

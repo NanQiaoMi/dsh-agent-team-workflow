@@ -2367,3 +2367,62 @@ test('devkit and architecture view: devkit button, drawer, tabs, contract card c
     board.dispose()
   }
 })
+
+test('observability panels render phase timings, model/thinking routing, and drawer review standards safely', async () => {
+  const obsSnapshot = {
+    ...V2_SNAPSHOT,
+    run: {
+      ...V2_SNAPSHOT.run,
+      preset: 'pr-review',
+      timings: {
+        totalMs: 95000,
+        avgImplementMs: 42000,
+        avgReviewMs: 18500,
+        reworkTotal: 1,
+        parallelPeak: 2,
+      },
+      routing: [
+        { member: 'impl-a', role: 'implementer', model: 'deepseek-flash', resolvedEffort: 'low', requestedTier: 'low', calls: 3 },
+        { member: 'rev-b', role: 'reviewer', model: 'deepseek-v4-pro', resolvedEffort: 'high', requestedTier: 'high', calls: 2 },
+      ],
+      items: [
+        {
+          ...V2_SNAPSHOT.run.items[0],
+          id: 'W1',
+          complexity: 'complex',
+          reviewDepth: 'deep',
+          reviewProfile: 'security',
+        },
+        ...V2_SNAPSHOT.run.items.slice(1),
+      ],
+    },
+  }
+
+  const board = await mountBoard(obsSnapshot)
+  try {
+    let tree = await board.render()
+    assert.equal(findByClass(tree, 'atw-usage').length, 1)
+    assert.equal(findByClass(tree, 'atw-timings').length, 1)
+    assert.equal(findByClass(tree, 'atw-routing').length, 1)
+
+    const timingsText = textOf(findByClass(tree, 'atw-timings')[0])
+    assert.ok(timingsText.includes('k:board.timingTotal'))
+    assert.ok(timingsText.includes('1m 35s'))
+
+    const routingText = textOf(findByClass(tree, 'atw-routing')[0])
+    assert.ok(routingText.includes('deepseek-flash'))
+    assert.ok(routingText.includes('deepseek-v4-pro'))
+    assert.ok(routingText.includes('high'))
+
+    const w1 = cardById(tree, 'W1')
+    w1.props.onClick()
+    tree = await board.render()
+    const drawer = textOf(findByClass(tree, 'atw-drawer')[0])
+    assert.ok(drawer.includes('k:drawer.reviewStandard'))
+    assert.ok(drawer.includes('deep / security'))
+    assert.ok(drawer.includes('k:drawer.complexity'))
+    assert.ok(drawer.includes('complex'))
+  } finally {
+    board.dispose()
+  }
+})

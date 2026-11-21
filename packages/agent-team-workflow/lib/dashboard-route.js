@@ -31,7 +31,7 @@ function badRequest(message) {
  * @param options - `{ connection, ctx, store, settings }`.
  * @returns the route disposer.
  */
-export function registerDashboardRoute({ connection, ctx, store, settings }) {
+export function registerDashboardRoute({ connection, ctx, store, settings, thinkingRouter = null }) {
   // One-entry-per-session response cache: a 1.2s poll on an unchanged board
   // should not re-serialize the whole snapshot, and If-None-Match turns it
   // into a bodyless 304.
@@ -40,7 +40,7 @@ export function registerDashboardRoute({ connection, ctx, store, settings }) {
     path: SNAPSHOT_PATH,
     methods: ['GET'],
     requestBody: 'buffered',
-    fetch: (request) => handleSnapshotRequest({ request, ctx, store, settings, cache }),
+    fetch: (request) => handleSnapshotRequest({ request, ctx, store, settings, thinkingRouter, cache }),
   })
 }
 
@@ -59,7 +59,7 @@ function notModified(etag) {
  * @param options - request plus the plugin's context, store, and settings.
  * @returns a `Response` that never rejects.
  */
-async function handleSnapshotRequest({ request, ctx, store, settings, cache }) {
+async function handleSnapshotRequest({ request, ctx, store, settings, thinkingRouter = null, cache }) {
   try {
     if (request.method !== 'GET') {
       return jsonResponse(405, { ok: false, error: 'the live board snapshot only supports GET' })
@@ -160,6 +160,8 @@ async function handleSnapshotRequest({ request, ctx, store, settings, cache }) {
       /* devkit lookup is best effort */
     }
 
+    const routingTeamId = state?.teamId ?? membership?.root?.id ?? sessionId
+    const liveRouting = thinkingRouter?.snapshot?.(routingTeamId) ?? null
     const snapshot = buildSnapshot({
       state,
       sessionId,
@@ -170,6 +172,7 @@ async function handleSnapshotRequest({ request, ctx, store, settings, cache }) {
       },
       devkit,
       artifacts,
+      routing: liveRouting,
       now: new Date().toISOString(),
       diagnostics,
     })

@@ -1383,3 +1383,54 @@ test('the snapshot exposes devkit architecture and item handoffPacket records', 
   assert.equal(plainSnapshot.devkit, null)
   assert.equal(plainSnapshot.run.items[0].handoffPacket, null)
 })
+
+test('the snapshot computes phase timings, routing telemetry, preset, and review standards defensively', () => {
+  const item1 = makeItem({
+    id: 'W1',
+    complexity: 'complex',
+    resolvedReview: { depth: 'deep', profile: 'security' },
+    createdAt: '2026-11-01T00:00:00.000Z',
+    reportedAt: '2026-11-01T00:01:00.000Z',
+    approvedAt: '2026-11-01T00:02:30.000Z',
+    reworkTotal: 1,
+    reviews: [makeReview({ status: 'pending', reviewer: 'rev' })],
+  })
+  const state = makeState({
+    preset: 'deep-audit',
+    createdAt: '2026-11-01T00:00:00.000Z',
+    finalizedAt: '2026-11-01T00:03:00.000Z',
+    items: [item1],
+    usage: {
+      capturedAt: '2026-11-01T00:03:00.000Z',
+      members: {},
+      totals: { uncachedInputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      routing: {
+        impl: { member: 'impl', role: 'implementer', provider: 'deepseek', model: 'deepseek-v4-pro', requestedTier: 'high', resolvedEffort: 'high', stage: 'implement', calls: 4 },
+      },
+    },
+  })
+
+  const snap = buildSnapshot({ ...makeInput(state), now: '2026-11-01T00:03:00.000Z' })
+  assert.equal(snap.run.preset, 'deep-audit')
+  assert.equal(snap.run.items[0].complexity, 'complex')
+  assert.equal(snap.run.items[0].reviewDepth, 'deep')
+  assert.equal(snap.run.items[0].reviewProfile, 'security')
+  assert.deepEqual(snap.run.items[0].pendingReviewers, ['rev'])
+  assert.equal(snap.run.timings.totalMs, 180000)
+  assert.equal(snap.run.timings.avgImplementMs, 60000)
+  assert.equal(snap.run.timings.avgReviewMs, 90000)
+  assert.equal(snap.run.timings.reworkTotal, 1)
+  assert.equal(snap.run.timings.parallelPeak, 1)
+  assert.equal(snap.run.routing.length, 1)
+  assert.equal(snap.run.routing[0].model, 'deepseek-v4-pro')
+  assert.equal(snap.run.routing[0].resolvedEffort, 'high')
+
+  // Live routing argument overrides/supplies routing when state.usage.routing is absent
+  const liveSnap = buildSnapshot({
+    ...makeInput(makeState({ items: [makeItem()] })),
+    routing: { lead: { member: 'lead', role: 'lead', model: 'deepseek-v4-pro', resolvedEffort: 'low', calls: 2 } },
+  })
+  assert.equal(liveSnap.run.routing.length, 1)
+  assert.equal(liveSnap.run.routing[0].member, 'lead')
+  assert.equal(liveSnap.run.timings.totalMs >= 0, true)
+})

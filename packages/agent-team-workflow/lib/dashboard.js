@@ -463,6 +463,13 @@ function buildItem(raw, id, context) {
     handoffs: recordList(raw.handoffs).slice(-MAX_ITEM_HANDOFFS).map(buildItemHandoff),
     thread: thread.slice(-MAX_THREAD),
     openProposals: context.openProposalCounts.forItem(id),
+    complexity: (() => {
+      const c = textOf(raw.complexity).trim().toLowerCase()
+      return c === 'trivial' || c === 'complex' ? c : 'normal'
+    })(),
+    reviewDepth: textOf(raw.resolvedReview?.depth) || (textOf(raw.reviewDepth) && textOf(raw.reviewDepth) !== 'auto' ? textOf(raw.reviewDepth) : null),
+    reviewProfile: textOf(raw.resolvedReview?.profile) || (textOf(raw.reviewProfile) && textOf(raw.reviewProfile) !== 'auto' ? textOf(raw.reviewProfile) : null),
+    pendingReviewers: [...new Set(reviews.filter((r) => textOf(r.status) === 'pending').map((r) => textOf(r.reviewer)).filter(Boolean))],
     // docs/14 §4: a peer may create work items mid-run; planned items keep the
     // documented defaults, and only the documented 'member' marker is trusted.
     origin: textOf(raw.origin).trim().toLowerCase() === 'member' ? 'member' : 'plan',
@@ -688,6 +695,79 @@ function buildUsage(raw) {
     byRole: Object.keys(byRole).length > 0 ? byRole : undefined,
     tokenShare: Object.keys(tokenShare).length > 0 ? tokenShare : undefined,
   }
+}
+
+function durationBetween(startIso, endIso) {
+  const start = parseAt(startIso)
+  const end = parseAt(endIso)
+  if (start <= 0 || end <= 0) return null
+  return Math.max(0, end - start)
+}
+
+function buildTimings(state, identifiedItems, waves, nowIso) {
+  const createdMs = parseAt(state.createdAt)
+  const itemTimings = []
+  const implDurations = []
+  const reviewDurations = []
+  let reworkTotal = 0
+
+  for (const entry of identifiedItems) {
+    const raw = isRecord(entry?.raw) ? entry.raw : entry
+    const id = textOf(entry?.id ?? raw?.id).trim()
+    if (!id) continue
+    const implementMs = durationBetween(raw.createdAt ?? state.createdAt, raw.reportedAt)
+    const reviewMs = durationBetween(raw.reportedAt, raw.approvedAt)
+    const endIso = isoOf(raw.approvedAt) ?? isoOf(raw.updatedAt) ?? null
+    const totalMs = durationBetween(raw.createdAt ?? state.createdAt, endIso)
+    const rounds = countReworkRounds(raw)
+    reworkTotal += rounds
+    if (implementMs !== null) implDurations.push(implementMs)
+    if (reviewMs !== null) reviewDurations.push(reviewMs)
+    itemTimings.push({ id, implementMs, reviewMs, totalMs, reworkRounds: rounds })
+  }
+
+  const endRunIso = isoOf(state.finalizedAt) ?? isoOf(state.updatedAt) ?? isoOf(nowIso)
+  const totalMs = createdMs > 0 ? durationBetween(state.createdAt, endRunIso) : null
+  if (totalMs === null && implDurations.length === 0 && reviewDurations.length === 0) return null
+
+  const avg = (list) => (list.length === 0 ? null : Math.round(list.reduce((a, b) => a + b, 0) / list.length))
+  const parallelPeak = Array.isArray(waves) && waves.length > 0 ? Math.max(0, ...waves.map((w) => (Array.isArray(w) ? w.length : 0))) : 0
+
+  return {
+    totalMs,
+    avgImplementMs: avg(implDurations),
+    avgReviewMs: avg(reviewDurations),
+    reworkTotal,
+    parallelPeak,
+    items: itemTimings.slice(0, MAX_ITEMS),
+  }
+}
+
+function buildRouting(rawRouting) {
+  if (!isRecord(rawRouting)) return []
+  const result = []
+  for (const [member, rawEntry] of Object.entries(rawRouting).slice(0, 32)) {
+    if (!isRecord(rawEntry)) continue
+    const byEffort = {}
+    if (isRecord(rawEntry.byEffort)) {
+      for (const [eff, count] of Object.entries(rawEntry.byEffort)) {
+        if (Number.isInteger(count) && count >= 0) byEffort[String(eff)] = count
+      }
+    }
+    result.push({
+      member: textOf(rawEntry.member) || String(member),
+      role: textOf(rawEntry.role) || 'implementer',
+      provider: isoOf(rawEntry.provider),
+      model: isoOf(rawEntry.model),
+      requestedTier: isoOf(rawEntry.requestedTier) ?? 'inherit',
+      resolvedEffort: isoOf(rawEntry.resolvedEffort),
+      stage: isoOf(rawEntry.stage),
+      itemId: isoOf(rawEntry.itemId),
+      calls: integerOf(rawEntry.calls, 0),
+      byEffort,
+    })
+  }
+  return result
 }
 
 /**
@@ -1349,6 +1429,7 @@ function buildRun(state, context) {
 
   return {
     id: textOf(state.runId).trim() || textOf(state.id).trim() || null,
+    preset: isoOf(state.preset),
     phase: textOf(state.phase).trim() || 'unknown',
     pipelineStage: computePipelineStage(state, items),
     objective: clip(state.objective),
@@ -1367,6 +1448,8 @@ function buildRun(state, context) {
     collaboration,
     git: buildRunGit(state.git),
     usage: buildUsage(state.usage),
+    timings: buildTimings(state, kept, waveInfo.waves, context.now),
+    routing: buildRouting(context.routing ?? state.usage?.routing),
     artifacts: buildArtifacts(state.artifacts, context.artifacts),
   }
 }
@@ -1403,6 +1486,8 @@ export function buildSnapshot(input) {
       : buildRun(state, {
           tasks: teamInput.tasks,
           artifacts: source.artifacts,
+          routing: source.routing,
+          now: source.now,
           memberNames: team.members.map((member) => member.name).filter((name) => name.length > 0),
           warnings,
         })
