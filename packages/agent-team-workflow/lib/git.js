@@ -17,7 +17,7 @@
  * - a conflicting merge is aborted and reported, never auto-resolved.
  *
  * The only shell usage is `gitVerify`, which runs the *configured* verify
- * commands through `/bin/sh -lc` exactly as docs/16 §2.1 specifies.
+ * commands through `/bin/sh -c` exactly as docs/16 §2.1 specifies.
  */
 
 import { execFile } from 'node:child_process'
@@ -536,7 +536,7 @@ export async function gitCommit(input = {}) {
 }
 
 /**
- * Run the configured verify commands through `/bin/sh -lc`.
+ * Run the configured verify commands through `/bin/sh -c`.
  * @param input - `{ cwd, commands, timeoutMs, exec }`.
  * @returns `{ ok, results: [{ command, exitCode, outputTail }] }`.
  */
@@ -549,7 +549,7 @@ export async function gitVerify(input = {}) {
     const results = []
     let failed = null
     for (const command of commands) {
-      const run = await invoke(input.exec, SHELL, ['-lc', command], { cwd, timeout })
+      const run = await invoke(input.exec, SHELL, ['-c', command], { cwd, timeout })
       const outputTail = tailOf(`${run.stdout}${run.stderr}`)
       const passed = run.exitCode === 0
       if (!passed && failed === null) failed = command

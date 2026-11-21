@@ -332,7 +332,7 @@ test('gitVerify runs commands through /bin/sh and reports failures', async () =>
     assert.match(none.error, /no verify commands/)
     assert.deepEqual(none.results, [])
 
-    // The configured commands really are executed by /bin/sh -lc.
+    // The configured commands really are executed by /bin/sh -c.
     const captured = []
     const fakeExec = (file, args, options) => {
       captured.push({ file, args, options })
@@ -342,7 +342,7 @@ test('gitVerify runs commands through /bin/sh and reports failures', async () =>
     assert.equal(injected.ok, true)
     assert.equal(captured.length, 1)
     assert.equal(captured[0].file, '/bin/sh')
-    assert.deepEqual(captured[0].args, ['-lc', 'echo hi'])
+    assert.deepEqual(captured[0].args, ['-c', 'echo hi'])
     assert.equal(captured[0].options.cwd, repo)
   })
 })
@@ -689,7 +689,7 @@ test('the module never forces, amends or rewrites history', async () => {
   assert.equal(/\[\s*'(?:rebase|reset)'/.test(code), false)
   // The only shell usage is the configured verify path, not a git invocation.
   assert.equal(code.split("'/bin/sh'").length - 1, 1)
-  assert.equal(code.includes("'-lc'"), true)
+  assert.equal(code.includes("'-c'"), true)
   // git itself is always spawned as an argv array, and push has no force form.
   assert.equal(code.includes('execFile('), true)
   assert.equal(code.includes("['push', '-u', remote, branch]"), true)
