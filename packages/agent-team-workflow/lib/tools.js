@@ -7,6 +7,7 @@
  * this layer adds the workflow state machine, review ledger, and gates.
  */
 
+import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -39,6 +40,7 @@ import {
   renderReportMarkdown,
   renderReviewerBrief,
   renderWorkerBrief,
+  reReviewRequestMessage,
   roleGuidance,
   reviewRequestMessage,
 } from './protocol.js'
@@ -336,12 +338,25 @@ async function syncTaskReopen(ctx, agent, taskId) {
 }
 
 /** Build a bounded diff for review notifications (settings-controlled). */
-async function reviewDiffFor({ ctx, cwd, state, item, settings }) {
-  const raw = await getWorktreeDiffSummary({ cwd, state, item, maxLines: settings.reviewDiffLines }).catch(() => null)
+async function reviewDiffFor({ ctx, cwd, state, item, settings, sinceSha = null }) {
+  const raw = await getWorktreeDiffSummary({ cwd, state, item, maxLines: settings.reviewDiffLines, sinceSha }).catch(() => null)
   if (raw === null) return null
   const limit = settings.reviewDiffBytes
   if (!Number.isFinite(limit) || limit <= 0) return ''
   return raw.length > limit ? `${raw.slice(0, limit)}\n… (diff truncated to ${limit} bytes)` : raw
+}
+
+/** Resolve the current HEAD SHA inside an item's isolated worktree, if any. */
+function resolveWorktreeHead(item) {
+  const wtPath = item?.git?.worktreePath
+  if (typeof wtPath !== 'string' || wtPath.length === 0) return Promise.resolve(item?.git?.sha ?? null)
+  return new Promise((resolve) => {
+    execFile('git', ['rev-parse', 'HEAD'], { cwd: wtPath, timeout: 2000, encoding: 'utf8' }, (err, stdout) => {
+      if (err) return resolve(item?.git?.sha ?? null)
+      const sha = typeof stdout === 'string' ? stdout.trim() : ''
+      resolve(sha.length > 0 ? sha : (item?.git?.sha ?? null))
+    })
+  })
 }
 
 /** Truncate one model-supplied string before it enters the board. */
@@ -690,14 +705,45 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             }
           })
         const autoSpawn = args.auto_spawn === undefined ? settings.autoStaff === true : args.auto_spawn === true
+        const wave1Ids = new Set(validation.waves[0] ?? [])
+        const wave1Workers = new Set(assignedItems.filter((item) => wave1Ids.has(item.id)).map((item) => item.owner))
+        const immediateWorkers = settings.lazyStaffing
+          ? workerSpawn.filter((entry) => wave1Workers.has(entry.name))
+          : workerSpawn
+        const deferredEntries = settings.lazyStaffing
+          ? [
+              ...workerSpawn.filter((entry) => !wave1Workers.has(entry.name)).map((entry) => ({ name: entry.name, kind: 'worker' })),
+              ...reviewerSpawn.map((entry) => ({ name: entry.name, kind: 'reviewer' })),
+            ]
+          : []
+        const seenDeferred = new Set()
+        const deferred = []
+        for (const entry of deferredEntries) {
+          if (seenDeferred.has(entry.name)) continue
+          seenDeferred.add(entry.name)
+          deferred.push(entry)
+        }
         const staffInputs = [
-          ...workerSpawn.map((entry) => ({ ...entry, kind: 'worker' })),
+          ...immediateWorkers.map((entry) => ({ ...entry, kind: 'worker' })),
           ...queueSpawn.map((entry) => ({ ...entry, kind: 'worker-pool' })),
-          ...reviewerSpawn.map((entry) => ({ ...entry, kind: 'reviewer' })),
+          ...(settings.lazyStaffing ? [] : reviewerSpawn.map((entry) => ({ ...entry, kind: 'reviewer' }))),
         ]
         const staffed = autoSpawn
           ? await staffEntries({ ctx, agent, entries: staffInputs, settings, signal: exec.signal })
           : { spawned: [], woken: [], skipped: [], failed: [], needs_spawn: staffInputs.map((entry) => ({ name: entry.name, kind: entry.kind, reason: 'auto_staff disabled' })) }
+        if (settings.lazyStaffing) {
+          staffed.deferred = deferred
+        }
+        const teamKey = state.teamId ?? store.teamIdOf?.(agent) ?? agent.id
+        const staffedNames = new Set([
+          ...staffed.spawned.map((entry) => entry.name),
+          ...staffed.woken,
+        ])
+        for (const item of assignedItems) {
+          if (wave1Ids.has(item.id) && staffedNames.has(item.owner)) {
+            orchestrator?.markNotified?.(teamKey, 'wake-worker', item.owner, item.id, state.rev)
+          }
+        }
         const dualRole = allReviewers.filter((reviewer) => workerNames.has(reviewer))
         const leadReviews = allReviewers.includes('lead')
         const reviewerNotes = [
@@ -708,6 +754,9 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
         const nextActions = [
           ...(staffed.spawned.length > 0 || staffed.woken.length > 0
             ? [`Team staffed automatically: spawned ${staffed.spawned.map((entry) => `${entry.name}(${entry.kind})`).join(', ') || '(none)'}; woke ${staffed.woken.join(', ') || '(none)'}.`]
+            : []),
+          ...(settings.lazyStaffing && deferred.length > 0
+            ? [`Lazy staffing active: deferred ${deferred.map((entry) => `${entry.name}(${entry.kind})`).join(', ')} until unblocked or awaiting review.`]
             : []),
           ...(staffed.needs_spawn.length > 0
             ? [`Capacity limit: ${staffed.needs_spawn.map((entry) => entry.name).join(', ')} need manual handling (${staffed.needs_spawn[0].reason}).`]
@@ -1005,6 +1054,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
         const completed = await syncTaskComplete(ctx, agent, item.taskId)
         if (completed !== null) syncWarnings.push(completed)
         const notified = []
+        const teamKey = state.teamId ?? store.teamIdOf?.(agent) ?? agent.id
         if (item.status === W.ITEM_STATUS.ESCALATED) {
           const escalation = state.escalations.at(-1)
           const failure = await sendPeer(
@@ -1014,17 +1064,23 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             `[BLOCKER] ${item.id} "${item.subject}" needs arbitration after reporting (escalation ${escalation?.id ?? 'unknown'}).\n${escalation?.detail ?? ''}\nCall team_flow_status, then resolve it with team_flow_escalate or record a gate override.`,
             exec.signal,
           )
-          if (failure === null) notified.push('lead')
-          else syncWarnings.push(failure)
+          if (failure === null) {
+            notified.push('lead')
+            orchestrator?.markNotified?.(teamKey, 'arbitrate-escalation', 'lead', item.id, state.rev)
+          } else syncWarnings.push(failure)
         } else if (outcome.review !== null && outcome.nextReviewer !== null) {
           if (!isLiveMember(ctx, agent, outcome.nextReviewer)) {
-            syncWarnings.push(`reviewer "${outcome.nextReviewer}" is not in the roster; spawn it with the reviewer prompt from team_flow_plan, then the author can re-report or the Lead can re-notify.`)
+            if (!settings.lazyStaffing) {
+              syncWarnings.push(`reviewer "${outcome.nextReviewer}" is not in the roster; spawn it with the reviewer prompt from team_flow_plan, then the author can re-report or the Lead can re-notify.`)
+            }
           } else if (settings.autoNotify) {
             const cwd = store.workingDir(agent)
             const diff = await reviewDiffFor({ ctx, cwd, state, item, settings })
             const failure = await sendPeer(ctx, agent, outcome.nextReviewer, reviewRequestMessage(state, item, diff), exec.signal)
-            if (failure === null) notified.push(outcome.nextReviewer)
-            else syncWarnings.push(failure)
+            if (failure === null) {
+              notified.push(outcome.nextReviewer)
+              orchestrator?.markNotified?.(teamKey, 'wake-reviewer', outcome.nextReviewer, item.id, state.rev)
+            } else syncWarnings.push(failure)
           }
         }
         const status = W.buildStatus(state, {
@@ -1150,6 +1206,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
               reviewer: membership.name,
             }, { agent, settings: current.settings, store })
           }
+          const reviewedSha = await resolveWorktreeHead(item)
           outcome = W.applyReviewSubmit(current, {
             itemId: item.id,
             reviewer: membership.name,
@@ -1157,6 +1214,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             summary: clip(String(args.summary ?? '').trim(), 4000),
             findings,
             evidenceChecked,
+            reviewedSha,
             now,
           })
           if (current.settings?.archiveApprovedItems && outcome.item.status === W.ITEM_STATUS.APPROVED) {
@@ -1192,10 +1250,13 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           if (reopened !== null) syncWarnings.push(reopened)
         }
         const notified = []
+        const teamKey = state.teamId ?? store.teamIdOf?.(agent) ?? agent.id
         if (item.status === W.ITEM_STATUS.CHANGES_REQUESTED) {
           const failure = settings.autoNotify ? await sendPeer(ctx, agent, item.owner, changesRequestedMessage(state, item, outcome.review), exec.signal) : null
-          if (failure === null && settings.autoNotify) notified.push(item.owner)
-          else if (failure !== null) syncWarnings.push(failure)
+          if (failure === null && settings.autoNotify) {
+            notified.push(item.owner)
+            orchestrator?.markNotified?.(teamKey, 'wake-worker', item.owner, item.id, state.rev)
+          } else if (failure !== null) syncWarnings.push(failure)
         } else if (item.status === W.ITEM_STATUS.APPROVED) {
           const failure = settings.autoNotify ? await sendPeer(ctx, agent, item.owner, approvedMessage(state, item, outcome.review), exec.signal) : null
           if (failure === null && settings.autoNotify) notified.push(item.owner)
@@ -1209,13 +1270,16 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           }
         }
         if (outcome.nextReviewer !== null && outcome.nextReviewer !== undefined) {
-          if (!isLiveMember(ctx, agent, outcome.nextReviewer)) syncWarnings.push(`next reviewer "${outcome.nextReviewer}" is not in the roster`)
-          else if (settings.autoNotify) {
+          if (!isLiveMember(ctx, agent, outcome.nextReviewer)) {
+            if (!settings.lazyStaffing) syncWarnings.push(`next reviewer "${outcome.nextReviewer}" is not in the roster`)
+          } else if (settings.autoNotify) {
             const cwd = store.workingDir(agent)
             const diff = await reviewDiffFor({ ctx, cwd, state, item, settings })
             const failure = await sendPeer(ctx, agent, outcome.nextReviewer, reviewRequestMessage(state, item, diff), exec.signal)
-            if (failure === null) notified.push(outcome.nextReviewer)
-            else syncWarnings.push(failure)
+            if (failure === null) {
+              notified.push(outcome.nextReviewer)
+              orchestrator?.markNotified?.(teamKey, 'wake-reviewer', outcome.nextReviewer, item.id, state.rev)
+            } else syncWarnings.push(failure)
           }
         }
         const status = W.buildStatus(state, {
@@ -1304,6 +1368,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
         const item = outcome.item
         const syncWarnings = []
         const notified = []
+        const teamKey = state.teamId ?? store.teamIdOf?.(agent) ?? agent.id
         if (outcome.escalated) {
           const escalation = state.escalations.at(-1)
           const failure = await sendPeer(
@@ -1313,16 +1378,25 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             `[BLOCKER] ${item.id} "${item.subject}" needs arbitration (escalation ${escalation?.id ?? 'unknown'}).\n${escalation?.detail ?? ''}\nCall team_flow_status, then resolve it with team_flow_escalate or record a gate override.`,
             exec.signal,
           )
-          if (failure === null) notified.push('lead')
-          else syncWarnings.push(failure)
+          if (failure === null) {
+            notified.push('lead')
+            orchestrator?.markNotified?.(teamKey, 'arbitrate-escalation', 'lead', item.id, state.rev)
+          } else syncWarnings.push(failure)
         } else if (outcome.nextReviewer !== null && outcome.nextReviewer !== undefined) {
-          if (!isLiveMember(ctx, agent, outcome.nextReviewer)) syncWarnings.push(`reviewer "${outcome.nextReviewer}" is not in the roster`)
-          else if (settings.autoNotify) {
+          if (!isLiveMember(ctx, agent, outcome.nextReviewer)) {
+            if (!settings.lazyStaffing) syncWarnings.push(`reviewer "${outcome.nextReviewer}" is not in the roster`)
+          } else if (settings.autoNotify) {
             const cwd = store.workingDir(agent)
-            const diff = await reviewDiffFor({ ctx, cwd, state, item, settings })
-            const failure = await sendPeer(ctx, agent, outcome.nextReviewer, reviewRequestMessage(state, item, diff), exec.signal)
-            if (failure === null) notified.push(outcome.nextReviewer)
-            else syncWarnings.push(failure)
+            const previousReview = item.reviews.filter((r) => r.status === 'submitted').at(-1) ?? null
+            const diff = await reviewDiffFor({ ctx, cwd, state, item, settings, sinceSha: previousReview?.reviewedSha ?? null })
+            const msg = previousReview !== null
+              ? reReviewRequestMessage(state, item, previousReview, diff)
+              : reviewRequestMessage(state, item, diff)
+            const failure = await sendPeer(ctx, agent, outcome.nextReviewer, msg, exec.signal)
+            if (failure === null) {
+              notified.push(outcome.nextReviewer)
+              orchestrator?.markNotified?.(teamKey, 'wake-reviewer', outcome.nextReviewer, item.id, state.rev)
+            } else syncWarnings.push(failure)
           }
         }
         const status = W.buildStatus(state, {

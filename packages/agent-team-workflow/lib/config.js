@@ -101,12 +101,18 @@ export const DEFAULT_SETTINGS = Object.freeze({
   autoFinalize: false,
   /** Interval in seconds for the liveness watchdog timer (0 disables the timer). */
   watchdogIntervalSeconds: 30,
+  /** Maximum interval in seconds for adaptive watchdog backoff when run rev is idle. */
+  watchdogMaxIntervalSeconds: 180,
+  /** Subscribe to agent/status idle events for near-instant orchestration. */
+  eventDrivenOrchestrator: true,
+  /** Spawn Wave 1 workers upfront and defer Wave 2+/pure reviewers until ready/reported. */
+  lazyStaffing: false,
   /** Default model-facing status projection: `full` (compatible) or `brief` (token-efficient). */
   statusView: 'full',
   /** Maximum diff lines attached to a review/wake notification. */
-  reviewDiffLines: 30,
+  reviewDiffLines: 120,
   /** Maximum diff bytes attached to a review/wake notification. */
-  reviewDiffBytes: 3072,
+  reviewDiffBytes: 12288,
   /** Base board poll interval in milliseconds; clients back off when nothing changes. */
   boardPollMs: 1200,
   /** Legacy mode: register all 17 tools to every member regardless of role. */
@@ -266,6 +272,9 @@ export function resolveSettings(raw = {}) {
     autoNotifyConverged: readBool(config.autoNotifyConverged, DEFAULT_SETTINGS.autoNotifyConverged),
     autoFinalize: readBool(config.autoFinalize, DEFAULT_SETTINGS.autoFinalize),
     watchdogIntervalSeconds: clampInt(config.watchdogIntervalSeconds, DEFAULT_SETTINGS.watchdogIntervalSeconds, 0, 3600),
+    watchdogMaxIntervalSeconds: clampInt(config.watchdogMaxIntervalSeconds, DEFAULT_SETTINGS.watchdogMaxIntervalSeconds, 30, 3600),
+    eventDrivenOrchestrator: readBool(config.eventDrivenOrchestrator, DEFAULT_SETTINGS.eventDrivenOrchestrator),
+    lazyStaffing: readBool(config.lazyStaffing, DEFAULT_SETTINGS.lazyStaffing),
     statusView: readString(config.statusView, DEFAULT_SETTINGS.statusView, 16) === 'brief' ? 'brief' : 'full',
     reviewDiffLines: clampInt(config.reviewDiffLines, DEFAULT_SETTINGS.reviewDiffLines, 0, 500),
     reviewDiffBytes: clampInt(config.reviewDiffBytes, DEFAULT_SETTINGS.reviewDiffBytes, 0, 65536),
@@ -321,6 +330,9 @@ export function runSettings(settings) {
     autoNotifyConverged: settings.autoNotifyConverged,
     autoFinalize: settings.autoFinalize,
     watchdogIntervalSeconds: settings.watchdogIntervalSeconds,
+    watchdogMaxIntervalSeconds: settings.watchdogMaxIntervalSeconds,
+    eventDrivenOrchestrator: settings.eventDrivenOrchestrator,
+    lazyStaffing: settings.lazyStaffing,
     boardPollMs: settings.boardPollMs,
     legacyAllTools: settings.legacyAllTools,
     roleToolScoping: settings.roleToolScoping,

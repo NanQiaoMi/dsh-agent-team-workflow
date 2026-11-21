@@ -80,5 +80,12 @@
         autoWakeUnblocked: true
         autoWakeReviewers: true
         autoNotifyConverged: true
-        autoFinalize: false
+        autoFinalize: true
+        eventDrivenOrchestrator: true
+        lazyStaffing: true
+        statusView: brief
+        archiveApprovedItems: true
+        reviewDiffLines: 120
+        reviewDiffBytes: 12288
         watchdogIntervalSeconds: 30
+        watchdogMaxIntervalSeconds: 180

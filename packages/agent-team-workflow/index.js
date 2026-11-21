@@ -52,6 +52,15 @@ export function apply(ctx, config = {}) {
     'agent-team-workflow.watchdog()',
   )
 
+  // Event-driven dispatch: react immediately when any teammate becomes idle
+  if (settings.eventDrivenOrchestrator !== false && typeof ctx.on === 'function') {
+    ctx.on('agent/status', ({ agent, status }) => {
+      if (status !== 'idle') return
+      if (ctx.agentTeams.tryMembership(agent) === undefined) return
+      orchestrator.scheduleReconcile(agent)
+    })
+  }
+
   // Native-tool sandbox: one global guard that only acts on teammates whose
   // role names a tool policy (allow/deny/readOnly). The mechanism lives in the
   // reusable @local/dsh-tool-guard-kit; this plugin binds it to the run board.

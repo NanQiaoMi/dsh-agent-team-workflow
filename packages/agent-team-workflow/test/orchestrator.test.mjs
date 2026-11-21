@@ -22,6 +22,7 @@ function createHarness(cwd) {
   const members = [{ name: 'lead', role: 'lead', id: lead.id, status: 'running' }]
   const messages = []
   const tasks = []
+  const spawns = []
   let taskNumber = 0
 
   const agentTeams = {
@@ -37,6 +38,21 @@ function createHarness(cwd) {
     },
     listMembers() {
       return members.map((m) => ({ ...m, diagnostics: [] }))
+    },
+    async spawnTeammate(caller, request) {
+      const id = `session-${request.name}`
+      const member = {
+        id,
+        name: request.name,
+        role: 'teammate',
+        status: 'inactive',
+        context: request.context,
+        provider: request.provider,
+        description: request.description,
+      }
+      members.push(member)
+      spawns.push({ name: request.name, prompt: request.prompt[0]?.text ?? '', context: request.context, provider: request.provider })
+      return { member: { ...member, diagnostics: [] } }
     },
     async sendMessage(caller, request) {
       messages.push({
@@ -89,7 +105,7 @@ function createHarness(cwd) {
     },
   }
 
-  return { ctx, lead, members, messages, tasks }
+  return { ctx, lead, members, messages, tasks, spawns }
 }
 
 async function withWorkspace(run) {
@@ -510,6 +526,226 @@ test('orchestrator alerts Lead and Worker on worktree merge conflict', () => {
     const conflictNotice = harness.messages.find((m) => m.text.includes('merge conflict during auto-merge'))
     assert.ok(conflictNotice, 'notice must mention merge conflict')
     assert.match(conflictNotice.text, /worktree_sync/)
+  })
+})
+
+test('zero duplicate wakes across report, request_changes, and review_respond', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const worker1 = { id: 'session-w1', session: { id: 'session-w1' } }
+    const rev1 = { id: 'session-rev', session: { id: 'session-rev' } }
+    harness.members.push(
+      { name: 'worker-1', role: 'teammate', id: worker1.id, status: 'inactive' },
+      { name: 'rev-1', role: 'teammate', id: rev1.id, status: 'inactive' },
+    )
+
+    const settings = resolveSettings({ autoOrchestrate: true, autoStaff: false })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const orchestrator = createOrchestrator({ ctx: harness.ctx, store, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test', orchestrator })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const submitTool = tools.find((t) => t.name === 'team_flow_review_submit')
+    const respondTool = tools.find((t) => t.name === 'team_flow_review_respond')
+
+    await planTool.execute(
+      {
+        objective: 'Dedupe wake test',
+        acceptance_criteria: ['No duplicate notifications'],
+        items: [{ id: 'W1', subject: 'Feature', owner: 'worker-1', reviewers: ['rev-1'], write_scopes: ['src/'], definition_of_done: ['Done'] }],
+      },
+      { agent: harness.lead, signal: new AbortController().signal },
+    )
+
+    // 1. Report notifies rev-1; subsequent non-force reconcile must NOT resend
+    harness.messages.length = 0
+    await reportTool.execute(
+      { item_id: 'W1', summary: 'Implemented', files: ['src/a.js'], commands: [{ command: 'npm test', exit_code: 0 }], evidence: ['ok'] },
+      { agent: worker1, signal: new AbortController().signal },
+    )
+    await orchestrator.whenIdle()
+    await orchestrator.reconcile(harness.lead)
+    await orchestrator.whenIdle()
+    const revMsgsAfterReport = harness.messages.filter((m) => m.target === 'rev-1')
+    assert.equal(revMsgsAfterReport.length, 1, 'rev-1 must receive exactly 1 notice after report')
+
+    // 2. request_changes notifies worker-1; subsequent non-force reconcile must NOT resend
+    harness.messages.length = 0
+    await submitTool.execute(
+      {
+        item_id: 'W1',
+        verdict: 'request_changes',
+        summary: 'Fix edge case',
+        findings: [{ id: 'F1', severity: 'major', file: 'src/a.js', line: 10, claim: 'Null input crashes' }],
+        evidence_checked: ['read src/a.js'],
+      },
+      { agent: rev1, signal: new AbortController().signal },
+    )
+    await orchestrator.whenIdle()
+    await orchestrator.reconcile(harness.lead)
+    await orchestrator.whenIdle()
+    const workerMsgsAfterSubmit = harness.messages.filter((m) => m.target === 'worker-1')
+    assert.equal(workerMsgsAfterSubmit.length, 1, 'worker-1 must receive exactly 1 notice after request_changes')
+
+    // 3. review_respond notifies rev-1 with reReviewRequestMessage; non-force reconcile must NOT resend
+    harness.messages.length = 0
+    await respondTool.execute(
+      {
+        item_id: 'W1',
+        responses: [{ finding_id: 'F1', state: 'fixed', evidence: 'added null guard; unit tests pass' }],
+      },
+      { agent: worker1, signal: new AbortController().signal },
+    )
+    await orchestrator.whenIdle()
+    await orchestrator.reconcile(harness.lead)
+    await orchestrator.whenIdle()
+    const revMsgsAfterRespond = harness.messages.filter((m) => m.target === 'rev-1')
+    assert.equal(revMsgsAfterRespond.length, 1, 'rev-1 must receive exactly 1 re-review notice after review_respond')
+    assert.match(revMsgsAfterRespond[0].text, /re-review ready/)
+    assert.match(revMsgsAfterRespond[0].text, /F1 \[major\] src\/a\.js:10 -> fixed/)
+    assert.match(revMsgsAfterRespond[0].text, /added null guard; unit tests pass/)
+    assert.match(revMsgsAfterRespond[0].text, /Focus on verifying each finding response above/)
+  })
+})
+
+test('orchestrator batches multiple assignments for one inactive member into a single digest message', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    harness.members.push(
+      { name: 'worker-1', role: 'teammate', id: 'session-w1', status: 'inactive' },
+      { name: 'rev-1', role: 'teammate', id: 'session-rev', status: 'inactive' },
+    )
+    const settings = resolveSettings({ autoOrchestrate: true, autoStaff: false })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const orchestrator = createOrchestrator({ ctx: harness.ctx, store, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test' })
+
+    await tools.find((t) => t.name === 'team_flow_plan').execute(
+      {
+        objective: 'Batch digest test',
+        acceptance_criteria: ['One message per member'],
+        items: [
+          { id: 'W1', subject: 'First module', owner: 'worker-1', reviewers: ['rev-1'], write_scopes: ['src/a/'], definition_of_done: ['Do W1'] },
+          { id: 'W2', subject: 'Second module', owner: 'worker-1', reviewers: ['rev-1'], write_scopes: ['src/b/'], definition_of_done: ['Do W2'] },
+        ],
+      },
+      { agent: harness.lead, signal: new AbortController().signal },
+    )
+
+    harness.messages.length = 0
+    const res = await orchestrator.reconcile(harness.lead, { force: true })
+    assert.equal(res.actionsTaken.filter((a) => a.type === 'wake-worker').length, 2)
+    const workerMsgs = harness.messages.filter((m) => m.target === 'worker-1')
+    assert.equal(workerMsgs.length, 1, 'worker-1 must receive 1 combined digest instead of 2 separate messages')
+    assert.match(workerMsgs[0].text, /Multiple assignments ready \(2 items\)/)
+    assert.match(workerMsgs[0].text, /W1/)
+    assert.match(workerMsgs[0].text, /W2/)
+  })
+})
+
+test('lazyStaffing spawns Wave 1 upfront and defers Wave 2 + reviewer until needed', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const settings = resolveSettings({ autoOrchestrate: true, autoStaff: true, lazyStaffing: true })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const orchestrator = createOrchestrator({ ctx: harness.ctx, store, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test', orchestrator })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const submitTool = tools.find((t) => t.name === 'team_flow_review_submit')
+
+    const plan = await planTool.execute(
+      {
+        objective: 'Lazy staffing 2-wave run',
+        acceptance_criteria: ['All waves complete'],
+        items: [
+          { id: 'W1', subject: 'Wave 1 task', owner: 'worker-1', reviewers: ['rev-1'], write_scopes: ['src/a/'], definition_of_done: ['W1 done'] },
+          { id: 'W2', subject: 'Wave 2 task', owner: 'worker-2', reviewers: ['rev-1'], blocked_by: ['W1'], write_scopes: ['src/b/'], definition_of_done: ['W2 done'] },
+        ],
+      },
+      { agent: harness.lead, signal: new AbortController().signal },
+    )
+    await orchestrator.whenIdle()
+
+    assert.deepEqual(plan.staffed.spawned, [{ name: 'worker-1', kind: 'worker' }])
+    assert.deepEqual(plan.staffed.deferred, [
+      { name: 'worker-2', kind: 'worker' },
+      { name: 'rev-1', kind: 'reviewer' },
+    ])
+    assert.equal(harness.spawns.length, 1, 'only wave 1 owner spawned at plan time')
+
+    // Worker 1 reports -> orchestrator lazy-spawns rev-1 with diff/review context
+    const w1Agent = { id: 'session-worker-1', session: { id: 'session-worker-1' } }
+    await reportTool.execute(
+      { item_id: 'W1', summary: 'W1 built', files: ['src/a/index.js'], commands: [{ command: 'npm test', exit_code: 0 }], evidence: ['pass'] },
+      { agent: w1Agent, signal: new AbortController().signal },
+    )
+    await orchestrator.whenIdle()
+    await orchestrator.reconcile(harness.lead)
+    assert.ok(
+      harness.spawns.some((s) => s.name === 'rev-1'),
+      'reviewer must be lazy-spawned after report',
+    )
+    const revSpawn = harness.spawns.find((s) => s.name === 'rev-1')
+    assert.ok(revSpawn, 'rev-1 must exist in spawns')
+    assert.match(revSpawn.prompt, /W1 built/, 'lazy-spawned reviewer prompt includes initial report summary')
+
+    // Reviewer approves W1 -> orchestrator lazy-spawns worker-2 for Wave 2
+    const revAgent = { id: 'session-rev-1', session: { id: 'session-rev-1' } }
+    await submitTool.execute(
+      { item_id: 'W1', verdict: 'approve', summary: 'Looks solid', findings: [], evidence_checked: ['checked src/a/index.js'] },
+      { agent: revAgent, signal: new AbortController().signal },
+    )
+    await orchestrator.whenIdle()
+    await orchestrator.reconcile(harness.lead)
+    assert.ok(
+      harness.spawns.some((s) => s.name === 'worker-2'),
+      'wave 2 worker must be lazy-spawned once W1 is approved',
+    )
+  })
+})
+
+test('orchestrator enforces single-flight per team and coalesces concurrent reconciles', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    harness.members.push({ name: 'worker-1', role: 'teammate', id: 'session-w1', status: 'inactive' })
+    const settings = resolveSettings({ autoOrchestrate: true, autoStaff: false })
+    const store = createStore({ ctx: harness.ctx, settings })
+
+    let releaseFirstSend
+    const sendGate = new Promise((resolve) => {
+      releaseFirstSend = resolve
+    })
+    const origSend = harness.ctx.agentTeams.sendMessage
+    let callCount = 0
+    harness.ctx.agentTeams.sendMessage = async (caller, request) => {
+      callCount += 1
+      if (callCount === 1) await sendGate
+      return origSend(caller, request)
+    }
+
+    const orchestrator = createOrchestrator({ ctx: harness.ctx, store, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test' })
+    await tools.find((t) => t.name === 'team_flow_plan').execute(
+      {
+        objective: 'Single-flight test',
+        acceptance_criteria: ['Coalesce concurrent passes'],
+        items: [{ id: 'W1', subject: 'Task', owner: 'worker-1', reviewers: ['lead'], write_scopes: ['src/'], definition_of_done: ['Done'] }],
+      },
+      { agent: harness.lead, signal: new AbortController().signal },
+    )
+
+    const p1 = orchestrator.reconcile(harness.lead)
+    // Wait a tick so p1 enters sendMessage and holds single-flight lock
+    await new Promise((r) => setTimeout(r, 20))
+    const p2 = await orchestrator.reconcile(harness.lead)
+    assert.equal(p2.coalesced, true)
+    releaseFirstSend()
+    const r1 = await p1
+    assert.equal(r1.actionsTaken.length, 1)
+    assert.equal(harness.messages.filter((m) => m.target === 'worker-1').length, 1)
   })
 })
 

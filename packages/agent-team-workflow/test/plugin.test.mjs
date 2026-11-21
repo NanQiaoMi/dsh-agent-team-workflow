@@ -221,7 +221,7 @@ function createContext(cwd) {
       },
     },
   }
-  return { ctx, lead, teammate, outsider, tools, sections, contexts, guards, handlers, membership, scopedFor, tasks, messages, routes }
+  return { ctx, lead, teammate, outsider, tools, sections, contexts, guards, handlers, membership, scopedFor, tasks, messages, routes, effects }
 }
 
 async function withWorkspace(fn) {
@@ -315,9 +315,24 @@ test('the injected state context reflects a run created through the real tools',
     const context = harness.contexts.find((entry) => entry.agent === harness.lead.id)
     const text = context.text()
     assert.match(text, new RegExp(result.run_id))
-    assert.match(text, /phase planned/)
+    assert.match(text, /is active/)
     assert.match(text, /team_flow_status/)
     assert.equal(harness.tasks.length, 1, 'planning creates one backing Team task')
+
+    // KV-Cache stability: mutating run phase and item status must not alter the injected context string
+    const reportTool = harness.tools.find((entry) => entry.agent === harness.teammate.id && entry.name === 'team_flow_report')
+    assert.ok(reportTool !== undefined)
+    await reportTool.definition.execute(
+      {
+        item_id: 'W1',
+        summary: 'Implemented module',
+        files: ['src/index.js'],
+        commands: [{ command: 'node --test', exit_code: 0 }],
+        evidence: ['all tests pass'],
+      },
+      { agent: harness.teammate, signal: new AbortController().signal },
+    )
+    assert.equal(context.text(), text, 'team:workflow-state must remain byte-identical across state transitions')
   })
 })
 
@@ -451,4 +466,70 @@ test('the applied plugin version matches package.json', async () => {
   const match = /const VERSION = '([^']+)'/.exec(indexSource)
   assert.ok(match !== null, 'index.js declares VERSION')
   assert.equal(match[1], pkg.version, 'the applied-version log line must not drift from package.json')
+})
+
+test('event-driven agent/status idle wakes unblocked downstream members immediately', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createContext(cwd)
+    const worker2 = { id: 'session-worker2', session: { id: 'session-worker2' } }
+    worker2.ctx = harness.scopedFor(worker2)
+    harness.membership.set(worker2.id, { root: harness.lead, id: worker2.id, name: 'worker2', role: 'teammate' })
+
+    const liveStatus = new Map([
+      ['lead', 'running'],
+      ['worker', 'running'],
+      ['worker2', 'running'],
+    ])
+    harness.ctx.agentTeams.listMembers = () =>
+      [...harness.membership.values()].map((entry) => ({
+        id: entry.id,
+        name: entry.name,
+        role: entry.role,
+        status: liveStatus.get(entry.name) ?? 'inactive',
+        context: 'fresh',
+      }))
+
+    apply(harness.ctx, { autoOrchestrate: true, eventDrivenOrchestrator: true, watchdogIntervalSeconds: 60, autoStaff: false })
+    try {
+      const planTool = harness.tools.find((entry) => entry.agent === harness.lead.id && entry.name === 'team_flow_plan')
+      await planTool.definition.execute(
+        {
+          objective: 'Event-driven idle dispatch',
+          acceptance_criteria: ['Downstream wakes on idle event'],
+          items: [
+            { id: 'W1', subject: 'First', owner: 'worker', write_scopes: ['src/a/'], definition_of_done: ['done'], reviewers: ['lead'] },
+            { id: 'W2', subject: 'Second', owner: 'worker2', blocked_by: ['W1'], write_scopes: ['src/b/'], definition_of_done: ['done'], reviewers: ['lead'] },
+          ],
+        },
+        { agent: harness.lead, signal: new AbortController().signal },
+      )
+
+      const reportTool = harness.tools.find((entry) => entry.agent === harness.teammate.id && entry.name === 'team_flow_report')
+      await reportTool.definition.execute(
+        { item_id: 'W1', summary: 'W1 ready', files: ['src/a/1.js'], commands: [{ command: 'node --test', exit_code: 0 }], evidence: ['ok'] },
+        { agent: harness.teammate, signal: new AbortController().signal },
+      )
+      const reviewTool = harness.tools.find((entry) => entry.agent === harness.lead.id && entry.name === 'team_flow_review_submit')
+      await reviewTool.definition.execute(
+        { item_id: 'W1', verdict: 'approve', summary: 'Approved', findings: [], evidence_checked: ['read src/a/1.js'] },
+        { agent: harness.lead, signal: new AbortController().signal },
+      )
+      // Wait one tick for reviewTool's triggerOrchestrator to finish seeing worker2 as still running
+      await new Promise((resolve) => setTimeout(resolve, 30))
+
+      // Now worker2 finishes its previous turn and becomes idle -> agent/status idle must wake it for W2
+      harness.messages.length = 0
+      liveStatus.set('worker2', 'inactive')
+      harness.ctx.emit('agent/status', { agent: worker2, status: 'idle' })
+
+      await new Promise((resolve) => setTimeout(resolve, 350))
+      const wake = harness.messages.find((m) => m.to === 'worker2' && m.text.includes('AUTO_DISPATCH'))
+      assert.ok(wake, 'agent/status idle event must trigger immediate debounced dispatch for worker2')
+      assert.match(wake.text, /W2/)
+    } finally {
+      for (const dispose of harness.effects) {
+        if (typeof dispose === 'function') dispose()
+      }
+    }
+  })
 })
