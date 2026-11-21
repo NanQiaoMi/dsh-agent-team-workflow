@@ -1715,3 +1715,121 @@ test('serial worktree mode refuses a second active worktree and the gate catches
     assert.ok(gate.item_gates.find((entry) => entry.id === 'W1').failures.some((failure) => failure.includes('missing from the item worktree')))
   })
 })
+
+test('team_flow_git review works after team_flow_review_submit (deadlock fixed) and pr_inspect returns risk & rubric', async () => {
+  return withWorkspace(async (cwd) => {
+    const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+    git('init', '-q', '-b', 'main')
+    git('config', 'user.email', 'team@example.com')
+    git('config', 'user.name', 'Agent Team')
+    await writeFile(join(cwd, 'README.md'), '# demo\n', 'utf8')
+    await writeFile(join(cwd, '.gitignore'), '.agentteam/\n', 'utf8')
+    git('add', 'README.md', '.gitignore')
+    git('commit', '-q', '-m', 'chore: baseline')
+
+    const gitSettings = resolveSettings({ gitEnabled: true, gitBaseBranch: 'main' })
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings: gitSettings })
+    const tools = buildTools({ ctx: harness.ctx, settings: gitSettings, store, version: 'test' })
+    const impl = harness.addTeammate('impl')
+    const rev1 = harness.addTeammate('rev-1')
+    const rev2 = harness.addTeammate('rev-2')
+
+    await byName(tools, 'team_flow_plan').execute(
+      {
+        objective: 'Review PR changes',
+        acceptance_criteria: ['auth guard verified'],
+        items: [{
+          id: 'W1',
+          subject: 'Add auth guard',
+          owner: 'impl',
+          write_scopes: ['src/'],
+          definition_of_done: ['rejects invalid tokens'],
+          reviewers: ['rev-1', 'rev-2'],
+        }],
+        auto_spawn: false,
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    await byName(tools, 'team_flow_git').execute({ action: 'prepare' }, { agent: harness.lead, signal: EXEC_SIGNAL })
+    await mkdir(join(cwd, 'src'), { recursive: true })
+    await writeFile(join(cwd, 'src', 'auth.js'), 'export const ok = true\n', 'utf8')
+
+    // Report triggers parallel notifications and risk rubric classification
+    const rep = await byName(tools, 'team_flow_report').execute(
+      {
+        item_id: 'W1',
+        summary: 'Implemented auth guard',
+        files: ['src/auth.js'],
+        commands: [{ command: 'true', exit_code: 0 }],
+        evidence: ['auth guard tested'],
+        open_questions: [],
+        risks: [],
+      },
+      { agent: impl, signal: EXEC_SIGNAL },
+    )
+    assert.deepEqual(rep.notified, ['rev-1', 'rev-2'])
+    const rev1Msg = harness.messages.find((m) => m.to === 'rev-1' && m.text.includes('Review Standard'))
+    assert.ok(rev1Msg, 'reviewer notification embeds rubric standard')
+
+    // Reject approval when dod_checks has status fail
+    await assert.rejects(
+      () => byName(tools, 'team_flow_review_submit').execute(
+        {
+          item_id: 'W1',
+          verdict: 'approve',
+          summary: 'bad',
+          findings: [],
+          evidence_checked: ['read src/auth.js'],
+          dod_checks: [{ item: 'rejects invalid tokens', status: 'fail', note: 'missing test' }],
+        },
+        { agent: rev2, signal: EXEC_SIGNAL },
+      ),
+      /status "fail"/,
+    )
+
+    // Both parallel reviewers approve (rev-2 submits before rev-1)
+    await byName(tools, 'team_flow_review_submit').execute(
+      {
+        item_id: 'W1',
+        verdict: 'approve',
+        summary: 'Verified token rejection',
+        findings: [],
+        evidence_checked: ['read src/auth.js'],
+        dod_checks: [{ item: 'rejects invalid tokens', status: 'pass', note: 'unit tested' }],
+      },
+      { agent: rev2, signal: EXEC_SIGNAL },
+    )
+    await byName(tools, 'team_flow_review_submit').execute(
+      {
+        item_id: 'W1',
+        verdict: 'approve_with_nits',
+        summary: 'Clean implementation',
+        findings: [{ id: 'F1', severity: 'nit', file: 'src/auth.js', line: 1, claim: 'Consider jsdoc' }],
+        evidence_checked: ['read src/auth.js'],
+        dod_checks: [{ item: 'rejects invalid tokens', status: 'pass' }],
+      },
+      { agent: rev1, signal: EXEC_SIGNAL },
+    )
+
+    // Previously deadlocked: pendingReview is now null, yet rev1 can run team_flow_git { action: 'review' }
+    const gitRev = await byName(tools, 'team_flow_git').execute(
+      { action: 'review', item_id: 'W1' },
+      { agent: rev1, signal: EXEC_SIGNAL },
+    )
+    assert.equal(gitRev.detail.ok, true)
+    assert.match(gitRev.detail.body, /\[APPROVE WITH NITS\] W1/)
+    assert.match(gitRev.detail.body, /Definition of Done Matrix/)
+    assert.equal(gitRev.item_git.prReview.reviewer, 'rev-1')
+
+    // pr_inspect returns graceful manual detail + risk + rubric offline
+    const inspected = await byName(tools, 'team_flow_git').execute(
+      { action: 'pr_inspect' },
+      { agent: rev1, signal: EXEC_SIGNAL },
+    )
+    assert.equal(inspected.action, 'pr_inspect')
+    assert.equal(inspected.detail.ok, true)
+    assert.equal(typeof inspected.detail.risk.depth, 'string')
+    assert.match(inspected.detail.rubric, /Review Standard/)
+  })
+})

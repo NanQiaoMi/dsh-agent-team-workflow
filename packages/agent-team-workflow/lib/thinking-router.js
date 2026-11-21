@@ -7,7 +7,7 @@
  * and fails open when capability probing is unavailable.
  */
 
-import { ITEM_STATUS, pendingReview, RUN_PHASE } from './workflow.js'
+import { ITEM_STATUS, pendingReviewFor, RUN_PHASE } from './workflow.js'
 
 export const THINKING_TIERS = Object.freeze(['off', 'low', 'medium', 'high', 'max'])
 export const ITEM_COMPLEXITIES = Object.freeze(['trivial', 'normal', 'complex'])
@@ -116,7 +116,7 @@ export function selectThinkingPlan({ membership, state, settings }) {
     activeOwned.find((it) => it.status === ITEM_STATUS.RUNNING) ??
     activeOwned[0] ??
     null
-  const pendingReviewItem = items.find((it) => pendingReview(it)?.reviewer === memberName) ?? null
+  const pendingReviewItem = items.find((it) => pendingReviewFor(it, memberName) !== null) ?? null
 
   const assignedRole = typeof state?.roleAssignments?.[memberName] === 'string' ? state.roleAssignments[memberName] : ''
   const resolvedRole =
@@ -259,7 +259,8 @@ export function selectThinkingPlan({ membership, state, settings }) {
         reason: 'role-override',
       }
     }
-    if (pendingReviewItem.reviewDepth === 'deep' || pendingReviewItem.complexity === 'complex') {
+    const effectiveDepth = pendingReviewItem.resolvedReview?.depth ?? pendingReviewItem.reviewDepth
+    if (effectiveDepth === 'deep' || pendingReviewItem.complexity === 'complex') {
       return {
         tier: 'high',
         bias: 'high',
@@ -270,7 +271,7 @@ export function selectThinkingPlan({ membership, state, settings }) {
         reason: 'review-deep',
       }
     }
-    if (pendingReviewItem.reviewDepth === 'light' || pendingReviewItem.complexity === 'trivial') {
+    if (effectiveDepth === 'light' || pendingReviewItem.complexity === 'trivial') {
       return {
         tier: 'low',
         bias: 'low',

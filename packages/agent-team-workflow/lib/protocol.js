@@ -7,6 +7,7 @@
  */
 
 import { outstandingReviewers, pendingReview, submittedRounds, unresolvedFindings } from './workflow.js'
+import { classifyDiffRisk, renderReviewRubric } from './review-policy.js'
 
 /** Role names with a dedicated duty line; other roles get a generic duty. */
 export const ROLE_DUTIES = Object.freeze({
@@ -314,9 +315,16 @@ export function findingDigest(review, maxFindings = 8) {
  * @param item - item under review.
  * @returns self-contained message text.
  */
-export function reviewRequestMessage(state, item, diff = null) {
+export function reviewRequestMessage(state, item, diff = null, risk = null) {
   const review = pendingReview(item)
   const report = item.report
+  const effectiveRisk = risk ?? item.resolvedReview ?? classifyDiffRisk({ files: report?.files ?? [], diff, item, settings: state?.settings })
+  const rubricBlock = renderReviewRubric({
+    depth: effectiveRisk.depth,
+    profile: effectiveRisk.profile,
+    definitionOfDone: item.definitionOfDone,
+    reasons: effectiveRisk.reasons,
+  })
   const wt = item.git?.worktreePath ? `\nWorktree path: ${item.git.worktreePath}` : ''
   const diffSection = diff ? `\n\n# Code Changes (Diff)\n${diff}` : ''
   return `[REVIEW] ${item.id} "${item.subject}" is ready for your review (round ${review?.round ?? '?'}).${wt}
@@ -327,12 +335,14 @@ ${bullets(report?.files ?? [])}
 Commands reported:
 ${bullets((report?.commands ?? []).map((command) => `\`${command.command}\` → exit ${command.exitCode}`))}
 Author summary: ${clipText(report?.summary ?? '(missing)', 900)}
-Author-declared risks: ${bullets((report?.risks ?? []).slice(0, 3).map((risk) => clipText(risk, 200)), 'none')}${diffSection}
+Author-declared risks: ${bullets((report?.risks ?? []).slice(0, 3).map((riskEntry) => clipText(riskEntry, 200)), 'none')}${diffSection}
 
 Definition of done:
 ${bullets(item.definitionOfDone)}
 
-Action: inspect the changes and evidence above, then call team_flow_review_submit with a verdict, findings, and evidence_checked. Run id ${state.runId}.`
+${rubricBlock}
+
+Action: inspect the changes and evidence above, then call team_flow_review_submit with a verdict, findings, evidence_checked, and dod_checks. Run id ${state.runId}.`
 }
 
 /**
@@ -365,7 +375,8 @@ export function reReviewRequestMessage(state, item, previousReview, diff = null)
   const diffSection = diff ? `\n\n# Code Changes Since Previous Review\n${diff}` : ''
   const commands = bullets((report?.commands ?? []).map((command) => `\`${command.command}\` → exit ${command.exitCode}`))
   const prevInfo = previousReview ? ` (round ${review?.round ?? '?'}, addressing round ${previousReview.round} by ${previousReview.reviewer})` : ` (round ${review?.round ?? '?'})`
-  return `[REVIEW] ${item.id} "${item.subject}" — re-review ready${prevInfo}.${wt}
+  const stdTag = item.resolvedReview ? ` [${item.resolvedReview.depth}/${item.resolvedReview.profile}]` : ''
+  return `[REVIEW] ${item.id} "${item.subject}" — re-review ready${prevInfo}${stdTag}.${wt}
 
 Author: ${item.owner}
 Commands reported:
@@ -457,6 +468,9 @@ export function renderReportMarkdown(state, gate) {
     lines.push(`- Dependencies: ${item.blockedBy.join(', ') || '(none)'}`)
     lines.push(`- Backing shared task: ${item.taskId ?? '(none)'}`)
     lines.push(`- Definition of done: ${item.definitionOfDone.join('; ')}`)
+    if (item.resolvedReview) {
+      lines.push(`- Review standard: ${item.resolvedReview.depth} / ${item.resolvedReview.profile}`)
+    }
     if (item.report !== null) {
       lines.push('')
       lines.push(`**Report:** ${item.report.summary}`)

@@ -129,6 +129,12 @@ export const DEFAULT_SETTINGS = Object.freeze({
   thinkingRouting: 'auto',
   /** Default semantic bias for normal implementation items on models without 'medium' effort: 'low' | 'high'. */
   thinkingDefaultBias: 'low',
+  /** Notify and accept multiple independent reviewers in parallel on the same report. */
+  parallelReviews: true,
+  /** Default review depth when not specified or auto-escalated: 'auto' | 'light' | 'standard' | 'deep'. */
+  defaultReviewDepth: 'auto',
+  /** Require explicit dod_checks on deep-depth approvals. */
+  strictReviewRubric: false,
 })
 
 function clampInt(value, fallback, min, max) {
@@ -303,6 +309,12 @@ export function resolveSettings(raw = {}) {
       return mode === 'role' || mode === 'off' ? mode : 'auto'
     })(),
     thinkingDefaultBias: readString(config.thinkingDefaultBias, DEFAULT_SETTINGS.thinkingDefaultBias, 16).toLowerCase() === 'high' ? 'high' : 'low',
+    parallelReviews: readBool(config.parallelReviews, DEFAULT_SETTINGS.parallelReviews),
+    defaultReviewDepth: (() => {
+      const d = readString(config.defaultReviewDepth, DEFAULT_SETTINGS.defaultReviewDepth, 16).toLowerCase()
+      return d === 'light' || d === 'standard' || d === 'deep' ? d : 'auto'
+    })(),
+    strictReviewRubric: readBool(config.strictReviewRubric, DEFAULT_SETTINGS.strictReviewRubric),
   })
 }
 
@@ -360,5 +372,8 @@ export function runSettings(settings) {
     archiveApprovedItems: settings.archiveApprovedItems,
     thinkingRouting: settings.thinkingRouting,
     thinkingDefaultBias: settings.thinkingDefaultBias,
+    parallelReviews: settings.parallelReviews,
+    defaultReviewDepth: settings.defaultReviewDepth,
+    strictReviewRubric: settings.strictReviewRubric,
   }
 }

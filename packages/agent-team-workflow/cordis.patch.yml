@@ -93,3 +93,7 @@
         watchdogMaxIntervalSeconds: 180
         thinkingRouting: auto
         thinkingDefaultBias: low
+        # Parallel multi-reviewer dispatch & rubric-based review depth (auto | light | standard | deep).
+        parallelReviews: true
+        defaultReviewDepth: auto
+        strictReviewRubric: false

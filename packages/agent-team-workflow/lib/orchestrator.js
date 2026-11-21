@@ -12,7 +12,8 @@
  *    is stalled without progress.
  */
 
-import { appendEvent, evaluateGates, ITEM_STATUS, pendingReview, RUN_PHASE } from './workflow.js'
+import { appendEvent, evaluateGates, ITEM_STATUS, pendingReview, pendingReviews, RUN_PHASE } from './workflow.js'
+import { classifyDiffRisk } from './review-policy.js'
 import {
   renderReportMarkdown,
   renderReviewerBrief,
@@ -373,27 +374,28 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
             item.status !== ITEM_STATUS.CHANGES_REQUESTED &&
             item.status !== ITEM_STATUS.ESCALATED)
         ) {
-          const pending = pendingReview(item)
-          const reviewers = pending?.reviewer
-            ? [pending.reviewer]
+          const pendingList = pendingReviews(item)
+          const reviewers = pendingList.length > 0
+            ? [...new Set(pendingList.map((r) => r.reviewer).filter(Boolean))]
             : (Array.isArray(item.reviewers) ? item.reviewers : [])
           const submitted = Array.isArray(item.reviews) ? item.reviews.filter((r) => r.status === 'submitted') : []
-          const previousReview = submitted.at(-1) ?? null
 
           for (const rev of reviewers) {
             const revName = typeof rev === 'string' ? rev : rev?.name
             if (!revName) continue
             const m = memberMap.get(revName)
+            const prevByMe = submitted.filter((r) => r.reviewer === revName).at(-1) ?? null
 
             if (!m && lazyEnabled) {
               if (options.force || (!isThrottled(teamId, 'lazy-spawn-reviewer', revName, item.id) && !alreadySentForRev(teamId, 'lazy-spawn-reviewer', revName, item.id, stateRev))) {
-                const diff = await computeDiffForItem(item, previousReview?.reviewedSha ?? null)
+                const diff = await computeDiffForItem(item, prevByMe?.reviewedSha ?? null)
+                const risk = item.resolvedReview ?? classifyDiffRisk({ files: item.report?.files ?? [], diff, item, settings })
                 const reviewed = state.items.filter((other) => Array.isArray(other.reviewers) && other.reviewers.includes(revName))
                 const role = state.roleAssignments?.[revName] ?? (settings.roles?.reviewer === undefined ? '' : 'reviewer')
                 const brief = renderReviewerBrief(state, revName, reviewed)
-                const reviewContext = previousReview !== null
-                  ? reReviewRequestMessage(state, item, previousReview, diff)
-                  : reviewRequestMessage(state, item, diff)
+                const reviewContext = prevByMe !== null
+                  ? reReviewRequestMessage(state, item, prevByMe, diff)
+                  : reviewRequestMessage(state, item, diff, risk)
                 await tryLazySpawn({
                   name: revName,
                   kind: 'lazy-spawn-reviewer',
@@ -409,22 +411,21 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
 
             if (m && m.status === 'inactive') {
               if (options.force || (!isThrottled(teamId, 'wake-reviewer', revName, item.id) && !alreadySentForRev(teamId, 'wake-reviewer', revName, item.id, stateRev))) {
-                const diff = await computeDiffForItem(item, previousReview?.reviewedSha ?? null)
+                const diff = await computeDiffForItem(item, prevByMe?.reviewedSha ?? null)
+                const risk = item.resolvedReview ?? classifyDiffRisk({ files: item.report?.files ?? [], diff, item, settings })
+                const pendingForRev = pendingList.find((r) => r.reviewer === revName) ?? pendingReview(item)
                 const wt = item.git?.worktreePath ? ` Worktree: ${item.git.worktreePath}.` : ''
-                const diffSummary = diff ? `\n\n${diff}` : ''
-                const roundInfo = item.reviews?.length ? ` (Round ${item.reviews.length + 1})` : ''
-                const reportSummary = item.report?.summary ? `\nAuthor summary: ${item.report.summary.slice(0, 300)}` : ''
-                const msg = previousReview !== null
-                  ? reReviewRequestMessage(state, item, previousReview, diff)
-                  : `[AUTO_DISPATCH] Item ${item.id} "${item.subject}"${roundInfo} is awaiting your review.${wt}${reportSummary}${diffSummary}\n\nDo NOT call team_flow_status. Inspect the changes and evidence in the worktree, run verify if needed, and call team_flow_review_submit.`
+                const msg = prevByMe !== null
+                  ? reReviewRequestMessage(state, item, prevByMe, diff)
+                  : reviewRequestMessage(state, item, diff, risk)
                 enqueueDispatch(revName, {
                   kind: 'wake-reviewer',
                   itemId: item.id,
                   message: msg,
-                  shortLine: `[${previousReview ? 'RE-REVIEW' : 'REVIEW'}] ${item.id} "${item.subject}" (owner: ${item.owner})${wt}`,
-                  detailSnippet: (previousReview
-                    ? `Re-review round ${pending?.round ?? (submitted.length + 1)} addressing round ${previousReview.round}.`
-                    : `${item.report?.summary ? `Summary: ${item.report.summary.slice(0, 240)}` : 'Awaiting review.'}${diff ? `\n${diff.slice(0, 320)}` : ''}`),
+                  shortLine: `[${prevByMe ? 'RE-REVIEW' : 'REVIEW'}] ${item.id} "${item.subject}" [${risk.depth}/${risk.profile}] (owner: ${item.owner})${wt}`,
+                  detailSnippet: (prevByMe
+                    ? `Re-review round ${pendingForRev?.round ?? (submitted.length + 1)} addressing round ${prevByMe.round}.`
+                    : `Standard: ${risk.depth}/${risk.profile}. ${item.report?.summary ? `Summary: ${item.report.summary.slice(0, 220)}` : 'Awaiting review.'}${diff ? `\n${diff.slice(0, 300)}` : ''}`),
                   actionRecord: { type: 'wake-reviewer', target: revName, itemId: item.id },
                 })
               }
