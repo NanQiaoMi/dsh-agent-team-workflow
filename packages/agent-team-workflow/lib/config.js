@@ -10,6 +10,99 @@
 /** Re-exported so callers can read the workflow version from either module. */
 export { WORKFLOW_VERSION } from './workflow.js'
 
+/** Named workflow presets selectable via `team_flow_plan { preset }`. */
+export const WORKFLOW_PRESET_NAMES = Object.freeze(['fast-fix', 'feature', 'pr-review', 'deep-audit'])
+
+/** Preset overrides for run settings and per-item defaults. */
+export const WORKFLOW_PRESETS = Object.freeze({
+  'fast-fix': Object.freeze({
+    settings: Object.freeze({
+      maxReviewRounds: 1,
+      defaultReviewDepth: 'light',
+      thinkingDefaultBias: 'low',
+      strictReviewRubric: false,
+      parallelReviews: true,
+    }),
+    itemDefaults: Object.freeze({
+      complexity: 'trivial',
+      reviewDepth: 'light',
+    }),
+  }),
+  feature: Object.freeze({
+    settings: Object.freeze({
+      maxReviewRounds: 2,
+      defaultReviewDepth: 'auto',
+      thinkingDefaultBias: 'low',
+      strictReviewRubric: false,
+      parallelReviews: true,
+    }),
+    itemDefaults: Object.freeze({
+      complexity: 'normal',
+      reviewDepth: 'auto',
+    }),
+  }),
+  'pr-review': Object.freeze({
+    settings: Object.freeze({
+      maxReviewRounds: 2,
+      defaultReviewDepth: 'standard',
+      thinkingDefaultBias: 'high',
+      strictReviewRubric: true,
+      parallelReviews: true,
+    }),
+    itemDefaults: Object.freeze({
+      complexity: 'normal',
+      reviewDepth: 'auto',
+    }),
+  }),
+  'deep-audit': Object.freeze({
+    settings: Object.freeze({
+      maxReviewRounds: 3,
+      defaultReviewDepth: 'deep',
+      thinkingDefaultBias: 'high',
+      strictReviewRubric: true,
+      parallelReviews: true,
+    }),
+    itemDefaults: Object.freeze({
+      complexity: 'complex',
+      reviewDepth: 'deep',
+    }),
+  }),
+})
+
+/**
+ * Apply an optional named workflow preset to run settings and normalized items
+ * without overriding explicit per-item complexity or review_depth values.
+ *
+ * @param {object} effectiveSettings
+ * @param {Array<object>} items
+ * @param {Array<object>} rawItems
+ * @param {string|null|undefined} presetName
+ * @returns {{ preset: string|null, settings: object, items: Array<object> }}
+ */
+export function applyWorkflowPreset(effectiveSettings, items, rawItems = [], presetName = null) {
+  const normalized = typeof presetName === 'string' ? presetName.trim().toLowerCase() : ''
+  if (normalized.length === 0) {
+    return { preset: null, settings: effectiveSettings, items }
+  }
+  const spec = WORKFLOW_PRESETS[normalized]
+  if (spec === undefined) {
+    throw new Error(`unknown workflow preset "${presetName}"; expected one of ${WORKFLOW_PRESET_NAMES.join(' | ')}`)
+  }
+  const patchedItems = items.map((item, idx) => {
+    const raw = rawItems[idx] ?? {}
+    return {
+      ...item,
+      complexity: raw.complexity === undefined ? spec.itemDefaults.complexity : item.complexity,
+      reviewDepth: raw.review_depth === undefined ? spec.itemDefaults.reviewDepth : item.reviewDepth,
+    }
+  })
+  return {
+    preset: normalized,
+    settings: { ...effectiveSettings, ...spec.settings },
+    items: patchedItems,
+  }
+}
+
 /** Default plugin settings; every field is overridable from `cordis.patch.yml`. */
 export const DEFAULT_SETTINGS = Object.freeze({
   /** Artifact directory, absolute or relative to the Team working directory. */

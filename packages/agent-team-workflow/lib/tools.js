@@ -11,7 +11,7 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { runSettings } from './config.js'
+import { applyWorkflowPreset, runSettings } from './config.js'
 import {
   ensureDevkit,
   generateContractStub,
@@ -459,7 +459,7 @@ function reportView(item) {
  * @param options - `{ ctx, settings, store, version, tokenUsage?, orchestrator? }`.
  * @returns array of ToolDefinition-compatible objects.
  */
-export function buildTools({ ctx, settings, store, version, tokenUsage = () => null, orchestrator = null, thinkingRouter = null }) {
+export function buildTools({ ctx, settings, store, version, tokenUsage = () => null, orchestrator = null, thinkingRouter = null, refreshMemberTools = null }) {
   function triggerOrchestrator(agent) {
     if (orchestrator && typeof orchestrator.reconcile === 'function') {
       void orchestrator.reconcile(agent).catch(() => {})
@@ -513,6 +513,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             description: 'Workers for the open-queue pool: a member name, or {name, role} to pick a configured role (provider/model + role prompt).',
           },
           replace: { type: 'boolean', description: 'Archive the existing run and start a new one.' },
+          preset: { type: 'string', enum: ['fast-fix', 'feature', 'pr-review', 'deep-audit'], description: 'Workflow preset.' },
         },
         required: ['objective', 'acceptance_criteria', 'items'],
       },
@@ -537,7 +538,10 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
         requireLead(membership, 'team_flow_plan')
         const now = new Date().toISOString()
         const rawItems = Array.isArray(args.items) ? args.items : []
-        const items = rawItems.map((raw, index) => normalizeItem(raw, index))
+        const normalizedItems = rawItems.map((raw, index) => normalizeItem(raw, index))
+        const presetApplied = applyWorkflowPreset(runSettings(settings), normalizedItems, rawItems, args.preset)
+        const effective = presetApplied.settings
+        const items = presetApplied.items
         const roleAssignments = {}
         const poolNames = []
         const poolEntries = (Array.isArray(args.workers) ? args.workers : []).map((entry) => {
@@ -562,7 +566,6 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           const configured = typeof role === 'string' && role.length > 0 ? settings.roles[role]?.provider : undefined
           return typeof configured === 'string' && configured.length > 0 ? configured : settings.freshProvider
         }
-        const effective = runSettings(settings)
         for (const item of items) {
           await runHook('taskCreated', {
             item: { id: item.id, subject: item.subject, role: item.role, owner: item.owner ?? null, assignment: item.assignment, writeScopes: item.writeScopes },
@@ -598,6 +601,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             workflowVersion: W.WORKFLOW_VERSION,
             runId,
             teamId: store.teamIdOf(agent),
+            preset: presetApplied.preset,
             objective: plan.objective,
             acceptanceCriteria: plan.acceptanceCriteria,
             constraints: plan.constraints,
@@ -797,6 +801,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           ...validation.warnings,
         ]
         triggerOrchestrator(agent)
+        refreshMemberTools?.(agent, null, state)
         return {
           run_id: state.runId,
           phase: state.phase,
@@ -1892,6 +1897,8 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           artifacts: {},
         })
         triggerOrchestrator(agent)
+        if (action === 'reassign') refreshMemberTools?.(agent, item.owner, state)
+        else if (action === 'reset_review') refreshMemberTools?.(agent, W.pendingReview(item)?.reviewer ?? null, state)
         return {
           item_id: item.id,
           action,
@@ -2673,6 +2680,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
         const cwd = store.workingDir(agent)
         await autoProvisionWorktrees({ cwd, state: await store.readState(agent), agent, store }).catch(() => {})
         const state = await store.readState(agent)
+        refreshMemberTools?.(agent, null, state)
         return {
           item_id: item.id,
           subject: item.subject,
@@ -2892,6 +2900,11 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           else warnings.push(failure)
         }
         triggerOrchestrator(agent)
+        if (action === 'take_review' || action === 'claim' || action === 'handoff_accept') {
+          refreshMemberTools?.(agent, membership.name, state)
+        } else if (action === 'request_review' && outcome.request?.reviewer) {
+          refreshMemberTools?.(agent, outcome.request.reviewer, state)
+        }
         return {
           item_id: item.id,
           action,

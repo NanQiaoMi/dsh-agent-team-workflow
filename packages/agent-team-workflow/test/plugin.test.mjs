@@ -610,3 +610,67 @@ test('apply wires ctx.llm capability probing and agent/request thinking router c
     }
   })
 })
+
+test('apply refreshes tools additively when an implementer takes a peer review duty', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createContext(cwd)
+    const worker2 = { id: 'session-worker2', session: { id: 'session-worker2' } }
+    worker2.ctx = harness.scopedFor(worker2)
+    harness.membership.set(worker2.id, { root: harness.lead, id: worker2.id, name: 'worker2', role: 'teammate' })
+
+    apply(harness.ctx, { roleToolScoping: true, watchdogIntervalSeconds: 0, autoStaff: false })
+    harness.ctx.emit('agent/created', { agent: worker2 })
+    try {
+      const planTool = harness.tools.find((entry) => entry.agent === harness.lead.id && entry.name === 'team_flow_plan')
+      await planTool.definition.execute(
+        {
+          objective: 'Test additive duty tool refresh',
+          acceptance_criteria: ['Done'],
+          items: [
+            {
+              id: 'W1',
+              subject: 'Open-review item',
+              owner: 'worker',
+              assignment: 'open',
+              write_scopes: ['src/'],
+              definition_of_done: ['done'],
+              reviewers: [],
+            },
+          ],
+        },
+        { agent: harness.lead, signal: new AbortController().signal },
+      )
+
+      const worker2HasReviewBefore = () =>
+        harness.tools.filter((entry) => entry.agent === worker2.id && entry.name === 'team_flow_review_submit')
+      assert.equal(worker2HasReviewBefore().length, 0, 'worker2 starts without team_flow_review_submit')
+
+      // worker claims and reports W1, then publishes open review invitation
+      const workLeadOrImpl = harness.tools.find((entry) => entry.agent === harness.teammate.id && entry.name === 'team_flow_work')
+      await workLeadOrImpl.definition.execute({ action: 'claim', item_id: 'W1' }, { agent: harness.teammate, signal: new AbortController().signal })
+      const reportTool = harness.tools.find((entry) => entry.agent === harness.teammate.id && entry.name === 'team_flow_report')
+      await reportTool.definition.execute(
+        { item_id: 'W1', summary: 'Implemented', files: ['src/a.js'], commands: [{ command: 'node --test', exit_code: 0 }], evidence: ['ok'] },
+        { agent: harness.teammate, signal: new AbortController().signal },
+      )
+      await workLeadOrImpl.definition.execute({ action: 'request_review', item_id: 'W1' }, { agent: harness.teammate, signal: new AbortController().signal })
+
+      // worker2 takes the review -> team_flow_review_submit must be registered additively without duplicating existing tools
+      const workTool2 = harness.tools.find((entry) => entry.agent === worker2.id && entry.name === 'team_flow_work')
+      const beforeCount = harness.tools.filter((entry) => entry.agent === worker2.id).length
+      await workTool2.definition.execute({ action: 'take_review', item_id: 'W1' }, { agent: worker2, signal: new AbortController().signal })
+
+      assert.equal(worker2HasReviewBefore().length, 1, 'team_flow_review_submit must be installed additively once')
+      const afterNames = harness.tools.filter((entry) => entry.agent === worker2.id).map((entry) => entry.name)
+      assert.equal(new Set(afterNames).size, afterNames.length, 'must not register duplicate tools')
+      assert.ok(afterNames.length > beforeCount)
+
+      harness.ctx.emit('agent/disposed', { agent: worker2 })
+      assert.equal(harness.tools.filter((entry) => entry.agent === worker2.id).length, 0, 'disposal must clean up extra tools too')
+    } finally {
+      for (const dispose of harness.effects) {
+        if (typeof dispose === 'function') dispose()
+      }
+    }
+  })
+})

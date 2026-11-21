@@ -93,6 +93,7 @@ export function ensureCollaboration(state) {
   if (!Number.isInteger(state.stopSeq)) state.stopSeq = 0
   if (!Number.isInteger(state.messageSeq)) state.messageSeq = 0
   if (!Number.isInteger(state.proposalSeq)) state.proposalSeq = 0
+  if (state.preset === undefined) state.preset = null
   if (Array.isArray(state.items)) {
     for (const item of state.items) {
       if (item.assignment !== 'open' && item.assignment !== 'lead') item.assignment = 'lead'
@@ -200,6 +201,7 @@ export function createRun(input) {
     workflowVersion: input.workflowVersion,
     runId: input.runId,
     teamId: input.teamId,
+    preset: input.preset ?? null,
     objective: input.objective,
     acceptanceCriteria: input.acceptanceCriteria,
     constraints: input.constraints,
@@ -1293,6 +1295,7 @@ export function buildStatus(state, input) {
   return {
     workflow_version: state.workflowVersion,
     run_id: state.runId,
+    preset: state.preset ?? null,
     rev: state.rev,
     phase: state.phase,
     objective: state.objective.length > 400 ? `${state.objective.slice(0, 400)}…` : state.objective,
@@ -1439,6 +1442,7 @@ export function buildBriefStatus(state, input, options = {}) {
   return {
     workflow_version: state.workflowVersion,
     run_id: state.runId,
+    preset: state.preset ?? null,
     rev: state.rev,
     phase: state.phase,
     ...(firstRead

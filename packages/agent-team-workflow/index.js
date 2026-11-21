@@ -29,6 +29,7 @@ import { scopeGuardReason } from './lib/scope-guard.js'
 import { createOrchestrator } from './lib/orchestrator.js'
 import { filterToolsByRole, resolveAllowedToolNames } from './lib/tool-matrix.js'
 import { createThinkingRouter } from './lib/thinking-router.js'
+import { pendingReviewFor } from './lib/workflow.js'
 
 export const name = 'agent-team-workflow'
 
@@ -58,9 +59,74 @@ export function apply(ctx, config = {}) {
     resolveModelInfo: () => resolveModelInfoFn,
   })
   const orchestrator = createOrchestrator({ ctx, store, settings, tokenUsage: () => tokenUsage, thinkingRouter })
-  const tools = buildTools({ ctx, settings, store, version: VERSION, tokenUsage: () => tokenUsage, orchestrator, thinkingRouter })
-  const policy = buildPolicy(settings)
   const installed = new Map()
+
+  const computeDuties = (membership, state) => {
+    const duties = []
+    if (!state || !Array.isArray(state.items)) return duties
+    const isReviewer = state.items.some((item) =>
+      (Array.isArray(item.reviewers) && item.reviewers.some((r) => (typeof r === 'string' ? r : r?.name) === membership.name)) ||
+      pendingReviewFor(item, membership.name) !== null ||
+      (Array.isArray(item.reviewRequests) && item.reviewRequests.some((req) => req?.status === 'open' && req?.reviewer === membership.name)),
+    )
+    if (isReviewer) duties.push('reviewer')
+    const isImplementer = state.items.some((item) => item.owner === membership.name)
+    if (isImplementer) duties.push('implementer')
+    return duties
+  }
+
+  let tools = []
+
+  const syncAgentTools = (agent, stateHint = null) => {
+    const entry = installed.get(agent)
+    if (!entry) {
+      maybeInstall(agent)
+      return
+    }
+    const membership = ctx.agentTeams.tryMembership(agent)
+    if (membership === undefined) return
+    let state = stateHint
+    if (!state) {
+      try {
+        state = store.cachedState(agent)
+      } catch {
+        state = null
+      }
+    }
+    const duties = computeDuties(membership, state)
+    const allowedNames = resolveAllowedToolNames({ role: membership.role, duties, settings })
+    const targetTools = filterToolsByRole(tools, allowedNames)
+    for (const def of targetTools) {
+      if (entry.registeredNames.has(def.name)) continue
+      entry.extraDisposers.push(agent.ctx.tools.register(def))
+      entry.registeredNames.add(def.name)
+    }
+  }
+
+  const refreshMemberTools = (callerAgent, memberName = null, stateHint = null) => {
+    try {
+      const callerMembership = ctx.agentTeams.tryMembership(callerAgent)
+      if (!callerMembership) return
+      const seen = new Set()
+      const candidates = [...(ctx.agents?.list?.() ?? []), ...installed.keys()]
+      for (const targetAgent of candidates) {
+        if (!targetAgent || seen.has(targetAgent)) continue
+        seen.add(targetAgent)
+        const targetMembership = ctx.agentTeams.tryMembership(targetAgent)
+        if (!targetMembership) continue
+        const sameTeam =
+          targetMembership.root === callerMembership.root ||
+          (callerMembership.root?.id && targetMembership.root?.id === callerMembership.root.id)
+        if (!sameTeam) continue
+        if (memberName !== null && targetMembership.name !== memberName) continue
+        syncAgentTools(targetAgent, stateHint)
+      }
+    } catch {
+      /* best-effort tool refresh */
+    }
+  }
+
+  tools = buildTools({ ctx, settings, store, version: VERSION, tokenUsage: () => tokenUsage, orchestrator, thinkingRouter, refreshMemberTools })
 
   // Start autonomous watchdog timer
   orchestrator.startWatchdog()
@@ -104,41 +170,48 @@ export function apply(ctx, config = {}) {
     if (membership === undefined) return
     const policy = buildPolicy(settings, membership.role)
 
-    // Inspect cached state to see if member has reviewer duties in any planned item
-    const duties = []
+    // Inspect cached state to see if member has reviewer/implementer duties in any planned item
+    let state = null
     try {
-      const state = store.cachedState(agent)
-      if (state && Array.isArray(state.items)) {
-        const isReviewer = state.items.some((item) =>
-          Array.isArray(item.reviewers) && item.reviewers.some((r) => (typeof r === 'string' ? r : r?.name) === membership.name)
-        )
-        if (isReviewer) duties.push('reviewer')
-      }
+      state = store.cachedState(agent)
     } catch {
       /* cachedState is best-effort */
     }
+    const duties = computeDuties(membership, state)
 
     const allowedNames = resolveAllowedToolNames({ role: membership.role, duties, settings })
     const scopedTools = filterToolsByRole(tools, allowedNames)
 
-    installed.set(agent, install(agent, ctx, { settings, tools: scopedTools, store, policy, thinkingRouter }))
+    const dispose = install(agent, ctx, { settings, tools: scopedTools, store, policy, thinkingRouter })
+    installed.set(agent, {
+      dispose,
+      registeredNames: new Set(scopedTools.map((def) => def.name)),
+      extraDisposers: [],
+    })
     // Warm the prompt-context summary so the first step already sees the run
     // instead of waiting for the member to call a tool. Best effort: a missing
     // or unreadable board is not an installation failure.
     void store.readState(agent).catch(() => undefined)
   }
 
+  const disposeEntry = (entry) => {
+    if (!entry) return
+    if (Array.isArray(entry.extraDisposers)) {
+      for (const extra of [...entry.extraDisposers].reverse()) extra()
+    }
+    entry.dispose?.()
+  }
+
   for (const agent of ctx.agents.list()) maybeInstall(agent)
   ctx.on('agent/created', ({ agent }) => maybeInstall(agent))
   ctx.on('agent/disposed', ({ agent }) => {
-    const dispose = installed.get(agent)
-    if (dispose !== undefined) dispose()
+    disposeEntry(installed.get(agent))
     installed.delete(agent)
     thinkingRouter.clearAgent(agent.id)
   })
   ctx.effect(
     () => () => {
-      for (const dispose of installed.values()) dispose()
+      for (const entry of installed.values()) disposeEntry(entry)
       installed.clear()
       thinkingRouter.clearCache()
     },
@@ -181,7 +254,7 @@ export function apply(ctx, config = {}) {
 
   ctx.inject(['connection'], (scope) => {
     scope.effect(
-      () => registerDashboardRoute({ connection: scope.connection, ctx, store, settings }),
+      () => registerDashboardRoute({ connection: scope.connection, ctx, store, settings, thinkingRouter }),
       'agent-team-workflow: live board route',
     )
     scope.effect(

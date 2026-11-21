@@ -1833,3 +1833,68 @@ test('team_flow_git review works after team_flow_review_submit (deadlock fixed) 
     assert.match(inspected.detail.rubric, /Review Standard/)
   })
 })
+
+test('team_flow_plan presets apply settings & item defaults while preserving explicit overrides', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: 'test' })
+    harness.addTeammate('impl')
+    harness.addTeammate('rev')
+
+    await assert.rejects(
+      () => byName(tools, 'team_flow_plan').execute(
+        {
+          preset: 'unknown-preset',
+          objective: 'Bad preset',
+          acceptance_criteria: ['none'],
+          items: [{ id: 'W1', subject: 'x', owner: 'impl', write_scopes: ['src/'], definition_of_done: ['done'], reviewers: ['rev'] }],
+          auto_spawn: false,
+        },
+        { agent: harness.lead, signal: EXEC_SIGNAL },
+      ),
+      /unknown workflow preset/,
+    )
+
+    await byName(tools, 'team_flow_plan').execute(
+      {
+        preset: 'fast-fix',
+        objective: 'Quick bugfix',
+        acceptance_criteria: ['bug fixed'],
+        items: [
+          { id: 'W1', subject: 'Typo fix', owner: 'impl', write_scopes: ['src/a.js'], definition_of_done: ['fixed'], reviewers: ['rev'] },
+          { id: 'W2', subject: 'Security check', owner: 'impl', complexity: 'complex', review_depth: 'deep', blocked_by: ['W1'], write_scopes: ['src/auth.js'], definition_of_done: ['audited'], reviewers: ['rev'] },
+        ],
+        auto_spawn: false,
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    const fastState = await store.readState(harness.lead)
+    assert.equal(fastState.preset, 'fast-fix')
+    assert.equal(fastState.settings.maxReviewRounds, 1)
+    assert.equal(fastState.settings.defaultReviewDepth, 'light')
+    assert.equal(fastState.items[0].complexity, 'trivial')
+    assert.equal(fastState.items[0].reviewDepth, 'light')
+    assert.equal(fastState.items[1].complexity, 'complex', 'explicit item complexity wins over preset default')
+    assert.equal(fastState.items[1].reviewDepth, 'deep', 'explicit item review_depth wins over preset default')
+
+    await byName(tools, 'team_flow_plan').execute(
+      {
+        replace: true,
+        preset: 'deep-audit',
+        objective: 'Security audit',
+        acceptance_criteria: ['verified'],
+        items: [{ id: 'W1', subject: 'Audit auth', owner: 'impl', write_scopes: ['src/auth.js'], definition_of_done: ['checked'], reviewers: ['rev'] }],
+        auto_spawn: false,
+      },
+      { agent: harness.lead, signal: EXEC_SIGNAL },
+    )
+    const auditState = await store.readState(harness.lead)
+    assert.equal(auditState.preset, 'deep-audit')
+    assert.equal(auditState.settings.maxReviewRounds, 3)
+    assert.equal(auditState.settings.strictReviewRubric, true)
+    assert.equal(auditState.settings.thinkingDefaultBias, 'high')
+    assert.equal(auditState.items[0].complexity, 'complex')
+    assert.equal(auditState.items[0].reviewDepth, 'deep')
+  })
+})
