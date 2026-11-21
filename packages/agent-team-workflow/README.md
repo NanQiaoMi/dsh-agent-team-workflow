@@ -15,11 +15,11 @@
 - 不变量：写范围纪律、证据优先、独立评审、消息不构成交付、升级而不是停滞、不手改黑板；
 - `next_actions` 是权威作业单。
 
-**实时监控看板（Web 端）**
-
-- Host：`lib/dashboard.js` 把黑板 + roster + 原生任务板聚合成快照；`lib/dashboard-route.js` 在 Connection 认证围栏内提供 `GET /api/agent-team-workflow.snapshot?session=<id>`（只读、`no-store`）。
-- Client：`client.js` 注册 `conversation.view`「团队看板」——执行流程图（波次/依赖箭头/评审自循环）、协作拓扑、事件流、门禁、升级、详情抽屉；1.2s 轮询、页面隐藏时暂停。
-- 打开方式：会话头部 View 切换 →「团队看板」。
+- **实时监控看板（Web 端）**：`lib/dashboard.js`（零 import 聚合）+ `lib/dashboard-route.js` + `client.js`（`conversation.view` 团队看板），包含执行波次图、协作拓扑、事件流、门禁、阶段耗时指标、模型与思考路由面板及详情抽屉（含审阅标准/复杂度元数据）。
+- **场景预设（`team_flow_plan { preset }`）**：内置 `fast-fix`、`feature`、`pr-review`、`deep-audit` 四类工作流预设，自动配置返修预算、思考默认偏向、审阅深度与 DoD 严格度，并允许单工作项显式覆盖。
+- **自适应思考与模型路由（`lib/thinking-router.js`）**：拦截 `agent/request` 并结合 `ctx.llm.resolveModelInfo` 与同轮 `turn` 锁定，按成员角色（Lead 规划/仲裁/协调）、工作项复杂度（`complexity` / `thinking_tier`）、返工与审阅深度自动选择思考档位与可选角色模型。
+- **分级 Review 与 PR 体系（`lib/review-policy.js`）**：按修改文件与 diff 行数自动分级 `light | standard | deep` 并匹配 6 类域 Rubric（`code | security | api | docs | tests | refactor`）；支持并行多审阅者通知与乱序提交、`dod_checks` 校验、`team_flow_git { action: "pr_inspect" }` PR 风险预检与结构化 Markdown PR Review 提交。
+- **事件驱动编排与动态补齐**：订阅 `agent/status` 空闲事件，单飞防重入与同成员消息合并，支持 `lazyStaffing` 与 `take_review` / `claim` 等职责变更后的增量工具动态补齐。
 
 **19 个模型工具**
 
@@ -78,31 +78,35 @@ plugin_manager(action: "install_bundle", target: "<此目录绝对路径>")
 | `autoNotify` | `true` | 自动通知评审/作者 |
 | `requireReviewEvidence` | `true` | 批准型评审必须声明 `evidence_checked`，否则拒绝/门禁失败 |
 | `nitTolerance` | `true` | 纯挑刺评审禁止打回（强制转为 approve_with_nits 避免无谓返工） |
-| `archiveApprovedItems` | `false` | 已批准工作项详细证据沉降至冷存储（.agentteam/teams/<id>/archive/），减小热态体积 |
+| `archiveApprovedItems` | `false` (`true` in patch) | 已批准工作项详细证据沉降至冷存储，减小热态体积 |
+| `eventDrivenOrchestrator` | `true` | 订阅 `agent/status` 空闲事件触发零延迟编排（配自适应 watchdog） |
+| `lazyStaffing` | `false` (`true` in patch) | 按需派发后续波次 worker 与待审阅 reviewer |
+| `thinkingRouting` | `auto` | 思考档位路由模式：`auto \| role \| off` |
+| `thinkingDefaultBias` | `low` | 无 `medium` 档位模型（如 DeepSeek）的默认实现语义偏向：`low \| high` |
+| `parallelReviews` | `true` | 向多审阅者并行派发并允许乱序独立提交审阅 |
+| `defaultReviewDepth` | `auto` | 默认审阅深度：`auto \| light \| standard \| deep` |
+| `strictReviewRubric` | `false` | 开启后 `deep` 深度批准必须携带显式 `dod_checks` |
 
 无 `Config` 导出（避免 schemastery 依赖）；配置在 `resolveSettings` 中收敛并夹紧范围，生效值回显在 `team_flow_status.settings`。
 
 ## 目录
 
 ```
-index.js            Cordis 插件入口（inject / apply / per-Agent 安装与拆除）
-lib/config.js       配置解析与默认值
+index.js            Cordis 插件入口（inject / apply / per-Agent 安装、动态职责工具补齐与拆除）
+lib/config.js       配置解析、默认值与场景预设（fast-fix / feature / pr-review / deep-audit）
 lib/store.js        黑板持久化：原子写 + 进程内锁 + 路径解析
-lib/workflow.js     纯状态机：计划校验、版本绑定、返修轮、门禁、next_actions（零依赖，可独立测试）
-lib/protocol.js     注入文本：L1 协议、worker/reviewer 简报、通知、最终报告
-lib/tools.js        17 个工具定义与执行
-lib/tool-matrix.js  基于角色裁剪工具装配矩阵（Lead 17/Worker 10/Reviewer 6/Verifier 4）
-lib/telemetry.js    细粒度 Token 消耗归因度量与分角色占比统计
-locale/{en,zh}.json 插件管理器展示元数据
-icon.svg            插件图标
-cordis.patch.yml    bundle 补丁（新增一行，不覆盖原生 Team 行）
-client.js           Web 端看板（conversation.view，纯 JS 动态模块，只 require('react')）
-                    ⚠️ package.json 必须导出 "./package.json"，否则 Host client-modules 扫描器
-                    会静默跳过本包的客户端半（看板 tab 不出现），详见 docs/11
-lib/dashboard.js    看板聚合（零 import 纯函数）：waves/状态归一化/counts/截断
+lib/workflow.js     纯状态机：计划校验、版本绑定、并行返修轮、门禁、next_actions
+lib/protocol.js     注入文本：按角色协议、worker/reviewer 简报、Rubric 通知、最终报告
+lib/thinking-router.js  agent/request 自适应思考档位/模型路由器与按 turn 锁定
+lib/review-policy.js    Diff 风险分级器、6 类 Rubric 清单、DoD 校验与 PR Review Markdown 格式化
+lib/orchestrator.js     事件驱动编排器、同成员摘要合并与自适应 watchdog
+lib/git.js              安全 Git / Worktree / PR 检查（gitPrInspect）原语
+lib/tools.js            19 个工具定义与执行
+lib/tool-matrix.js      基于角色与职责的工具装配矩阵
+lib/telemetry.js        细粒度 Token 消耗归因度量与分角色占比统计
+client.js               Web 端看板（conversation.view，纯 JS 动态模块，只 require('react')）
+lib/dashboard.js        看板聚合（零 import 纯函数）：waves/状态归一化/阶段耗时/思考路由
 lib/dashboard-route.js  GET /api/agent-team-workflow.snapshot（Connection 认证 Fetch 路由）
-test/               219 个离线用例（engine 26 / collaboration 25 / tools 37 / plugin 6 /
-                    dashboard 33 / route 7 / client 40 / git 25 / hooks 4 / member-route 6 / transcript 4 / tool-guard 6）
 ```
 
 ## 验证
