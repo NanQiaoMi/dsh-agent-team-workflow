@@ -336,6 +336,51 @@ Action: inspect the changes and evidence above, then call team_flow_review_submi
 }
 
 /**
+ * Render an incremental re-review request carrying the author's per-finding
+ * responses and the delta diff since the previous review round.
+ * @param state - run state.
+ * @param item - item under re-review.
+ * @param previousReview - previous submitted review record.
+ * @param diff - optional incremental or scoped diff string.
+ * @returns self-contained re-review message text.
+ */
+export function reReviewRequestMessage(state, item, previousReview, diff = null) {
+  const review = pendingReview(item)
+  const report = item.report
+  const wt = item.git?.worktreePath ? `\nWorktree path: ${item.git.worktreePath}` : ''
+  const findings = Array.isArray(previousReview?.findings) ? previousReview.findings : []
+  const responseLines = findings.length === 0
+    ? ['- (no prior findings recorded)']
+    : findings.map((f) => {
+        const res = f.resolution
+        const statusText = res?.state ?? 'unresolved'
+        const details = []
+        if (res?.evidence) details.push(`evidence: ${clipText(res.evidence, 160)}`)
+        if (res?.note) details.push(`note: ${clipText(res.note, 160)}`)
+        const suffix = details.length > 0 ? ` | ${details.join(' | ')}` : ''
+        const loc = `${f.file ?? '(no file)'}${f.line ? `:${f.line}` : ''}`
+        const line = `- ${f.id} [${f.severity}] ${loc} -> ${statusText}${suffix}`
+        return line.length > 300 ? `${line.slice(0, 299)}…` : line
+      })
+  const diffSection = diff ? `\n\n# Code Changes Since Previous Review\n${diff}` : ''
+  const commands = bullets((report?.commands ?? []).map((command) => `\`${command.command}\` → exit ${command.exitCode}`))
+  const prevInfo = previousReview ? ` (round ${review?.round ?? '?'}, addressing round ${previousReview.round} by ${previousReview.reviewer})` : ` (round ${review?.round ?? '?'})`
+  return `[REVIEW] ${item.id} "${item.subject}" — re-review ready${prevInfo}.${wt}
+
+Author: ${item.owner}
+Commands reported:
+${commands}
+
+Author responses to prior findings:
+${responseLines.join('\n')}${diffSection}
+
+Definition of done:
+${bullets(item.definitionOfDone)}
+
+Action: Focus on verifying each finding response above and checking for regressions. Do NOT call team_flow_status. If all findings are satisfactorily resolved and no new major/blocker defect is introduced, approve immediately via team_flow_review_submit. Run id ${state.runId}.`
+}
+
+/**
  * Render the message the engine sends to the author after a non-approving review.
  * @param state - run state.
  * @param item - item reviewed.

@@ -626,6 +626,7 @@ export function applyReviewSubmit(state, input) {
   review.summary = input.summary
   review.findings = findings
   review.evidenceChecked = input.evidenceChecked
+  review.reviewedSha = input.reviewedSha ?? item.git?.sha ?? null
   review.submittedAt = input.now
   if (isApproving(input.verdict)) {
     // Approving with observations is an early stop, not a rework request: the

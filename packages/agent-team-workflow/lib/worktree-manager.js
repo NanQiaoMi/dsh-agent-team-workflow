@@ -274,40 +274,74 @@ export async function autoCleanupRunWorktrees({ cwd, state, agent, store }) {
   return { ok: true, cleaned }
 }
 
+function execGit(cwd, args, maxBuffer = 1024 * 1024) {
+  return new Promise((resolve) => {
+    execFile('git', args, { cwd, timeout: 5000, maxBuffer, encoding: 'utf8' }, (err, stdout) => {
+      if (err) return resolve(null)
+      const text = typeof stdout === 'string' ? stdout.trim() : ''
+      resolve(text.length > 0 ? text : null)
+    })
+  })
+}
+
+function formatDiffSummary(stat, diffOut, maxLines) {
+  if (!diffOut) return `Diff stat:\n${stat}`
+  const lines = diffOut.split('\n')
+  const capped = lines.slice(0, maxLines).join('\n')
+  const truncated = lines.length > maxLines ? `\n... (${lines.length - maxLines} more lines truncated)` : ''
+  return `Diff stat:\n${stat}\n\nDiff patch:\n\`\`\`diff\n${capped}${truncated}\n\`\`\``
+}
+
 /**
- * Compute compact diff summary (diffstat and head patch) for an item's worktree branch.
- * @param options - `{ cwd, state, item, maxLines }`
+ * Compute compact diff summary (diffstat and head patch) for an item's worktree
+ * branch or, when worktrees are off, for the files declared in the report.
+ * @param options - `{ cwd, state, item, maxLines, sinceSha }`
  * @returns Promise<string | null>
  */
-export async function getWorktreeDiffSummary({ cwd, state, item, maxLines = 80 }) {
-  if (!state?.settings?.gitEnabled || !item?.git?.worktreeBranch || !state?.git?.branch) {
-    return null
-  }
-  return new Promise((resolve) => {
+export async function getWorktreeDiffSummary({ cwd, state, item, maxLines = 120, sinceSha = null } = {}) {
+  if (typeof cwd !== 'string' || cwd.length === 0) return null
+  const limit = Number.isInteger(maxLines) && maxLines > 0 ? maxLines : 120
+
+  // 1. Isolated worktree branch diff (supports incremental sinceSha..wtBranch)
+  if (state?.settings?.gitEnabled && item?.git?.worktreeBranch && state?.git?.branch) {
     const baseBranch = state.git.branch
     const wtBranch = item.git.worktreeBranch
-    execFile(
-      'git',
-      ['diff', '--stat', `${baseBranch}...${wtBranch}`],
-      { cwd, timeout: 5000, maxBuffer: 1024 * 1024, encoding: 'utf8' },
-      (statErr, statOut) => {
-        if (statErr || !statOut?.trim()) return resolve(null)
-        const stat = statOut.trim()
-        execFile(
-          'git',
-          ['diff', '-U2', `${baseBranch}...${wtBranch}`],
-          { cwd, timeout: 5000, maxBuffer: 2 * 1024 * 1024, encoding: 'utf8' },
-          (diffErr, diffOut) => {
-            if (diffErr || !diffOut?.trim()) {
-              return resolve(`Diff stat:\n${stat}`)
-            }
-            const lines = diffOut.trim().split('\n')
-            const capped = lines.slice(0, maxLines).join('\n')
-            const truncated = lines.length > maxLines ? `\n... (${lines.length - maxLines} more lines truncated)` : ''
-            return resolve(`Diff stat:\n${stat}\n\nDiff patch:\n\`\`\`diff\n${capped}${truncated}\n\`\`\``)
-          },
-        )
-      },
-    )
-  })
+    const validSince = typeof sinceSha === 'string' && /^[0-9a-f]{7,40}$/i.test(sinceSha.trim())
+      ? sinceSha.trim()
+      : null
+
+    if (validSince !== null) {
+      const incRange = `${validSince}..${wtBranch}`
+      const incStat = await execGit(cwd, ['diff', '--stat', incRange])
+      if (incStat !== null) {
+        const incDiff = await execGit(cwd, ['diff', '-U2', incRange], 2 * 1024 * 1024)
+        return formatDiffSummary(incStat, incDiff, limit)
+      }
+    }
+
+    const fullRange = `${baseBranch}...${wtBranch}`
+    const stat = await execGit(cwd, ['diff', '--stat', fullRange])
+    if (stat === null) return null
+    const diffOut = await execGit(cwd, ['diff', '-U2', fullRange], 2 * 1024 * 1024)
+    return formatDiffSummary(stat, diffOut, limit)
+  }
+
+  // 2. Non-worktree fallback: path-scoped diff for reported files in cwd
+  const rawFiles = Array.isArray(item?.report?.files) ? item.report.files : []
+  const files = [...new Set(rawFiles.map((f) => String(f ?? '').trim()).filter((f) => f.length > 0 && !f.startsWith('-')))]
+  if (files.length === 0) return null
+
+  const inside = await execGit(cwd, ['rev-parse', '--is-inside-work-tree'])
+  if (inside !== 'true') return null
+
+  let stat = await execGit(cwd, ['diff', 'HEAD', '--stat', '--', ...files])
+  let useHead = stat !== null
+  if (stat === null) {
+    stat = await execGit(cwd, ['diff', '--stat', '--', ...files])
+  }
+  if (stat === null) return null
+
+  const diffArgs = useHead ? ['diff', 'HEAD', '-U2', '--', ...files] : ['diff', '-U2', '--', ...files]
+  const diffOut = await execGit(cwd, diffArgs, 2 * 1024 * 1024)
+  return formatDiffSummary(stat, diffOut, limit)
 }

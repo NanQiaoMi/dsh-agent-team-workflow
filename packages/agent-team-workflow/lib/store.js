@@ -330,6 +330,5 @@ export function createStore({ ctx, settings }) {
  * @returns at most two short lines of text.
  */
 export function summarize(state) {
-  const pending = state.items.filter((item) => item.status !== 'approved').length
-  return `Agent Team Workflow run ${state.runId} phase ${state.phase}; ${pending}/${state.items.length} work item(s) not yet approved. Call team_flow_status for the exact next action.`
+  return `Agent Team Workflow run ${state.runId} is active. Follow dispatched instructions directly; call team_flow_status only when diagnosing unexpected state.`
 }

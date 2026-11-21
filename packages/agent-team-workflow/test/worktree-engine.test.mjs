@@ -21,6 +21,7 @@ import { resolveSettings } from '../lib/config.js'
 import { createStore } from '../lib/store.js'
 import { buildTools } from '../lib/tools.js'
 import * as Git from '../lib/git.js'
+import { getWorktreeDiffSummary } from '../lib/worktree-manager.js'
 
 function realExec(file, args, options = {}) {
   return new Promise((resolvePromise) => {
@@ -629,5 +630,55 @@ test('worktree auto-merge conflict is diagnosed and recovered via worktree_sync'
     // Verify content on run branch is merged
     const finalContent = await gitRun(repo, ['show', `${runBranch}:shared.txt`])
     assert.equal(finalContent, 'merged content\n')
+  })
+})
+
+test('getWorktreeDiffSummary falls back to path-scoped git diff when worktree is off', async () => {
+  await withRepo(async ({ repo }) => {
+    await writeFile(join(repo, 'README.md'), '# demo\n\nupdated without worktree\n')
+    const diff = await getWorktreeDiffSummary({
+      cwd: repo,
+      state: { settings: { gitEnabled: false } },
+      item: { report: { files: ['README.md'] } },
+      maxLines: 120,
+    })
+    assert.ok(diff !== null, 'must produce diff summary without worktree')
+    assert.match(diff, /Diff stat:/)
+    assert.match(diff, /README\.md/)
+    assert.match(diff, /\+updated without worktree/)
+
+    // Non-git directory returns null gracefully
+    const nonGit = await getWorktreeDiffSummary({
+      cwd: tmpdir(),
+      state: { settings: { gitEnabled: false } },
+      item: { report: { files: ['README.md'] } },
+    })
+    assert.equal(nonGit, null)
+  })
+})
+
+test('getWorktreeDiffSummary computes incremental diff using sinceSha when provided', async () => {
+  await withRepo(async ({ repo }) => {
+    await gitRun(repo, ['switch', '-c', 'agentteam/run-inc'])
+    await gitRun(repo, ['switch', '-c', 'agentteam-wt/run-inc/T1'])
+    await writeFile(join(repo, 'round1.txt'), 'round 1 content\n')
+    await gitRun(repo, ['add', 'round1.txt'])
+    await gitRun(repo, ['commit', '-m', 'feat: round 1'])
+    const round1Sha = (await gitRun(repo, ['rev-parse', 'HEAD'])).trim()
+
+    await writeFile(join(repo, 'round2.txt'), 'round 2 fix\n')
+    await gitRun(repo, ['add', 'round2.txt'])
+    await gitRun(repo, ['commit', '-m', 'fix: round 2'])
+
+    const deltaDiff = await getWorktreeDiffSummary({
+      cwd: repo,
+      state: { settings: { gitEnabled: true }, git: { branch: 'agentteam/run-inc' } },
+      item: { git: { worktreeBranch: 'agentteam-wt/run-inc/T1' } },
+      maxLines: 120,
+      sinceSha: round1Sha,
+    })
+    assert.ok(deltaDiff !== null)
+    assert.match(deltaDiff, /round2\.txt/)
+    assert.ok(!deltaDiff.includes('round1.txt'), 'incremental diff must exclude changes already reviewed in round 1')
   })
 })
