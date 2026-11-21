@@ -83,29 +83,58 @@ function createContext(cwd) {
   const teammate = { id: 'session-worker', session: { id: 'session-worker' }, ctx: undefined }
   const outsider = { id: 'session-subagent', session: { id: 'session-subagent' }, ctx: undefined }
 
-  const scopedFor = (agent) => ({
-    tools: {
-      register(definition) {
-        tools.push({ agent: agent.id, name: definition.name, definition })
+  const scopedFor = (agent) => {
+    const scopedListeners = new Map()
+    return {
+      tools: {
+        register(definition) {
+          tools.push({ agent: agent.id, name: definition.name, definition })
+          return () => {
+            const index = tools.findIndex((entry) => entry.agent === agent.id && entry.name === definition.name)
+            if (index >= 0) tools.splice(index, 1)
+          }
+        },
+      },
+      on(event, handler, opts = {}) {
+        const list = scopedListeners.get(event) ?? []
+        if (opts.prepend) list.unshift(handler)
+        else list.push(handler)
+        scopedListeners.set(event, list)
         return () => {
-          const index = tools.findIndex((entry) => entry.agent === agent.id && entry.name === definition.name)
-          if (index >= 0) tools.splice(index, 1)
+          const current = scopedListeners.get(event) ?? []
+          scopedListeners.set(event, current.filter((candidate) => candidate !== handler))
         }
       },
-    },
-    systemPrompt: {
-      getSectionOrder: (name) => (name === 'TEAM_POLICY' ? 600 : 0),
-      getContextOrder: (name) => (name === 'TEAM_IDENTITY' ? 125 : 0),
-      section(entry) {
-        sections.push({ agent: agent.id, ...entry })
-        return () => sections.splice(sections.findIndex((candidate) => candidate.agent === agent.id && candidate.name === entry.name), 1)
+      async runWaterfall(event, payload, base) {
+        const list = [...(scopedListeners.get(event) ?? [])]
+        let idx = 0
+        const next = async () => {
+          if (idx < list.length) {
+            const fn = list[idx]
+            idx += 1
+            return await fn({ ...payload, agent }, next)
+          }
+          return base
+        }
+        return await next()
       },
-      context(entry) {
-        contexts.push({ agent: agent.id, ...entry })
-        return () => contexts.splice(contexts.findIndex((candidate) => candidate.agent === agent.id && candidate.name === entry.name), 1)
+      listenerCount(event) {
+        return (scopedListeners.get(event) ?? []).length
       },
-    },
-  })
+      systemPrompt: {
+        getSectionOrder: (name) => (name === 'TEAM_POLICY' ? 600 : 0),
+        getContextOrder: (name) => (name === 'TEAM_IDENTITY' ? 125 : 0),
+        section(entry) {
+          sections.push({ agent: agent.id, ...entry })
+          return () => sections.splice(sections.findIndex((candidate) => candidate.agent === agent.id && candidate.name === entry.name), 1)
+        },
+        context(entry) {
+          contexts.push({ agent: agent.id, ...entry })
+          return () => contexts.splice(contexts.findIndex((candidate) => candidate.agent === agent.id && candidate.name === entry.name), 1)
+        },
+      },
+    }
+  }
 
   for (const agent of [lead, teammate, outsider]) agent.ctx = scopedFor(agent)
   membership.set(lead.id, { root: lead, id: lead.id, name: 'lead', role: 'lead' })
@@ -221,7 +250,7 @@ function createContext(cwd) {
       },
     },
   }
-  return { ctx, lead, teammate, outsider, tools, sections, contexts, guards, handlers, membership, scopedFor, tasks, messages, routes }
+  return { ctx, lead, teammate, outsider, tools, sections, contexts, guards, handlers, membership, scopedFor, tasks, messages, routes, effects }
 }
 
 async function withWorkspace(fn) {
@@ -315,9 +344,24 @@ test('the injected state context reflects a run created through the real tools',
     const context = harness.contexts.find((entry) => entry.agent === harness.lead.id)
     const text = context.text()
     assert.match(text, new RegExp(result.run_id))
-    assert.match(text, /phase planned/)
+    assert.match(text, /is active/)
     assert.match(text, /team_flow_status/)
     assert.equal(harness.tasks.length, 1, 'planning creates one backing Team task')
+
+    // KV-Cache stability: mutating run phase and item status must not alter the injected context string
+    const reportTool = harness.tools.find((entry) => entry.agent === harness.teammate.id && entry.name === 'team_flow_report')
+    assert.ok(reportTool !== undefined)
+    await reportTool.definition.execute(
+      {
+        item_id: 'W1',
+        summary: 'Implemented module',
+        files: ['src/index.js'],
+        commands: [{ command: 'node --test', exit_code: 0 }],
+        evidence: ['all tests pass'],
+      },
+      { agent: harness.teammate, signal: new AbortController().signal },
+    )
+    assert.equal(context.text(), text, 'team:workflow-state must remain byte-identical across state transitions')
   })
 })
 
@@ -451,4 +495,182 @@ test('the applied plugin version matches package.json', async () => {
   const match = /const VERSION = '([^']+)'/.exec(indexSource)
   assert.ok(match !== null, 'index.js declares VERSION')
   assert.equal(match[1], pkg.version, 'the applied-version log line must not drift from package.json')
+})
+
+test('event-driven agent/status idle wakes unblocked downstream members immediately', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createContext(cwd)
+    const worker2 = { id: 'session-worker2', session: { id: 'session-worker2' } }
+    worker2.ctx = harness.scopedFor(worker2)
+    harness.membership.set(worker2.id, { root: harness.lead, id: worker2.id, name: 'worker2', role: 'teammate' })
+
+    const liveStatus = new Map([
+      ['lead', 'running'],
+      ['worker', 'running'],
+      ['worker2', 'running'],
+    ])
+    harness.ctx.agentTeams.listMembers = () =>
+      [...harness.membership.values()].map((entry) => ({
+        id: entry.id,
+        name: entry.name,
+        role: entry.role,
+        status: liveStatus.get(entry.name) ?? 'inactive',
+        context: 'fresh',
+      }))
+
+    apply(harness.ctx, { autoOrchestrate: true, eventDrivenOrchestrator: true, watchdogIntervalSeconds: 60, autoStaff: false })
+    try {
+      const planTool = harness.tools.find((entry) => entry.agent === harness.lead.id && entry.name === 'team_flow_plan')
+      await planTool.definition.execute(
+        {
+          objective: 'Event-driven idle dispatch',
+          acceptance_criteria: ['Downstream wakes on idle event'],
+          items: [
+            { id: 'W1', subject: 'First', owner: 'worker', write_scopes: ['src/a/'], definition_of_done: ['done'], reviewers: ['lead'] },
+            { id: 'W2', subject: 'Second', owner: 'worker2', blocked_by: ['W1'], write_scopes: ['src/b/'], definition_of_done: ['done'], reviewers: ['lead'] },
+          ],
+        },
+        { agent: harness.lead, signal: new AbortController().signal },
+      )
+
+      const reportTool = harness.tools.find((entry) => entry.agent === harness.teammate.id && entry.name === 'team_flow_report')
+      await reportTool.definition.execute(
+        { item_id: 'W1', summary: 'W1 ready', files: ['src/a/1.js'], commands: [{ command: 'node --test', exit_code: 0 }], evidence: ['ok'] },
+        { agent: harness.teammate, signal: new AbortController().signal },
+      )
+      const reviewTool = harness.tools.find((entry) => entry.agent === harness.lead.id && entry.name === 'team_flow_review_submit')
+      await reviewTool.definition.execute(
+        { item_id: 'W1', verdict: 'approve', summary: 'Approved', findings: [], evidence_checked: ['read src/a/1.js'] },
+        { agent: harness.lead, signal: new AbortController().signal },
+      )
+      // Wait one tick for reviewTool's triggerOrchestrator to finish seeing worker2 as still running
+      await new Promise((resolve) => setTimeout(resolve, 30))
+
+      // Now worker2 finishes its previous turn and becomes idle -> agent/status idle must wake it for W2
+      harness.messages.length = 0
+      liveStatus.set('worker2', 'inactive')
+      harness.ctx.emit('agent/status', { agent: worker2, status: 'idle' })
+
+      await new Promise((resolve) => setTimeout(resolve, 350))
+      const wake = harness.messages.find((m) => m.to === 'worker2' && m.text.includes('AUTO_DISPATCH'))
+      assert.ok(wake, 'agent/status idle event must trigger immediate debounced dispatch for worker2')
+      assert.match(wake.text, /W2/)
+    } finally {
+      for (const dispose of harness.effects) {
+        if (typeof dispose === 'function') dispose()
+      }
+    }
+  })
+})
+
+test('apply wires ctx.llm capability probing and agent/request thinking router cleanly until disposal', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createContext(cwd)
+    harness.ctx.llm = {
+      async resolveModelInfo(_provider, model) {
+        return { id: model, reasoning: { efforts: [{ id: 'off' }, { id: 'low' }, { id: 'high' }, { id: 'max' }] } }
+      },
+    }
+    apply(harness.ctx, { thinkingRouting: 'auto', watchdogIntervalSeconds: 0 })
+    try {
+      const planTool = harness.tools.find((entry) => entry.agent === harness.lead.id && entry.name === 'team_flow_plan')
+      await planTool.definition.execute(
+        {
+          objective: 'Test live thinking wiring',
+          acceptance_criteria: ['Done'],
+          items: [
+            {
+              id: 'W1',
+              subject: 'Complex core change',
+              owner: 'worker',
+              complexity: 'complex',
+              write_scopes: ['src/'],
+              definition_of_done: ['done'],
+              reviewers: ['lead'],
+            },
+          ],
+        },
+        { agent: harness.lead, signal: new AbortController().signal },
+      )
+
+      assert.equal(harness.teammate.ctx.listenerCount('agent/request'), 1)
+      const routed = await harness.teammate.ctx.runWaterfall(
+        'agent/request',
+        { turn: 1, step: 1, signal: new AbortController().signal },
+        { provider: 'deepseek', model: 'deepseek-v4-pro', reasoningEffort: 'low' },
+      )
+      assert.equal(routed.reasoningEffort, 'high', 'complex item must elevate worker thinking to high')
+
+      harness.ctx.emit('agent/disposed', { agent: harness.teammate })
+      assert.equal(harness.teammate.ctx.listenerCount('agent/request'), 0, 'disposal must unregister agent/request listener')
+    } finally {
+      for (const dispose of harness.effects) {
+        if (typeof dispose === 'function') dispose()
+      }
+    }
+  })
+})
+
+test('apply refreshes tools additively when an implementer takes a peer review duty', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createContext(cwd)
+    const worker2 = { id: 'session-worker2', session: { id: 'session-worker2' } }
+    worker2.ctx = harness.scopedFor(worker2)
+    harness.membership.set(worker2.id, { root: harness.lead, id: worker2.id, name: 'worker2', role: 'teammate' })
+
+    apply(harness.ctx, { roleToolScoping: true, watchdogIntervalSeconds: 0, autoStaff: false })
+    harness.ctx.emit('agent/created', { agent: worker2 })
+    try {
+      const planTool = harness.tools.find((entry) => entry.agent === harness.lead.id && entry.name === 'team_flow_plan')
+      await planTool.definition.execute(
+        {
+          objective: 'Test additive duty tool refresh',
+          acceptance_criteria: ['Done'],
+          items: [
+            {
+              id: 'W1',
+              subject: 'Open-review item',
+              owner: 'worker',
+              assignment: 'open',
+              write_scopes: ['src/'],
+              definition_of_done: ['done'],
+              reviewers: [],
+            },
+          ],
+        },
+        { agent: harness.lead, signal: new AbortController().signal },
+      )
+
+      const worker2HasReviewBefore = () =>
+        harness.tools.filter((entry) => entry.agent === worker2.id && entry.name === 'team_flow_review_submit')
+      assert.equal(worker2HasReviewBefore().length, 0, 'worker2 starts without team_flow_review_submit')
+
+      // worker claims and reports W1, then publishes open review invitation
+      const workLeadOrImpl = harness.tools.find((entry) => entry.agent === harness.teammate.id && entry.name === 'team_flow_work')
+      await workLeadOrImpl.definition.execute({ action: 'claim', item_id: 'W1' }, { agent: harness.teammate, signal: new AbortController().signal })
+      const reportTool = harness.tools.find((entry) => entry.agent === harness.teammate.id && entry.name === 'team_flow_report')
+      await reportTool.definition.execute(
+        { item_id: 'W1', summary: 'Implemented', files: ['src/a.js'], commands: [{ command: 'node --test', exit_code: 0 }], evidence: ['ok'] },
+        { agent: harness.teammate, signal: new AbortController().signal },
+      )
+      await workLeadOrImpl.definition.execute({ action: 'request_review', item_id: 'W1' }, { agent: harness.teammate, signal: new AbortController().signal })
+
+      // worker2 takes the review -> team_flow_review_submit must be registered additively without duplicating existing tools
+      const workTool2 = harness.tools.find((entry) => entry.agent === worker2.id && entry.name === 'team_flow_work')
+      const beforeCount = harness.tools.filter((entry) => entry.agent === worker2.id).length
+      await workTool2.definition.execute({ action: 'take_review', item_id: 'W1' }, { agent: worker2, signal: new AbortController().signal })
+
+      assert.equal(worker2HasReviewBefore().length, 1, 'team_flow_review_submit must be installed additively once')
+      const afterNames = harness.tools.filter((entry) => entry.agent === worker2.id).map((entry) => entry.name)
+      assert.equal(new Set(afterNames).size, afterNames.length, 'must not register duplicate tools')
+      assert.ok(afterNames.length > beforeCount)
+
+      harness.ctx.emit('agent/disposed', { agent: worker2 })
+      assert.equal(harness.tools.filter((entry) => entry.agent === worker2.id).length, 0, 'disposal must clean up extra tools too')
+    } finally {
+      for (const dispose of harness.effects) {
+        if (typeof dispose === 'function') dispose()
+      }
+    }
+  })
 })

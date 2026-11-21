@@ -7,6 +7,7 @@
  */
 
 import { outstandingReviewers, pendingReview, submittedRounds, unresolvedFindings } from './workflow.js'
+import { classifyDiffRisk, renderReviewRubric } from './review-policy.js'
 
 /** Role names with a dedicated duty line; other roles get a generic duty. */
 export const ROLE_DUTIES = Object.freeze({
@@ -314,9 +315,16 @@ export function findingDigest(review, maxFindings = 8) {
  * @param item - item under review.
  * @returns self-contained message text.
  */
-export function reviewRequestMessage(state, item, diff = null) {
+export function reviewRequestMessage(state, item, diff = null, risk = null) {
   const review = pendingReview(item)
   const report = item.report
+  const effectiveRisk = risk ?? item.resolvedReview ?? classifyDiffRisk({ files: report?.files ?? [], diff, item, settings: state?.settings })
+  const rubricBlock = renderReviewRubric({
+    depth: effectiveRisk.depth,
+    profile: effectiveRisk.profile,
+    definitionOfDone: item.definitionOfDone,
+    reasons: effectiveRisk.reasons,
+  })
   const wt = item.git?.worktreePath ? `\nWorktree path: ${item.git.worktreePath}` : ''
   const diffSection = diff ? `\n\n# Code Changes (Diff)\n${diff}` : ''
   return `[REVIEW] ${item.id} "${item.subject}" is ready for your review (round ${review?.round ?? '?'}).${wt}
@@ -327,12 +335,60 @@ ${bullets(report?.files ?? [])}
 Commands reported:
 ${bullets((report?.commands ?? []).map((command) => `\`${command.command}\` → exit ${command.exitCode}`))}
 Author summary: ${clipText(report?.summary ?? '(missing)', 900)}
-Author-declared risks: ${bullets((report?.risks ?? []).slice(0, 3).map((risk) => clipText(risk, 200)), 'none')}${diffSection}
+Author-declared risks: ${bullets((report?.risks ?? []).slice(0, 3).map((riskEntry) => clipText(riskEntry, 200)), 'none')}${diffSection}
 
 Definition of done:
 ${bullets(item.definitionOfDone)}
 
-Action: inspect the changes and evidence above, then call team_flow_review_submit with a verdict, findings, and evidence_checked. Run id ${state.runId}.`
+${rubricBlock}
+
+Action: inspect the changes and evidence above, then call team_flow_review_submit with a verdict, findings, evidence_checked, and dod_checks. Run id ${state.runId}.`
+}
+
+/**
+ * Render an incremental re-review request carrying the author's per-finding
+ * responses and the delta diff since the previous review round.
+ * @param state - run state.
+ * @param item - item under re-review.
+ * @param previousReview - previous submitted review record.
+ * @param diff - optional incremental or scoped diff string.
+ * @returns self-contained re-review message text.
+ */
+export function reReviewRequestMessage(state, item, previousReview, diff = null) {
+  const review = pendingReview(item)
+  const report = item.report
+  const wt = item.git?.worktreePath ? `\nWorktree path: ${item.git.worktreePath}` : ''
+  const findings = Array.isArray(previousReview?.findings) ? previousReview.findings : []
+  const responseLines = findings.length === 0
+    ? ['- (no prior findings recorded)']
+    : findings.map((f) => {
+        const res = f.resolution
+        const statusText = res?.state ?? 'unresolved'
+        const details = []
+        if (res?.evidence) details.push(`evidence: ${clipText(res.evidence, 160)}`)
+        if (res?.note) details.push(`note: ${clipText(res.note, 160)}`)
+        const suffix = details.length > 0 ? ` | ${details.join(' | ')}` : ''
+        const loc = `${f.file ?? '(no file)'}${f.line ? `:${f.line}` : ''}`
+        const line = `- ${f.id} [${f.severity}] ${loc} -> ${statusText}${suffix}`
+        return line.length > 300 ? `${line.slice(0, 299)}…` : line
+      })
+  const diffSection = diff ? `\n\n# Code Changes Since Previous Review\n${diff}` : ''
+  const commands = bullets((report?.commands ?? []).map((command) => `\`${command.command}\` → exit ${command.exitCode}`))
+  const prevInfo = previousReview ? ` (round ${review?.round ?? '?'}, addressing round ${previousReview.round} by ${previousReview.reviewer})` : ` (round ${review?.round ?? '?'})`
+  const stdTag = item.resolvedReview ? ` [${item.resolvedReview.depth}/${item.resolvedReview.profile}]` : ''
+  return `[REVIEW] ${item.id} "${item.subject}" — re-review ready${prevInfo}${stdTag}.${wt}
+
+Author: ${item.owner}
+Commands reported:
+${commands}
+
+Author responses to prior findings:
+${responseLines.join('\n')}${diffSection}
+
+Definition of done:
+${bullets(item.definitionOfDone)}
+
+Action: Focus on verifying each finding response above and checking for regressions. Do NOT call team_flow_status. If all findings are satisfactorily resolved and no new major/blocker defect is introduced, approve immediately via team_flow_review_submit. Run id ${state.runId}.`
 }
 
 /**
@@ -382,6 +438,7 @@ export function renderReportMarkdown(state, gate) {
   lines.push(`# Agent Team Workflow Report — ${state.runId}`)
   lines.push('')
   lines.push(`- Phase: **${state.phase}**`)
+  if (state.preset) lines.push(`- Preset: **${state.preset}**`)
   lines.push(`- Created: ${state.createdAt}`)
   lines.push(`- Finalized: ${state.finalizedAt ?? '(not finalized)'}`)
   lines.push(`- Team Lead: ${state.teamId ? 'recorded' : 'unrecorded'}`)
@@ -412,6 +469,9 @@ export function renderReportMarkdown(state, gate) {
     lines.push(`- Dependencies: ${item.blockedBy.join(', ') || '(none)'}`)
     lines.push(`- Backing shared task: ${item.taskId ?? '(none)'}`)
     lines.push(`- Definition of done: ${item.definitionOfDone.join('; ')}`)
+    if (item.resolvedReview) {
+      lines.push(`- Review standard: ${item.resolvedReview.depth} / ${item.resolvedReview.profile}`)
+    }
     if (item.report !== null) {
       lines.push('')
       lines.push(`**Report:** ${item.report.summary}`)
@@ -499,6 +559,43 @@ export function renderReportMarkdown(state, gate) {
         : '-'
       lines.push(`| ${role} | ${data.uncachedInputTokens ?? 0} | ${data.outputTokens ?? 0} | ${data.cacheReadTokens ?? 0} | ${data.cacheWriteTokens ?? 0} | ${data.totalTokens ?? 0} | ${share} |`)
     }
+    lines.push('')
+  }
+  if (usage?.routing && typeof usage.routing === 'object' && Object.keys(usage.routing).length > 0) {
+    lines.push('## Model & thinking routing')
+    lines.push('')
+    lines.push('| member | role | model | last effort | stage | calls |')
+    lines.push('| --- | --- | --- | --- | --- | --- |')
+    for (const [memberName, entry] of Object.entries(usage.routing)) {
+      const modelLabel = entry.provider && entry.model ? `${entry.provider}/${entry.model}` : (entry.model ?? '-')
+      lines.push(`| ${memberName} | ${entry.role ?? '-'} | ${modelLabel} | ${entry.resolvedEffort ?? 'default'} | ${entry.stage ?? '-'} | ${entry.calls ?? 0} |`)
+    }
+    lines.push('')
+  }
+  const runStartMs = Date.parse(state.createdAt ?? '')
+  const runEndMs = Date.parse(state.finalizedAt ?? state.updatedAt ?? '')
+  const implDurations = []
+  const reviewDurations = []
+  let totalRework = 0
+  for (const item of state.items ?? []) {
+    totalRework += Array.isArray(item.reviews)
+      ? item.reviews.filter((r) => r.status === 'submitted' && r.verdict !== 'approve' && r.verdict !== 'approve_with_nits').length
+      : 0
+    const created = Date.parse(item.createdAt ?? state.createdAt ?? '')
+    const reported = Date.parse(item.reportedAt ?? '')
+    const approved = Date.parse(item.approvedAt ?? '')
+    if (Number.isFinite(created) && Number.isFinite(reported) && reported >= created) implDurations.push(reported - created)
+    if (Number.isFinite(reported) && Number.isFinite(approved) && approved >= reported) reviewDurations.push(approved - reported)
+  }
+  if (Number.isFinite(runStartMs) && Number.isFinite(runEndMs) && runEndMs >= runStartMs) {
+    const fmtSec = (ms) => (ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`)
+    const avg = (list) => (list.length === 0 ? '-' : fmtSec(Math.round(list.reduce((a, b) => a + b, 0) / list.length)))
+    lines.push('## Phase timings')
+    lines.push('')
+    lines.push(`- Total run duration: ${fmtSec(runEndMs - runStartMs)}`)
+    lines.push(`- Avg implement time: ${avg(implDurations)}`)
+    lines.push(`- Avg review time: ${avg(reviewDurations)}`)
+    lines.push(`- Total rework rounds: ${totalRework}`)
     lines.push('')
   }
   lines.push('## Audit trail (tail)')

@@ -10,6 +10,99 @@
 /** Re-exported so callers can read the workflow version from either module. */
 export { WORKFLOW_VERSION } from './workflow.js'
 
+/** Named workflow presets selectable via `team_flow_plan { preset }`. */
+export const WORKFLOW_PRESET_NAMES = Object.freeze(['fast-fix', 'feature', 'pr-review', 'deep-audit'])
+
+/** Preset overrides for run settings and per-item defaults. */
+export const WORKFLOW_PRESETS = Object.freeze({
+  'fast-fix': Object.freeze({
+    settings: Object.freeze({
+      maxReviewRounds: 1,
+      defaultReviewDepth: 'light',
+      thinkingDefaultBias: 'low',
+      strictReviewRubric: false,
+      parallelReviews: true,
+    }),
+    itemDefaults: Object.freeze({
+      complexity: 'trivial',
+      reviewDepth: 'light',
+    }),
+  }),
+  feature: Object.freeze({
+    settings: Object.freeze({
+      maxReviewRounds: 2,
+      defaultReviewDepth: 'auto',
+      thinkingDefaultBias: 'low',
+      strictReviewRubric: false,
+      parallelReviews: true,
+    }),
+    itemDefaults: Object.freeze({
+      complexity: 'normal',
+      reviewDepth: 'auto',
+    }),
+  }),
+  'pr-review': Object.freeze({
+    settings: Object.freeze({
+      maxReviewRounds: 2,
+      defaultReviewDepth: 'standard',
+      thinkingDefaultBias: 'high',
+      strictReviewRubric: true,
+      parallelReviews: true,
+    }),
+    itemDefaults: Object.freeze({
+      complexity: 'normal',
+      reviewDepth: 'auto',
+    }),
+  }),
+  'deep-audit': Object.freeze({
+    settings: Object.freeze({
+      maxReviewRounds: 3,
+      defaultReviewDepth: 'deep',
+      thinkingDefaultBias: 'high',
+      strictReviewRubric: true,
+      parallelReviews: true,
+    }),
+    itemDefaults: Object.freeze({
+      complexity: 'complex',
+      reviewDepth: 'deep',
+    }),
+  }),
+})
+
+/**
+ * Apply an optional named workflow preset to run settings and normalized items
+ * without overriding explicit per-item complexity or review_depth values.
+ *
+ * @param {object} effectiveSettings
+ * @param {Array<object>} items
+ * @param {Array<object>} rawItems
+ * @param {string|null|undefined} presetName
+ * @returns {{ preset: string|null, settings: object, items: Array<object> }}
+ */
+export function applyWorkflowPreset(effectiveSettings, items, rawItems = [], presetName = null) {
+  const normalized = typeof presetName === 'string' ? presetName.trim().toLowerCase() : ''
+  if (normalized.length === 0) {
+    return { preset: null, settings: effectiveSettings, items }
+  }
+  const spec = WORKFLOW_PRESETS[normalized]
+  if (spec === undefined) {
+    throw new Error(`unknown workflow preset "${presetName}"; expected one of ${WORKFLOW_PRESET_NAMES.join(' | ')}`)
+  }
+  const patchedItems = items.map((item, idx) => {
+    const raw = rawItems[idx] ?? {}
+    return {
+      ...item,
+      complexity: raw.complexity === undefined ? spec.itemDefaults.complexity : item.complexity,
+      reviewDepth: raw.review_depth === undefined ? spec.itemDefaults.reviewDepth : item.reviewDepth,
+    }
+  })
+  return {
+    preset: normalized,
+    settings: { ...effectiveSettings, ...spec.settings },
+    items: patchedItems,
+  }
+}
+
 /** Default plugin settings; every field is overridable from `cordis.patch.yml`. */
 export const DEFAULT_SETTINGS = Object.freeze({
   /** Artifact directory, absolute or relative to the Team working directory. */
@@ -101,12 +194,18 @@ export const DEFAULT_SETTINGS = Object.freeze({
   autoFinalize: false,
   /** Interval in seconds for the liveness watchdog timer (0 disables the timer). */
   watchdogIntervalSeconds: 30,
+  /** Maximum interval in seconds for adaptive watchdog backoff when run rev is idle. */
+  watchdogMaxIntervalSeconds: 180,
+  /** Subscribe to agent/status idle events for near-instant orchestration. */
+  eventDrivenOrchestrator: true,
+  /** Spawn Wave 1 workers upfront and defer Wave 2+/pure reviewers until ready/reported. */
+  lazyStaffing: false,
   /** Default model-facing status projection: `full` (compatible) or `brief` (token-efficient). */
   statusView: 'full',
   /** Maximum diff lines attached to a review/wake notification. */
-  reviewDiffLines: 30,
+  reviewDiffLines: 120,
   /** Maximum diff bytes attached to a review/wake notification. */
-  reviewDiffBytes: 3072,
+  reviewDiffBytes: 12288,
   /** Base board poll interval in milliseconds; clients back off when nothing changes. */
   boardPollMs: 1200,
   /** Legacy mode: register all 17 tools to every member regardless of role. */
@@ -119,6 +218,16 @@ export const DEFAULT_SETTINGS = Object.freeze({
   nitTolerance: true,
   /** Archive full reports and reviews of approved items to disk to reduce state payload. */
   archiveApprovedItems: false,
+  /** Thinking / reasoning-effort routing mode: 'auto' | 'role' | 'off'. */
+  thinkingRouting: 'auto',
+  /** Default semantic bias for normal implementation items on models without 'medium' effort: 'low' | 'high'. */
+  thinkingDefaultBias: 'low',
+  /** Notify and accept multiple independent reviewers in parallel on the same report. */
+  parallelReviews: true,
+  /** Default review depth when not specified or auto-escalated: 'auto' | 'light' | 'standard' | 'deep'. */
+  defaultReviewDepth: 'auto',
+  /** Require explicit dod_checks on deep-depth approvals. */
+  strictReviewRubric: false,
 })
 
 function clampInt(value, fallback, min, max) {
@@ -159,6 +268,16 @@ function readRoles(value) {
     const role = {}
     const provider = readString(rawRole.provider, '', 200)
     if (provider.length > 0) role.provider = provider
+    const llmProvider = readString(rawRole.llmProvider, '', 200)
+    if (llmProvider.length > 0) role.llmProvider = llmProvider
+    const model = readString(rawRole.model, '', 200)
+    if (model.length > 0) role.model = model
+    const thinking = readString(rawRole.thinking, '', 16).toLowerCase()
+    if (['off', 'low', 'medium', 'high', 'max', 'inherit'].includes(thinking)) role.thinking = thinking
+    if (rawRole.maxTokens !== undefined && rawRole.maxTokens !== null) {
+      const parsedTokens = Number.isInteger(rawRole.maxTokens) ? rawRole.maxTokens : Number.parseInt(String(rawRole.maxTokens), 10)
+      if (Number.isFinite(parsedTokens) && parsedTokens > 0) role.maxTokens = Math.min(1_000_000, Math.max(256, Math.trunc(parsedTokens)))
+    }
     const prompt = readString(rawRole.prompt, '', 4000)
     if (prompt.length > 0) role.prompt = prompt
     if (Array.isArray(rawRole.deny)) {
@@ -266,6 +385,9 @@ export function resolveSettings(raw = {}) {
     autoNotifyConverged: readBool(config.autoNotifyConverged, DEFAULT_SETTINGS.autoNotifyConverged),
     autoFinalize: readBool(config.autoFinalize, DEFAULT_SETTINGS.autoFinalize),
     watchdogIntervalSeconds: clampInt(config.watchdogIntervalSeconds, DEFAULT_SETTINGS.watchdogIntervalSeconds, 0, 3600),
+    watchdogMaxIntervalSeconds: clampInt(config.watchdogMaxIntervalSeconds, DEFAULT_SETTINGS.watchdogMaxIntervalSeconds, 30, 3600),
+    eventDrivenOrchestrator: readBool(config.eventDrivenOrchestrator, DEFAULT_SETTINGS.eventDrivenOrchestrator),
+    lazyStaffing: readBool(config.lazyStaffing, DEFAULT_SETTINGS.lazyStaffing),
     statusView: readString(config.statusView, DEFAULT_SETTINGS.statusView, 16) === 'brief' ? 'brief' : 'full',
     reviewDiffLines: clampInt(config.reviewDiffLines, DEFAULT_SETTINGS.reviewDiffLines, 0, 500),
     reviewDiffBytes: clampInt(config.reviewDiffBytes, DEFAULT_SETTINGS.reviewDiffBytes, 0, 65536),
@@ -275,6 +397,17 @@ export function resolveSettings(raw = {}) {
     preReportCheck: readBool(config.preReportCheck, DEFAULT_SETTINGS.preReportCheck),
     nitTolerance: readBool(config.nitTolerance, DEFAULT_SETTINGS.nitTolerance),
     archiveApprovedItems: readBool(config.archiveApprovedItems, DEFAULT_SETTINGS.archiveApprovedItems),
+    thinkingRouting: (() => {
+      const mode = readString(config.thinkingRouting, DEFAULT_SETTINGS.thinkingRouting, 16).toLowerCase()
+      return mode === 'role' || mode === 'off' ? mode : 'auto'
+    })(),
+    thinkingDefaultBias: readString(config.thinkingDefaultBias, DEFAULT_SETTINGS.thinkingDefaultBias, 16).toLowerCase() === 'high' ? 'high' : 'low',
+    parallelReviews: readBool(config.parallelReviews, DEFAULT_SETTINGS.parallelReviews),
+    defaultReviewDepth: (() => {
+      const d = readString(config.defaultReviewDepth, DEFAULT_SETTINGS.defaultReviewDepth, 16).toLowerCase()
+      return d === 'light' || d === 'standard' || d === 'deep' ? d : 'auto'
+    })(),
+    strictReviewRubric: readBool(config.strictReviewRubric, DEFAULT_SETTINGS.strictReviewRubric),
   })
 }
 
@@ -321,11 +454,19 @@ export function runSettings(settings) {
     autoNotifyConverged: settings.autoNotifyConverged,
     autoFinalize: settings.autoFinalize,
     watchdogIntervalSeconds: settings.watchdogIntervalSeconds,
+    watchdogMaxIntervalSeconds: settings.watchdogMaxIntervalSeconds,
+    eventDrivenOrchestrator: settings.eventDrivenOrchestrator,
+    lazyStaffing: settings.lazyStaffing,
     boardPollMs: settings.boardPollMs,
     legacyAllTools: settings.legacyAllTools,
     roleToolScoping: settings.roleToolScoping,
     preReportCheck: settings.preReportCheck,
     nitTolerance: settings.nitTolerance,
     archiveApprovedItems: settings.archiveApprovedItems,
+    thinkingRouting: settings.thinkingRouting,
+    thinkingDefaultBias: settings.thinkingDefaultBias,
+    parallelReviews: settings.parallelReviews,
+    defaultReviewDepth: settings.defaultReviewDepth,
+    strictReviewRubric: settings.strictReviewRubric,
   }
 }

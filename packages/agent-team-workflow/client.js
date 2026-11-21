@@ -389,6 +389,18 @@ window.__ModuleLoader__.load({
       'board.usageOutput': '输出',
       'board.usageCacheRead': '缓存读',
       'board.usageCacheWrite': '缓存写',
+      'board.routing': '模型与思考路由',
+      'board.routingRole': '角色',
+      'board.routingModel': '模型',
+      'board.routingEffort': '思考档位',
+      'board.routingCalls': '调用',
+      'board.timings': '阶段耗时',
+      'board.timingTotal': '总耗时',
+      'board.timingAvgImpl': '平均实现',
+      'board.timingAvgReview': '平均审阅',
+      'board.timingRework': '返工轮次',
+      'drawer.reviewStandard': '审阅标准',
+      'drawer.complexity': '复杂度',
       'pipeline.title': '协作流水线',
       'pipeline.planning': '规划拆解',
       'pipeline.implementing': '并行实现',
@@ -766,6 +778,18 @@ window.__ModuleLoader__.load({
       'board.usageOutput': 'output',
       'board.usageCacheRead': 'cache read',
       'board.usageCacheWrite': 'cache write',
+      'board.routing': 'Model & thinking routing',
+      'board.routingRole': 'role',
+      'board.routingModel': 'model',
+      'board.routingEffort': 'effort',
+      'board.routingCalls': 'calls',
+      'board.timings': 'Phase timings',
+      'board.timingTotal': 'Total',
+      'board.timingAvgImpl': 'Avg implement',
+      'board.timingAvgReview': 'Avg review',
+      'board.timingRework': 'Rework rounds',
+      'drawer.reviewStandard': 'Review standard',
+      'drawer.complexity': 'Complexity',
       'pipeline.title': 'Collaboration Pipeline',
       'pipeline.planning': 'Planning',
       'pipeline.implementing': 'Implementing',
@@ -1142,6 +1166,9 @@ window.__ModuleLoader__.load({
         definitionOfDone: toArray(item.definitionOfDone).map((value) => str(value)).filter(Boolean),
         reviewers: toArray(item.reviewers).map((value) => str(value)).filter(Boolean),
         needsReview: item.needsReview !== false,
+        complexity: str(item.complexity, 'normal'),
+        reviewDepth: str(item.reviewDepth),
+        reviewProfile: str(item.reviewProfile),
         task: item.task && typeof item.task === 'object' ? item.task : null,
         report: item.report && typeof item.report === 'object' ? item.report : null,
         reviews: normalizeReviews(item.reviews),
@@ -2230,6 +2257,17 @@ window.__ModuleLoader__.load({
 .atw-usage-cell{text-align:right;font-variant-numeric:tabular-nums;color:var(--atw-ink)}
 .atw-usage-head .atw-usage-cell{color:var(--atw-muted)}
 .atw-usage-totals{border-top:1px solid var(--atw-hairline);border-bottom:none;margin-top:4px;padding-top:10px;font-weight:600}
+.atw-timing-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px}
+.atw-timing-card{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-radius:var(--atw-radius-nested);background:var(--atw-fill)}
+.atw-timing-label{font-size:11px;line-height:1.33;color:var(--atw-muted);text-transform:uppercase;letter-spacing:.04em}
+.atw-timing-value{font-size:15px;line-height:1.33;font-weight:600;font-variant-numeric:tabular-nums;color:var(--atw-ink)}
+.atw-routing-table{display:flex;flex-direction:column;gap:0;min-width:0}
+.atw-routing-line{display:grid;grid-template-columns:minmax(84px,1.2fr) minmax(72px,.9fr) minmax(96px,1.4fr) minmax(72px,.8fr) minmax(48px,.5fr);gap:10px;align-items:center;min-width:0;font-size:13px;line-height:1.43;padding:8px 0;border-bottom:1px solid var(--atw-hairline-soft)}
+.atw-routing-line:last-child{border-bottom:none}
+.atw-routing-head{color:var(--atw-muted);font-weight:500;font-size:11px;letter-spacing:.05em;text-transform:uppercase;padding-top:0}
+.atw-routing-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.atw-routing-cell{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--atw-ink)}
+.atw-routing-head .atw-routing-cell{color:var(--atw-muted)}
 .atw-member-prompt{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;color:var(--atw-muted);font-size:12px;line-height:1.43;overflow-wrap:anywhere}
 .atw-member-composer{display:flex;flex-direction:column;gap:8px;padding-top:12px;border-top:1px solid var(--atw-hairline-soft)}
 .atw-member-input{box-sizing:border-box;width:100%;min-height:38px;padding:8px 14px;border:1px solid transparent;border-radius:var(--atw-radius-pill);background:var(--atw-fill);color:var(--atw-ink);font:inherit;font-size:13px;line-height:1.43;transition:background-color .12s ease,box-shadow .12s ease}
@@ -3887,6 +3925,18 @@ window.__ModuleLoader__.load({
         kvRow('writeScopes', tr('drawer.writeScopes'), item.writeScopes.length > 0 ? item.writeScopes.join(', ') : tr('drawer.none')),
         kvRow('blockedBy', tr('drawer.blockedBy'), item.blockedBy.length > 0 ? item.blockedBy.join(', ') : tr('drawer.none')),
       ]
+      if (item.reviewDepth !== '' || item.reviewProfile !== '') {
+        meta.push(
+          kvRow(
+            'reviewStandard',
+            tr('drawer.reviewStandard'),
+            [item.reviewDepth, item.reviewProfile].filter((part) => part !== '').join(' / '),
+          ),
+        )
+      }
+      if (item.complexity !== '' && item.complexity !== 'normal') {
+        meta.push(kvRow('complexity', tr('drawer.complexity'), item.complexity))
+      }
       if (item.task) {
         meta.push(
           kvRow(
@@ -4274,6 +4324,81 @@ window.__ModuleLoader__.load({
       for (const member of usage.members) lines.push(row('usage-' + member.name, 'atw-usage-line', member.name, member))
       if (usage.totals !== null) lines.push(row('usage-totals', 'atw-usage-line atw-usage-totals', tr('board.usageTotals'), usage.totals))
       return h('section', { className: 'atw-panel atw-usage' }, head, h('div', { className: 'atw-panel-body' }, h('div', { className: 'atw-usage-table' }, lines)))
+    }
+
+    function formatDurationMs(ms) {
+      if (!Number.isFinite(ms) || ms < 0) return '-'
+      if (ms < 1000) return String(Math.round(ms)) + 'ms'
+      const sec = Math.round(ms / 100) / 10
+      if (sec < 60) return String(sec) + 's'
+      const mins = Math.floor(sec / 60)
+      const rem = Math.round(sec % 60)
+      return String(mins) + 'm ' + String(rem) + 's'
+    }
+
+    function renderTimingsPanel(view, run) {
+      const tr = view.tr
+      const timings = run !== null && run !== undefined && isRecord(run.timings) ? run.timings : null
+      if (timings === null) return null
+      const totalMs = num(timings.totalMs, Number.NaN)
+      if (!Number.isFinite(totalMs)) return null
+      const metric = (key, label, value) =>
+        h(
+          'div',
+          { key: key, className: 'atw-timing-card' },
+          h('span', { className: 'atw-timing-label' }, label),
+          h('span', { className: 'atw-timing-value' }, value),
+        )
+      const cards = [
+        metric('total', tr('board.timingTotal'), formatDurationMs(totalMs)),
+        metric('avgImpl', tr('board.timingAvgImpl'), formatDurationMs(num(timings.avgImplementMs, Number.NaN))),
+        metric('avgRev', tr('board.timingAvgReview'), formatDurationMs(num(timings.avgReviewMs, Number.NaN))),
+        metric('rework', tr('board.timingRework'), String(num(timings.reworkTotal, 0))),
+      ]
+      return h(
+        'section',
+        { className: 'atw-panel atw-timings' },
+        panelHead(tr('board.timings'), null),
+        h('div', { className: 'atw-panel-body' }, h('div', { className: 'atw-timing-grid' }, cards)),
+      )
+    }
+
+    function renderRoutingPanel(view, run) {
+      const tr = view.tr
+      const entries = run !== null && run !== undefined ? toArray(run.routing).filter(isRecord) : []
+      if (entries.length === 0) return null
+      const line = (key, className, cells) =>
+        h(
+          'div',
+          { key: key, className: className },
+          h('span', { className: 'atw-routing-name' }, cells[0]),
+          h('span', { className: 'atw-routing-cell' }, cells[1]),
+          h('span', { className: 'atw-routing-cell' }, cells[2]),
+          h('span', { className: 'atw-routing-cell' }, cells[3]),
+          h('span', { className: 'atw-routing-cell' }, cells[4]),
+        )
+      const rows = [
+        line('routing-head', 'atw-routing-line atw-routing-head', ['', tr('board.routingRole'), tr('board.routingModel'), tr('board.routingEffort'), tr('board.routingCalls')]),
+      ]
+      for (const entry of entries) {
+        const modelLabel = str(entry.model, '-')
+        const effortLabel = str(entry.resolvedEffort, str(entry.requestedTier, '-'))
+        rows.push(
+          line('routing-' + str(entry.member, 'm'), 'atw-routing-line', [
+            str(entry.member, '-'),
+            str(entry.role, '-'),
+            modelLabel,
+            effortLabel,
+            String(num(entry.calls, 0)),
+          ]),
+        )
+      }
+      return h(
+        'section',
+        { className: 'atw-panel atw-routing' },
+        panelHead(tr('board.routing'), null),
+        h('div', { className: 'atw-panel-body' }, h('div', { className: 'atw-routing-table' }, rows)),
+      )
     }
 
     /** @returns the composer status line: sending / sent / error / empty. */
@@ -4815,7 +4940,9 @@ window.__ModuleLoader__.load({
       if (banner !== null) content.push(banner)
       content.push(h('div', { className: 'atw-main' }, renderFlowPanel(view, run, team), renderTopologyPanel(view, team, run)))
       content.push(h('div', { className: 'atw-collab' }, renderChannelPanel(view, run), renderProposalsPanel(view, run)))
-      content.push(h('div', { className: 'atw-usage-wrap' }, renderUsagePanel(view, run)))
+      content.push(
+        h('div', { className: 'atw-usage-wrap' }, renderUsagePanel(view, run), renderTimingsPanel(view, run), renderRoutingPanel(view, run)),
+      )
       content.push(h('div', { className: 'atw-events-row' }, renderEventsPanel(view, run)))
       content.push(h('div', { className: 'atw-lower' }, renderGatePanel(view, run), renderEscalationsPanel(view, run)))
       const notes = renderDiagnostics(view, diagnostics)

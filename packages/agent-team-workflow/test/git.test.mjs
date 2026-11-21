@@ -34,6 +34,7 @@ const CONTRACT_FUNCTIONS = [
   'gitRemoteInfo',
   'ghAvailable',
   'gitPrCreateOrUpdate',
+  'gitPrInspect',
   'gitPrReview',
   'gitPrMerge',
   'gitWorktreeAdd',
@@ -332,7 +333,7 @@ test('gitVerify runs commands through /bin/sh and reports failures', async () =>
     assert.match(none.error, /no verify commands/)
     assert.deepEqual(none.results, [])
 
-    // The configured commands really are executed by /bin/sh -lc.
+    // The configured commands really are executed by /bin/sh -c.
     const captured = []
     const fakeExec = (file, args, options) => {
       captured.push({ file, args, options })
@@ -342,7 +343,7 @@ test('gitVerify runs commands through /bin/sh and reports failures', async () =>
     assert.equal(injected.ok, true)
     assert.equal(captured.length, 1)
     assert.equal(captured[0].file, '/bin/sh')
-    assert.deepEqual(captured[0].args, ['-lc', 'echo hi'])
+    assert.deepEqual(captured[0].args, ['-c', 'echo hi'])
     assert.equal(captured[0].options.cwd, repo)
   })
 })
@@ -675,6 +676,71 @@ test('gitPrMerge passes the merge method through and falls back to manual', asyn
   assert.match(noNumber.error, /number/)
 })
 
+test('gitPrInspect retrieves PR metadata, files, reviews, checks, truncates long diff, and falls back to manual', async () => {
+  await withRepo(async ({ repo }) => {
+    const manualNoGithub = await Git.gitPrInspect({ cwd: repo, number: 77, exec: ghLoggedIn().exec })
+    assert.equal(manualNoGithub.ok, true)
+    assert.equal(manualNoGithub.mode, 'manual')
+    assert.equal(manualNoGithub.available, false)
+
+    await gitRun(repo, ['remote', 'set-url', 'origin', 'https://github.com/example/repo.git'])
+
+    const longDiff = `+++ b/src/auth.js\n${'+line\n'.repeat(400)}`
+    const fixture = ghLoggedIn({
+      'pr view': () => ({
+        exitCode: 0,
+        stdout: JSON.stringify({
+          number: 77,
+          title: 'Add auth guard',
+          body: 'Implements token checks.',
+          url: 'https://github.com/example/repo/pull/77',
+          state: 'OPEN',
+          isDraft: false,
+          baseRefName: 'main',
+          headRefName: 'feature/auth',
+          headRefOid: 'abc123def456',
+          additions: 400,
+          deletions: 10,
+          changedFiles: 1,
+          author: { login: 'alice' },
+          labels: [{ name: 'security' }],
+          files: [{ path: 'src/auth.js', additions: 400, deletions: 10 }],
+          reviews: [{ author: { login: 'bob' }, state: 'COMMENTED', submittedAt: '2026-11-20T00:00:00Z', body: 'Checking' }],
+          statusCheckRollup: [{ name: 'ci/test', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+        }),
+        stderr: '',
+      }),
+      'pr diff': () => ({ exitCode: 0, stdout: longDiff, stderr: '' }),
+    })
+
+    const res = await Git.gitPrInspect({ cwd: repo, number: 77, maxDiffBytes: 120, exec: fixture.exec })
+    assert.equal(res.ok, true)
+    assert.equal(res.mode, 'gh')
+    assert.equal(res.available, true)
+    assert.equal(res.pr.number, 77)
+    assert.equal(res.pr.headBranch, 'feature/auth')
+    assert.deepEqual(res.pr.labels, ['security'])
+    assert.equal(res.files.length, 1)
+    assert.equal(res.reviews[0].author, 'bob')
+    assert.equal(res.checks[0].conclusion, 'SUCCESS')
+    assert.equal(res.diffTruncated, true)
+    assert.equal(res.diff.length, 120)
+
+    const manual = await Git.gitPrInspect({ cwd: repo, number: 77, exec: ghMissing().exec })
+    assert.equal(manual.ok, true)
+    assert.equal(manual.mode, 'manual')
+    assert.equal(manual.available, false)
+
+    const failed = await Git.gitPrInspect({
+      cwd: repo,
+      number: 999,
+      exec: ghLoggedIn({ 'pr view': () => ({ exitCode: 1, stdout: '', stderr: 'no pull requests found' }) }).exec,
+    })
+    assert.equal(failed.ok, false)
+    assert.match(failed.error, /gh pr view failed/)
+  })
+})
+
 test('the module never forces, amends or rewrites history', async () => {
   const source = await readFile(SOURCE_URL, 'utf8')
   // Look at code only, not at the comments that document the safety rules.
@@ -689,7 +755,7 @@ test('the module never forces, amends or rewrites history', async () => {
   assert.equal(/\[\s*'(?:rebase|reset)'/.test(code), false)
   // The only shell usage is the configured verify path, not a git invocation.
   assert.equal(code.split("'/bin/sh'").length - 1, 1)
-  assert.equal(code.includes("'-lc'"), true)
+  assert.equal(code.includes("'-c'"), true)
   // git itself is always spawned as an argv array, and push has no force form.
   assert.equal(code.includes('execFile('), true)
   assert.equal(code.includes("['push', '-u', remote, branch]"), true)

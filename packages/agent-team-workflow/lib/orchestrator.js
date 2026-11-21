@@ -12,20 +12,31 @@
  *    is stalled without progress.
  */
 
-import { appendEvent, evaluateGates, ITEM_STATUS, RUN_PHASE } from './workflow.js'
-import { renderReportMarkdown } from './protocol.js'
+import { appendEvent, evaluateGates, ITEM_STATUS, pendingReview, pendingReviews, RUN_PHASE } from './workflow.js'
+import { classifyDiffRisk } from './review-policy.js'
+import {
+  renderReportMarkdown,
+  renderReviewerBrief,
+  renderWorkerBrief,
+  reReviewRequestMessage,
+  reviewRequestMessage,
+  roleGuidance,
+} from './protocol.js'
 import { computeUsage } from './telemetry.js'
 import { autoCleanupRunWorktrees, getWorktreeDiffSummary } from './worktree-manager.js'
 
 /**
  * Build an orchestrator instance bound to the plugin context and store.
- * @param options - `{ ctx, store, settings }`
+ * @param options - `{ ctx, store, settings, tokenUsage }`
  * @returns orchestrator interface.
  */
-export function createOrchestrator({ ctx, store, settings, tokenUsage = () => null }) {
+export function createOrchestrator({ ctx, store, settings, tokenUsage = () => null, thinkingRouter = null }) {
   if (!settings?.autoOrchestrate) {
     return {
       reconcile: async () => ({ actionsTaken: [], converged: false }),
+      scheduleReconcile: () => {},
+      markNotified: () => {},
+      whenIdle: async () => {},
       startWatchdog: () => {},
       stopWatchdog: () => {},
       isWatchdogRunning: () => false,
@@ -39,14 +50,20 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
   // reports `inactive` is not woken again and again while its turn is queued.
   const sentForRev = new Map()
   const lastRevByTeam = new Map()
+  // Single-flight concurrency guards per team
+  const inFlight = new Set()
+  const inFlightPromises = new Map()
+  const pendingRerun = new Map()
+  const activeRuns = new Set()
+  // Event-driven debounce timers and adaptive watchdog backoff state
+  const debounceTimers = new Map()
+  const idleStreaks = new Map()
 
-  function shouldThrottle(teamId, action, target, itemId = '') {
+  function isThrottled(teamId, action, target, itemId = '') {
     const key = `${teamId}:${action}:${target}:${itemId}`
     const now = Date.now()
     const last = cooldowns.get(key) ?? 0
-    if (now - last < COOLDOWN_MS) return true
-    cooldowns.set(key, now)
-    return false
+    return now - last < COOLDOWN_MS
   }
 
   /** @returns whether this exact notice was already sent for the same revision. */
@@ -66,6 +83,23 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
       if (first !== undefined) sentForRev.delete(first)
     }
     lastRevByTeam.set(teamId, rev)
+  }
+
+  /**
+   * Unified deduplication registration called both by the orchestrator after
+   * sending notices and by tools after direct peer sends.
+   */
+  function markNotified(teamId, action, target, itemId = '', rev = null) {
+    if (!teamId || !action || !target) return
+    const key = `${teamId}:${action}:${target}:${itemId}`
+    cooldowns.set(key, Date.now())
+    if (cooldowns.size > 5000) {
+      const first = cooldowns.keys().next().value
+      if (first !== undefined) cooldowns.delete(first)
+    }
+    if (Number.isInteger(rev)) {
+      markSentForRev(teamId, action, target, itemId, rev)
+    }
   }
 
   /**
@@ -93,18 +127,7 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
     }
   }
 
-  /**
-   * Run a reconciliation pass on the Team belonging to `agent`.
-   * @param agent - any active member or Lead in the Team.
-   * @param options - execution options `{ watchdog?: boolean, force?: boolean }`.
-   * @returns `{ actionsTaken: Array<{ type, target, itemId? }>, converged: boolean }`.
-   */
-  async function reconcile(agent, options = {}) {
-    if (!ctx.agentTeams) return { actionsTaken: [], converged: false }
-    const membership = ctx.agentTeams.tryMembership?.(agent)
-    const root = membership?.root ?? agent
-    if (!root) return { actionsTaken: [], converged: false }
-
+  async function runReconcilePass(root, teamKey, options = {}) {
     let state
     try {
       state = await store.readState(root)
@@ -119,7 +142,7 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
       return { actionsTaken: [], converged: false, skipped: 'inactive-run' }
     }
 
-    const teamId = state.teamId ?? root.id
+    const teamId = state.teamId ?? teamKey ?? root.id
     const actionsTaken = []
     let members = []
     try {
@@ -155,13 +178,92 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
         }
       }
       if (violations.length > 0) {
-        if (!alreadySentForRev(teamId, 'budget-alert', 'lead', '', stateRev)) {
-          const leadMember = members.find((m) => m.role === 'lead') ?? { name: 'lead' }
-          await sendNotice(root, leadMember.name, `[BUDGET] ${violations.join('; ')}. Automatic wakes are paused at this revision; inspect team_flow_status {view:"full"} and either raise the budget or stop the run.`)
-          markSentForRev(teamId, 'budget-alert', leadMember.name, '', stateRev)
+        const leadMember = members.find((m) => m.role === 'lead') ?? { name: 'lead' }
+        if (!alreadySentForRev(teamId, 'budget-alert', leadMember.name, '', stateRev)) {
+          const ok = await sendNotice(root, leadMember.name, `[BUDGET] ${violations.join('; ')}. Automatic wakes are paused at this revision; inspect team_flow_status {view:"full"} and either raise the budget or stop the run.`)
+          if (ok) markNotified(teamId, 'budget-alert', leadMember.name, '', stateRev)
         }
         return { actionsTaken: [{ type: 'budget-paused' }], converged: false, budgetExceeded: true }
       }
+    }
+
+    const lazyEnabled = Boolean(settings.lazyStaffing ?? state.settings?.lazyStaffing)
+    const TEAM_MEMBER_LIMIT = 8
+
+    async function autoClaimTask(item) {
+      if (!item.taskId) return
+      try {
+        const task = ctx.agentTeams.getTask(root, item.taskId)
+        if (task && task.status === 'pending') {
+          await ctx.agentTeams.updateTask(root, {
+            taskId: item.taskId,
+            expectedRevision: task.revision,
+            action: 'claim',
+          })
+        }
+      } catch {
+        /* auto-claim is best effort */
+      }
+    }
+
+    async function tryLazySpawn({ name, kind, item, description, promptText, context = 'fresh', role = '' }) {
+      if (!lazyEnabled || typeof ctx.agentTeams?.spawnTeammate !== 'function') return false
+      if (members.length >= TEAM_MEMBER_LIMIT || memberMap.has(name)) return false
+      if (!options.force && (isThrottled(teamId, kind, name, item.id) || alreadySentForRev(teamId, kind, name, item.id, stateRev))) {
+        return false
+      }
+      const configuredProvider = typeof role === 'string' && role.length > 0 ? settings.roles?.[role]?.provider : undefined
+      const resolvedContext = context === 'fork' ? 'fork' : 'fresh'
+      const provider = typeof configuredProvider === 'string' && configuredProvider.length > 0
+        ? configuredProvider
+        : resolvedContext === 'fork'
+          ? (settings.forkProvider ?? 'fork')
+          : (settings.freshProvider ?? 'spawn')
+      try {
+        await ctx.agentTeams.spawnTeammate(root, {
+          name,
+          description: String(description ?? `${kind} for ${item.id}`).slice(0, 200),
+          prompt: [{ type: 'text', text: String(promptText ?? '') }],
+          context: resolvedContext,
+          provider,
+          signal: AbortSignal.timeout(15_000),
+        })
+        const spawnedMember = { name, role: 'teammate', status: 'provisioning' }
+        members.push(spawnedMember)
+        memberMap.set(name, spawnedMember)
+        markNotified(teamId, kind, name, item.id, stateRev)
+        const wakeAction = kind === 'lazy-spawn-reviewer' ? 'wake-reviewer' : 'wake-worker'
+        markNotified(teamId, wakeAction, name, item.id, stateRev)
+        actionsTaken.push({ type: kind, target: name, itemId: item.id })
+        return true
+      } catch (err) {
+        ctx.logger?.warn?.(`[orchestrator] failed to lazy-spawn "${name}" for ${item.id}: ${err?.message ?? err}`)
+        return false
+      }
+    }
+
+    async function computeDiffForItem(item, sinceSha = null) {
+      const cwd = store.workingDir(root)
+      const rawDiff = await getWorktreeDiffSummary({
+        cwd,
+        state,
+        item,
+        maxLines: settings.reviewDiffLines,
+        sinceSha,
+      }).catch(() => null)
+      if (rawDiff === null) return null
+      if (settings.reviewDiffBytes > 0 && rawDiff.length > settings.reviewDiffBytes) {
+        return `${rawDiff.slice(0, settings.reviewDiffBytes)}\n… (diff truncated to ${settings.reviewDiffBytes} bytes)`
+      }
+      return rawDiff
+    }
+
+    // Per-member queue so multiple unblocked/review assignments coalesce into 1 digest
+    const queuedDispatches = new Map()
+    const enqueueDispatch = (targetName, entry) => {
+      const list = queuedDispatches.get(targetName) ?? []
+      list.push(entry)
+      queuedDispatches.set(targetName, list)
     }
 
     // Set of approved item IDs
@@ -169,7 +271,7 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
       state.items.filter((it) => it.status === ITEM_STATUS.APPROVED).map((it) => it.id),
     )
 
-    // 1. Check unblocked tasks and wake assigned workers
+    // 1. Check unblocked tasks and wake or lazy-spawn assigned workers
     if (settings.autoWakeUnblocked) {
       for (const item of state.items) {
         const blockers = Array.isArray(item.blockedBy) ? item.blockedBy : []
@@ -178,32 +280,54 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
         if ((item.status === ITEM_STATUS.PENDING || item.status === ITEM_STATUS.CHANGES_REQUESTED) && isUnblocked) {
           if (item.owner && typeof item.owner === 'string' && item.owner.length > 0) {
             const m = memberMap.get(item.owner)
-            // If worker is currently inactive, wake it up!
+            const scopes = Array.isArray(item.writeScopes) && item.writeScopes.length > 0
+              ? item.writeScopes.join(', ')
+              : '(entire workspace)'
+            const wt = item.git?.worktreePath ? ` Worktree: ${item.git.worktreePath}.` : ''
+            const isRework = item.status === ITEM_STATUS.CHANGES_REQUESTED
+
+            const upstreamHandoffs = blockers
+              .map((bid) => state.items.find((it) => it.id === bid))
+              .filter((it) => it && it.handoffPacket)
+              .map((it) => {
+                const hp = it.handoffPacket
+                const parts = [`Item ${it.id}`]
+                const cid = hp.contract_id ?? hp.contractId
+                if (cid) parts.push(`contract: ${cid}`)
+                if (hp.entry) parts.push(`entry: ${hp.entry}`)
+                if (Array.isArray(hp.exports) && hp.exports.length > 0) parts.push(`exports: ${hp.exports.join(', ')}`)
+                if (hp.notes) parts.push(`notes: ${hp.notes}`)
+                return parts.join(' | ')
+              })
+
+            if (!m && lazyEnabled) {
+              if (options.force || (!isThrottled(teamId, 'lazy-spawn-worker', item.owner, item.id) && !alreadySentForRev(teamId, 'lazy-spawn-worker', item.owner, item.id, stateRev))) {
+                await autoClaimTask(item)
+                const reviewing = state.items.filter((other) => Array.isArray(other.reviewers) && other.reviewers.includes(item.owner)).map((other) => other.id)
+                const role = state.roleAssignments?.[item.owner] ?? (settings.roles?.[item.role] === undefined ? '' : item.role)
+                const brief = renderWorkerBrief(state, item, reviewing, state.settings?.workerContext ?? settings.workerContext)
+                const handoffNote = upstreamHandoffs.length > 0 ? `\n\nUpstream handoffs:\n${upstreamHandoffs.map((h) => `  - ${h}`).join('\n')}` : ''
+                await tryLazySpawn({
+                  name: item.owner,
+                  kind: 'lazy-spawn-worker',
+                  item,
+                  description: brief.description,
+                  promptText: `${brief.prompt}${roleGuidance(settings, role)}${handoffNote}`,
+                  context: brief.context,
+                  role,
+                })
+              }
+              continue
+            }
+
+            // If worker is currently inactive, enqueue wakeup!
             if (m && m.status === 'inactive') {
-              if (options.force || (!shouldThrottle(teamId, 'wake-worker', item.owner, item.id) && !alreadySentForRev(teamId, 'wake-worker', item.owner, item.id, stateRev))) {
-                // Auto-claim backing shared task if pending
-                if (item.taskId) {
-                  try {
-                    const task = ctx.agentTeams.getTask(root, item.taskId)
-                    if (task && task.status === 'pending') {
-                      await ctx.agentTeams.updateTask(root, {
-                        taskId: item.taskId,
-                        expectedRevision: task.revision,
-                        action: 'claim',
-                      })
-                    }
-                  } catch {
-                    /* auto-claim is best effort */
-                  }
-                }
+              if (options.force || (!isThrottled(teamId, 'wake-worker', item.owner, item.id) && !alreadySentForRev(teamId, 'wake-worker', item.owner, item.id, stateRev))) {
+                await autoClaimTask(item)
 
-                const scopes = Array.isArray(item.writeScopes) && item.writeScopes.length > 0
-                  ? item.writeScopes.join(', ')
-                  : '(entire workspace)'
-                const wt = item.git?.worktreePath ? ` Worktree: ${item.git.worktreePath}.` : ''
-
-                const isRework = item.status === ITEM_STATUS.CHANGES_REQUESTED
                 let msg
+                let shortLine
+                let detailSnippet
                 if (isRework) {
                   const latestReview = Array.isArray(item.reviews) && item.reviews.length > 0 ? item.reviews.at(-1) : null
                   const findings = latestReview?.findings ?? []
@@ -211,34 +335,28 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
                     ? findings.map((f, i) => `  ${i + 1}. [${f.id ?? `F${i + 1}`}] (${f.severity ?? 'issue'}): ${f.file ? `${f.file}:${f.line ?? ''} ` : ''}${f.claim ?? f.comment ?? ''}`).join('\n')
                     : '  (Reviewer requested changes; please inspect review record in status.)'
                   msg = `[AUTO_DISPATCH] Task ${item.id} "${item.subject}" requires rework based on reviewer findings (Round ${latestReview?.round ?? '?'}).${wt}\nReviewer findings:\n${findingsDigest}\n\nDo NOT call team_flow_status (findings are self-contained above). Address these findings inside your worktree, run real tests, and call team_flow_review_respond with one response per finding id (fixed | rebut | accepted_risk) and updated evidence.`
+                  shortLine = `[REWORK] ${item.id} "${item.subject}" (Round ${latestReview?.round ?? '?'})${wt}`
+                  detailSnippet = findingsDigest.slice(0, 600)
                 } else {
                   const dod = Array.isArray(item.definitionOfDone) && item.definitionOfDone.length > 0
                     ? ` Definition of done:\n${item.definitionOfDone.map((d) => `  - ${d}`).join('\n')}`
                     : ''
-                  const upstreamHandoffs = blockers
-                    .map((bid) => state.items.find((it) => it.id === bid))
-                    .filter((it) => it && it.handoffPacket)
-                    .map((it) => {
-                      const hp = it.handoffPacket
-                      const parts = [`Item ${it.id}`]
-                      const cid = hp.contract_id ?? hp.contractId
-                      if (cid) parts.push(`contract: ${cid}`)
-                      if (hp.entry) parts.push(`entry: ${hp.entry}`)
-                      if (Array.isArray(hp.exports) && hp.exports.length > 0) parts.push(`exports: ${hp.exports.join(', ')}`)
-                      if (hp.notes) parts.push(`notes: ${hp.notes}`)
-                      return parts.join(' | ')
-                    })
                   const handoffInfo = upstreamHandoffs.length > 0
                     ? `\nUpstream handoffs:\n${upstreamHandoffs.map((h) => `  - ${h}`).join('\n')}`
                     : ''
                   msg = `[AUTO_DISPATCH] Task ${item.id} "${item.subject}" is ready and unblocked.${wt} The backing task has been automatically claimed for you. Declared write scopes: ${scopes}.${dod}${handoffInfo}\n\nDo NOT call team_flow_status or claim again. Start work directly inside your worktree, verify with real commands, and call team_flow_report when done.`
+                  shortLine = `[TASK] ${item.id} "${item.subject}" (scope: ${scopes})${wt}`
+                  detailSnippet = `${dod.trim()}${handoffInfo}`.slice(0, 600) || `Scope: ${scopes}`
                 }
 
-                const ok = await sendNotice(root, item.owner, msg)
-                if (ok) {
-                  markSentForRev(teamId, 'wake-worker', item.owner, item.id, stateRev)
-                  actionsTaken.push({ type: 'wake-worker', target: item.owner, itemId: item.id, isRework })
-                }
+                enqueueDispatch(item.owner, {
+                  kind: 'wake-worker',
+                  itemId: item.id,
+                  message: msg,
+                  shortLine,
+                  detailSnippet,
+                  actionRecord: { type: 'wake-worker', target: item.owner, itemId: item.id, isRework },
+                })
               }
             }
           }
@@ -246,7 +364,7 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
       }
     }
 
-    // 2. Check pending reviews and wake assigned reviewers
+    // 2. Check pending reviews and wake or lazy-spawn assigned reviewers
     if (settings.autoWakeReviewers) {
       for (const item of state.items) {
         if (
@@ -256,31 +374,86 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
             item.status !== ITEM_STATUS.CHANGES_REQUESTED &&
             item.status !== ITEM_STATUS.ESCALATED)
         ) {
-          const reviewers = Array.isArray(item.reviewers) ? item.reviewers : []
+          const pendingList = pendingReviews(item)
+          const reviewers = pendingList.length > 0
+            ? [...new Set(pendingList.map((r) => r.reviewer).filter(Boolean))]
+            : (Array.isArray(item.reviewers) ? item.reviewers : [])
+          const submitted = Array.isArray(item.reviews) ? item.reviews.filter((r) => r.status === 'submitted') : []
+
           for (const rev of reviewers) {
             const revName = typeof rev === 'string' ? rev : rev?.name
-            if (revName && memberMap.has(revName)) {
-              const m = memberMap.get(revName)
-              if (m && m.status === 'inactive') {
-                if (options.force || (!shouldThrottle(teamId, 'wake-reviewer', revName, item.id) && !alreadySentForRev(teamId, 'wake-reviewer', revName, item.id, stateRev))) {
-                  const cwd = store.workingDir(root)
-                  const rawDiff = await getWorktreeDiffSummary({ cwd, state, item, maxLines: settings.reviewDiffLines }).catch(() => null)
-                  const diff = rawDiff !== null && settings.reviewDiffBytes > 0 && rawDiff.length > settings.reviewDiffBytes
-                    ? `${rawDiff.slice(0, settings.reviewDiffBytes)}\n… (diff truncated to ${settings.reviewDiffBytes} bytes)`
-                    : rawDiff
-                  const wt = item.git?.worktreePath ? ` Worktree: ${item.git.worktreePath}.` : ''
-                  const diffSummary = diff ? `\n\n${diff}` : ''
-                  const roundInfo = item.reviews?.length ? ` (Round ${item.reviews.length + 1})` : ''
-                  const reportSummary = item.report?.summary ? `\nAuthor summary: ${item.report.summary.slice(0, 300)}` : ''
-                  const msg = `[AUTO_DISPATCH] Item ${item.id} "${item.subject}"${roundInfo} is awaiting your review.${wt}${reportSummary}${diffSummary}\n\nDo NOT call team_flow_status. Inspect the changes and evidence in the worktree, run verify if needed, and call team_flow_review_submit.`
-                  const ok = await sendNotice(root, revName, msg)
-                  if (ok) {
-                    markSentForRev(teamId, 'wake-reviewer', revName, item.id, stateRev)
-                    actionsTaken.push({ type: 'wake-reviewer', target: revName, itemId: item.id })
-                  }
-                }
+            if (!revName) continue
+            const m = memberMap.get(revName)
+            const prevByMe = submitted.filter((r) => r.reviewer === revName).at(-1) ?? null
+
+            if (!m && lazyEnabled) {
+              if (options.force || (!isThrottled(teamId, 'lazy-spawn-reviewer', revName, item.id) && !alreadySentForRev(teamId, 'lazy-spawn-reviewer', revName, item.id, stateRev))) {
+                const diff = await computeDiffForItem(item, prevByMe?.reviewedSha ?? null)
+                const risk = item.resolvedReview ?? classifyDiffRisk({ files: item.report?.files ?? [], diff, item, settings })
+                const reviewed = state.items.filter((other) => Array.isArray(other.reviewers) && other.reviewers.includes(revName))
+                const role = state.roleAssignments?.[revName] ?? (settings.roles?.reviewer === undefined ? '' : 'reviewer')
+                const brief = renderReviewerBrief(state, revName, reviewed)
+                const reviewContext = prevByMe !== null
+                  ? reReviewRequestMessage(state, item, prevByMe, diff)
+                  : reviewRequestMessage(state, item, diff, risk)
+                await tryLazySpawn({
+                  name: revName,
+                  kind: 'lazy-spawn-reviewer',
+                  item,
+                  description: brief.description,
+                  promptText: `${brief.prompt}${roleGuidance(settings, role)}\n\n${reviewContext}`,
+                  context: brief.context,
+                  role,
+                })
+              }
+              continue
+            }
+
+            if (m && m.status === 'inactive') {
+              if (options.force || (!isThrottled(teamId, 'wake-reviewer', revName, item.id) && !alreadySentForRev(teamId, 'wake-reviewer', revName, item.id, stateRev))) {
+                const diff = await computeDiffForItem(item, prevByMe?.reviewedSha ?? null)
+                const risk = item.resolvedReview ?? classifyDiffRisk({ files: item.report?.files ?? [], diff, item, settings })
+                const pendingForRev = pendingList.find((r) => r.reviewer === revName) ?? pendingReview(item)
+                const wt = item.git?.worktreePath ? ` Worktree: ${item.git.worktreePath}.` : ''
+                const msg = prevByMe !== null
+                  ? reReviewRequestMessage(state, item, prevByMe, diff)
+                  : reviewRequestMessage(state, item, diff, risk)
+                enqueueDispatch(revName, {
+                  kind: 'wake-reviewer',
+                  itemId: item.id,
+                  message: msg,
+                  shortLine: `[${prevByMe ? 'RE-REVIEW' : 'REVIEW'}] ${item.id} "${item.subject}" [${risk.depth}/${risk.profile}] (owner: ${item.owner})${wt}`,
+                  detailSnippet: (prevByMe
+                    ? `Re-review round ${pendingForRev?.round ?? (submitted.length + 1)} addressing round ${prevByMe.round}.`
+                    : `Standard: ${risk.depth}/${risk.profile}. ${item.report?.summary ? `Summary: ${item.report.summary.slice(0, 220)}` : 'Awaiting review.'}${diff ? `\n${diff.slice(0, 300)}` : ''}`),
+                  actionRecord: { type: 'wake-reviewer', target: revName, itemId: item.id },
+                })
               }
             }
+          }
+        }
+      }
+    }
+
+    // Flush coalesced per-member dispatches (1 message per member)
+    for (const [targetName, entries] of queuedDispatches.entries()) {
+      if (entries.length === 1) {
+        const entry = entries[0]
+        const ok = await sendNotice(root, targetName, entry.message)
+        if (ok) {
+          markNotified(teamId, entry.kind, targetName, entry.itemId, stateRev)
+          actionsTaken.push(entry.actionRecord)
+        }
+      } else if (entries.length > 1) {
+        const header = `[AUTO_DISPATCH] Multiple assignments ready (${entries.length} items) in run ${state.runId}:`
+        const body = entries.map((entry, idx) => `### ${idx + 1}. ${entry.shortLine}\n${entry.detailSnippet}`).join('\n\n')
+        const footer = 'Do NOT call team_flow_status. Work on each item above directly and submit via team_flow_report / team_flow_review_respond / team_flow_review_submit.'
+        const digestMsg = `${header}\n\n${body}\n\n${footer}`
+        const ok = await sendNotice(root, targetName, digestMsg)
+        if (ok) {
+          for (const entry of entries) {
+            markNotified(teamId, entry.kind, targetName, entry.itemId, stateRev)
+            actionsTaken.push(entry.actionRecord)
           }
         }
       }
@@ -289,14 +462,14 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
     // 3. Check escalated items and wake Lead for arbitration
     for (const item of state.items) {
       if (item.status === ITEM_STATUS.ESCALATED) {
-        if (options.force || (!shouldThrottle(teamId, 'arbitrate-escalation', 'lead', item.id) && !alreadySentForRev(teamId, 'arbitrate-escalation', 'lead', item.id, stateRev))) {
-          const leadMember = members.find((m) => m.role === 'lead') ?? { name: 'lead' }
+        const leadMember = members.find((m) => m.role === 'lead') ?? { name: 'lead' }
+        if (options.force || (!isThrottled(teamId, 'arbitrate-escalation', leadMember.name, item.id) && !alreadySentForRev(teamId, 'arbitrate-escalation', leadMember.name, item.id, stateRev))) {
           const reviewCount = item.reviews?.length ?? 0
           const reason = item.escalation?.reason ?? 'Maximum rework rounds exceeded or unresolvable blocker'
           const msg = `[LEAD_ARBITRATION_REQUIRED] Task ${item.id} "${item.subject}" is ESCALATED (after ${reviewCount} review rounds).\nReason: ${reason}.\nPlease inspect the item with team_flow_status { item_id: "${item.id}" } and intervene via team_flow_repair or reassign.`
           const ok = await sendNotice(root, leadMember.name, msg)
           if (ok) {
-            markSentForRev(teamId, 'arbitrate-escalation', leadMember.name, item.id, stateRev)
+            markNotified(teamId, 'arbitrate-escalation', leadMember.name, item.id, stateRev)
             actionsTaken.push({ type: 'wake-arbitration', target: leadMember.name, itemId: item.id })
           }
         }
@@ -306,14 +479,15 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
     // 4. Check worktree auto-merge conflicts and notify Lead and Worker
     for (const item of state.items) {
       if (item.status === ITEM_STATUS.APPROVED && item.git?.worktreeMergeError) {
-        if (options.force || !shouldThrottle(teamId, 'worktree-conflict', 'lead', item.id)) {
+        if (options.force || !isThrottled(teamId, 'worktree-conflict', 'lead', item.id)) {
           const leadMember = members.find((m) => m.role === 'lead') ?? { name: 'lead' }
           const workerName = item.owner ?? 'worker'
           const msg = `[AUTO_DISPATCH] Task ${item.id} "${item.subject}" is APPROVED but encountered a merge conflict during auto-merge into branch "${state.git?.branch ?? ''}".\nError: ${item.git.worktreeMergeError}\nAction required: Worker or Lead can run team_flow_git { action: "worktree_sync", item_id: "${item.id}" } to pull updates and resolve conflicts.`
-          await sendNotice(root, leadMember.name, msg)
+          const okLead = await sendNotice(root, leadMember.name, msg)
           if (workerName !== leadMember.name && memberMap.has(workerName)) {
             await sendNotice(root, workerName, msg)
           }
+          if (okLead) markNotified(teamId, 'worktree-conflict', 'lead', item.id, stateRev)
           actionsTaken.push({ type: 'notify-worktree-conflict', itemId: item.id, error: item.git.worktreeMergeError })
         }
       }
@@ -335,6 +509,8 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
         }
         const now = new Date().toISOString()
         const usage = readUsage(members, state)
+        const routingSnapshot = thinkingRouter?.snapshot?.(teamId) ?? null
+        if (usage !== null && routingSnapshot !== null) usage.routing = routingSnapshot
         const gate = evaluateGates(state, { settings: state.settings, members, nativeTasks, overrides: [], now })
         // The autonomous path must capture usage exactly like team_flow_gate
         // does, otherwise live budgets and the board's usage panel are blind.
@@ -405,12 +581,12 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
       }
 
       if (settings.autoNotifyConverged && !state.convergedNotified) {
-        if (options.force || (!shouldThrottle(teamId, 'converge-notice', 'lead') && !alreadySentForRev(teamId, 'converge-notice', 'lead', '', stateRev))) {
-          const leadMember = members.find((m) => m.role === 'lead') ?? { name: 'lead' }
+        const leadMember = members.find((m) => m.role === 'lead') ?? { name: 'lead' }
+        if (options.force || (!isThrottled(teamId, 'converge-notice', leadMember.name, '') && !alreadySentForRev(teamId, 'converge-notice', leadMember.name, '', stateRev))) {
           const msg = `[TEAM_CONVERGED] All ${state.items.length} work items have been approved! The team has converged. Please run team_flow_gate {finalize: true} to verify final quality gates and produce the final delivery report.`
           const ok = await sendNotice(root, leadMember.name, msg)
           if (ok) {
-            markSentForRev(teamId, 'converge-notice', leadMember.name, '', stateRev)
+            markNotified(teamId, 'converge-notice', leadMember.name, '', stateRev)
             actionsTaken.push({ type: 'notify-converged', target: leadMember.name })
             try {
               await store.mutateState(root, (s) => {
@@ -426,38 +602,165 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
     return { actionsTaken, converged }
   }
 
-  let timer = null
-  function startWatchdog() {
-    if (timer !== null) return
-    const intervalSec = settings.watchdogIntervalSeconds
-    if (typeof intervalSec !== 'number' || intervalSec <= 0) return
-    timer = setInterval(async () => {
+  /**
+   * Run a single-flight reconciliation pass on the Team belonging to `agent`.
+   * @param agent - any active member or Lead in the Team.
+   * @param options - execution options `{ watchdog?: boolean, force?: boolean }`.
+   * @returns `{ actionsTaken: Array<{ type, target, itemId? }>, converged: boolean }`.
+   */
+  async function reconcile(agent, options = {}) {
+    const run = (async () => {
+      if (!ctx.agentTeams) return { actionsTaken: [], converged: false }
+      const membership = ctx.agentTeams.tryMembership?.(agent)
+      const root = membership?.root ?? agent
+      if (!root) return { actionsTaken: [], converged: false }
+      const flightKey = store.teamIdOf?.(root) ?? root.id ?? 'default'
+
+      if (inFlight.has(flightKey)) {
+        if (options.force) {
+          const active = inFlightPromises.get(flightKey)
+          if (active) {
+            const prior = await active.catch(() => null)
+            if (prior?.finalized === true) return prior
+          }
+          if (inFlight.has(flightKey)) {
+            return { actionsTaken: [], converged: false, coalesced: true }
+          }
+        } else {
+          const prev = pendingRerun.get(flightKey)
+          pendingRerun.set(flightKey, {
+            agent: root,
+            options: { ...options, force: Boolean(prev?.options?.force || options.force) },
+          })
+          return { actionsTaken: [], converged: false, coalesced: true }
+        }
+      }
+
+      inFlight.add(flightKey)
+      const passPromise = runReconcilePass(root, flightKey, options)
+      inFlightPromises.set(flightKey, passPromise)
+      let result
       try {
-        if (!ctx.agents) return
-        for (const agent of ctx.agents.list()) {
-          const membership = ctx.agentTeams?.tryMembership?.(agent)
-          if (membership?.role === 'lead') {
-            await reconcile(agent, { watchdog: true })
+        result = await passPromise
+      } finally {
+        inFlight.delete(flightKey)
+        inFlightPromises.delete(flightKey)
+      }
+
+      if (pendingRerun.has(flightKey) && result?.finalized !== true) {
+        const next = pendingRerun.get(flightKey)
+        pendingRerun.delete(flightKey)
+        await reconcile(next.agent, next.options).catch(() => {})
+      }
+      return result
+    })()
+    activeRuns.add(run)
+    try {
+      return await run
+    } finally {
+      activeRuns.delete(run)
+    }
+  }
+
+  async function whenIdle() {
+    while (activeRuns.size > 0) {
+      await Promise.allSettled([...activeRuns])
+    }
+  }
+
+  /**
+   * Debounced event-driven orchestration trigger (e.g. on agent/status idle).
+   */
+  function scheduleReconcile(agent, delayMs = 200) {
+    if (!ctx.agentTeams) return
+    const membership = ctx.agentTeams.tryMembership?.(agent)
+    const root = membership?.root ?? agent
+    if (!root) return
+    const teamKey = store.teamIdOf?.(root) ?? root.id ?? 'default'
+    idleStreaks.set(teamKey, 0)
+    const existing = debounceTimers.get(teamKey)
+    if (existing !== undefined) clearTimeout(existing)
+    const wait = Number.isFinite(delayMs) && delayMs >= 0 ? Math.trunc(delayMs) : 200
+    const handle = setTimeout(() => {
+      debounceTimers.delete(teamKey)
+      void reconcile(root).catch(() => {})
+    }, wait)
+    handle.unref?.()
+    debounceTimers.set(teamKey, handle)
+  }
+
+  let timer = null
+  let watchdogRunning = false
+
+  function computeNextWatchdogDelayMs() {
+    const baseSec = settings.watchdogIntervalSeconds
+    const maxSec = Math.max(baseSec, settings.watchdogMaxIntervalSeconds ?? 180)
+    if (idleStreaks.size === 0) return baseSec * 1000
+    const minStreak = Math.min(...idleStreaks.values())
+    const factor = Math.min(8, 2 ** Math.min(minStreak, 3))
+    return Math.min(maxSec, baseSec * factor) * 1000
+  }
+
+  function scheduleNextWatchdogTick() {
+    if (!watchdogRunning) return
+    const delayMs = computeNextWatchdogDelayMs()
+    timer = setTimeout(async () => {
+      timer = null
+      if (!watchdogRunning) return
+      try {
+        if (ctx.agents) {
+          for (const agent of ctx.agents.list()) {
+            const membership = ctx.agentTeams?.tryMembership?.(agent)
+            if (membership?.role !== 'lead') continue
+            const teamKey = store.teamIdOf?.(agent) ?? agent.id
+            const cached = store.cachedState?.(agent)
+            if (cached && (cached.phase === RUN_PHASE.FINALIZED || cached.phase === RUN_PHASE.ABORTED)) {
+              continue
+            }
+            const prevRev = lastRevByTeam.get(teamKey)
+            const res = await reconcile(agent, { watchdog: true })
+            const currRev = lastRevByTeam.get(teamKey)
+            if ((res?.actionsTaken?.length ?? 0) > 0 || (currRev !== undefined && currRev !== prevRev)) {
+              idleStreaks.set(teamKey, 0)
+            } else {
+              idleStreaks.set(teamKey, (idleStreaks.get(teamKey) ?? 0) + 1)
+            }
           }
         }
       } catch (err) {
         ctx.logger?.debug?.(`[orchestrator.watchdog] error: ${err?.message ?? err}`)
+      } finally {
+        if (watchdogRunning) scheduleNextWatchdogTick()
       }
-    }, intervalSec * 1000)
+    }, delayMs)
     timer.unref?.()
   }
 
+  function startWatchdog() {
+    if (watchdogRunning) return
+    const intervalSec = settings.watchdogIntervalSeconds
+    if (typeof intervalSec !== 'number' || intervalSec <= 0) return
+    watchdogRunning = true
+    scheduleNextWatchdogTick()
+  }
+
   function stopWatchdog() {
+    watchdogRunning = false
     if (timer !== null) {
-      clearInterval(timer)
+      clearTimeout(timer)
       timer = null
     }
+    for (const handle of debounceTimers.values()) clearTimeout(handle)
+    debounceTimers.clear()
   }
 
   return {
     reconcile,
+    scheduleReconcile,
+    markNotified,
+    whenIdle,
     startWatchdog,
     stopWatchdog,
-    isWatchdogRunning: () => timer !== null,
+    isWatchdogRunning: () => watchdogRunning,
   }
 }

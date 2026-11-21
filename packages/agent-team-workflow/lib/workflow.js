@@ -10,6 +10,8 @@
 /** Current workflow schema version written into run state. */
 export const WORKFLOW_VERSION = 2
 
+import { REVIEW_DEPTHS, REVIEW_PROFILES, validateReviewSubmission } from './review-policy.js'
+
 /** Item lifecycle states. */
 export const ITEM_STATUS = Object.freeze({
   PENDING: 'pending',
@@ -91,6 +93,7 @@ export function ensureCollaboration(state) {
   if (!Number.isInteger(state.stopSeq)) state.stopSeq = 0
   if (!Number.isInteger(state.messageSeq)) state.messageSeq = 0
   if (!Number.isInteger(state.proposalSeq)) state.proposalSeq = 0
+  if (state.preset === undefined) state.preset = null
   if (Array.isArray(state.items)) {
     for (const item of state.items) {
       if (item.assignment !== 'open' && item.assignment !== 'lead') item.assignment = 'lead'
@@ -99,10 +102,16 @@ export function ensureCollaboration(state) {
       if (!Array.isArray(item.handoffs)) item.handoffs = []
       if (item.handoffPacket === undefined) item.handoffPacket = null
       if (item.pendingReviewer === undefined) item.pendingReviewer = null
+      if (!Array.isArray(item.pendingReviewers)) item.pendingReviewers = pendingReviewerNames(item)
       if (item.origin !== 'member') item.origin = 'plan'
       if (item.createdBy === undefined) item.createdBy = null
       if (item.git === undefined) item.git = null
       if (item.plan === undefined) item.plan = null
+      if (item.complexity !== 'trivial' && item.complexity !== 'normal' && item.complexity !== 'complex') item.complexity = 'normal'
+      if (item.thinkingTier === undefined) item.thinkingTier = null
+      if (item.reviewDepth !== 'auto' && !REVIEW_DEPTHS.includes(item.reviewDepth)) item.reviewDepth = 'auto'
+      if (item.reviewProfile !== 'auto' && !REVIEW_PROFILES.includes(item.reviewProfile)) item.reviewProfile = 'auto'
+      if (item.resolvedReview === undefined) item.resolvedReview = null
     }
   }
   for (const proposal of Array.isArray(state.proposals) ? state.proposals : []) {
@@ -192,6 +201,7 @@ export function createRun(input) {
     workflowVersion: input.workflowVersion,
     runId: input.runId,
     teamId: input.teamId,
+    preset: input.preset ?? null,
     objective: input.objective,
     acceptanceCriteria: input.acceptanceCriteria,
     constraints: input.constraints,
@@ -396,6 +406,21 @@ export function lastReviewOf(item, reviewer) {
   return null
 }
 
+/** @returns all currently pending reviews of one item. */
+export function pendingReviews(item) {
+  return (Array.isArray(item?.reviews) ? item.reviews : []).filter((review) => review.status === 'pending')
+}
+
+/** @returns the currently pending review for one specific reviewer, or `null`. */
+export function pendingReviewFor(item, reviewer) {
+  return (Array.isArray(item?.reviews) ? item.reviews : []).find((review) => review.status === 'pending' && review.reviewer === reviewer) ?? null
+}
+
+/** @returns unique names of reviewers with a currently pending review on one item. */
+export function pendingReviewerNames(item) {
+  return [...new Set(pendingReviews(item).map((review) => review.reviewer).filter(Boolean))]
+}
+
 /** @returns the currently pending review of one item, if any. */
 export function pendingReview(item) {
   return item.reviews.find((review) => review.status === 'pending') ?? null
@@ -484,7 +509,8 @@ export function openReview(item, reviewer, options) {
   }
   item.reviewSeq += 1
   item.reviews.push(review)
-  item.pendingReviewer = reviewer
+  item.pendingReviewer = pendingReview(item)?.reviewer ?? reviewer
+  item.pendingReviewers = pendingReviewerNames(item)
   item.status = ITEM_STATUS.IN_REVIEW
   return review
 }
@@ -547,18 +573,22 @@ export function applyReport(state, input) {
   }
   appendEvent(state, { at: now, type: 'item/reported', actor: input.caller, detail: `${item.id}: ${report.summary.slice(0, 160)}` })
 
-  let review = null
-  let nextReviewer = null
+  const opened = []
   if (item.needsReview === false) {
     item.status = ITEM_STATUS.APPROVED
     item.approvedAt = now
     item.approvedBy = 'self'
+    item.pendingReviewer = null
+    item.pendingReviewers = []
   } else {
     // A new report invalidates earlier verdicts by construction (they bind to
     // the previous reportSeq), so every declared reviewer must sign this
     // version. There is deliberately no "already approved" shortcut here.
-    const prospective = outstandingReviewers(item)[0] ?? item.reviewers[0]
-    if (prospective === undefined) {
+    const parallel = input.settings?.parallelReviews !== false
+    const remaining = outstandingReviewers(item)
+    const pool = remaining.length > 0 ? remaining : item.reviewers
+    const targets = pool.length === 0 ? [] : (parallel ? [...pool] : [pool[0]])
+    if (targets.length === 0) {
       // Open-queue item without a declared reviewer: the author must invite a
       // peer, so the item waits in review with no pending review yet. The nudge
       // stays in next_actions instead of the channel: a channel post here used
@@ -566,25 +596,35 @@ export function applyReport(state, input) {
       // a reviewer seconds later (observed in run-20261102052850-il6f).
       item.status = ITEM_STATUS.IN_REVIEW
       item.pendingReviewer = null
+      item.pendingReviewers = []
     } else {
-      nextReviewer = prospective
-      review = openReview(item, nextReviewer, { now, actor: input.caller })
+      for (const targetReviewer of targets) {
+        opened.push(openReview(item, targetReviewer, { now, actor: input.caller }))
+      }
+      item.pendingReviewer = opened[0].reviewer
+      item.pendingReviewers = pendingReviewerNames(item)
     }
   }
   state.phase = state.items.every((candidate) => candidate.status === ITEM_STATUS.APPROVED) ? RUN_PHASE.CONVERGED : RUN_PHASE.REVIEWING
   state.updatedAt = now
-  return { item, review, nextReviewer }
+  return {
+    item,
+    review: opened[0] ?? null,
+    reviews: opened,
+    nextReviewer: opened[0]?.reviewer ?? null,
+    nextReviewers: opened.map((entry) => entry.reviewer),
+  }
 }
 
 /**
  * Apply one reviewer verdict.
  * @param state - run state (mutated).
- * @param input - `{ itemId, reviewer, verdict, summary, findings, evidenceChecked, now }`.
- * @returns `{ item, review, nextReviewer }`.
+ * @param input - `{ itemId, reviewer, verdict, summary, findings, evidenceChecked, dodChecks?, settings?, now }`.
+ * @returns `{ item, review, nextReviewer, nextReview, nextReviewOpened }`.
  */
 export function applyReviewSubmit(state, input) {
   const item = findItem(state, input.itemId)
-  const review = pendingReview(item)
+  const review = pendingReviewFor(item, input.reviewer) ?? pendingReview(item)
   if (review === null) throw new WorkflowError(`item "${item.id}" has no pending review`, 'WORKFLOW_NO_PENDING_REVIEW')
   if (review.reviewer !== input.reviewer) {
     throw new WorkflowError(`the pending review of "${item.id}" is assigned to "${review.reviewer}", not "${input.reviewer}"`, 'WORKFLOW_NOT_REVIEWER')
@@ -621,11 +661,29 @@ export function applyReviewSubmit(state, input) {
       throw new WorkflowError(`finding "${finding.id}" is ${finding.severity} and must name the file it is about`, 'WORKFLOW_FINDING_FILE_REQUIRED')
     }
   }
+  const effectiveDepth = item.resolvedReview?.depth ?? (item.reviewDepth && item.reviewDepth !== 'auto' ? item.reviewDepth : 'standard')
+  const effectiveProfile = item.resolvedReview?.profile ?? (item.reviewProfile && item.reviewProfile !== 'auto' ? item.reviewProfile : 'code')
+  const dodChecks = Array.isArray(input.dodChecks) ? input.dodChecks : []
+  const rubricCheck = validateReviewSubmission({
+    item,
+    reviewDepth: effectiveDepth,
+    verdict: input.verdict,
+    findings,
+    dodChecks,
+    settings: input.settings ?? state.settings ?? {},
+  })
+  if (!rubricCheck.ok) {
+    throw new WorkflowError(rubricCheck.message, rubricCheck.code)
+  }
   review.status = 'submitted'
   review.verdict = input.verdict
   review.summary = input.summary
   review.findings = findings
   review.evidenceChecked = input.evidenceChecked
+  review.dodChecks = dodChecks
+  review.reviewDepth = effectiveDepth
+  review.reviewProfile = effectiveProfile
+  review.reviewedSha = input.reviewedSha ?? item.git?.sha ?? null
   review.submittedAt = input.now
   if (isApproving(input.verdict)) {
     // Approving with observations is an early stop, not a rework request: the
@@ -648,22 +706,35 @@ export function applyReviewSubmit(state, input) {
 
   let nextReviewer = null
   let nextReview = null
+  let nextReviewOpened = false
   if (isApproving(input.verdict)) {
     if (allReviewersApproved(item)) {
       item.status = ITEM_STATUS.APPROVED
       item.approvedAt = input.now
       item.approvedBy = 'review'
+    } else if (unresolvedFindings(item).length > 0) {
+      item.status = ITEM_STATUS.CHANGES_REQUESTED
     } else {
-      nextReviewer = outstandingReviewers(item)[0]
-      if (nextReviewer !== undefined) nextReview = openReview(item, nextReviewer, { now: input.now, actor: input.reviewer })
+      item.status = ITEM_STATUS.IN_REVIEW
+      nextReviewer = outstandingReviewers(item)[0] ?? null
+      if (nextReviewer !== null) {
+        const existingPending = pendingReviewFor(item, nextReviewer)
+        if (existingPending !== null) {
+          nextReview = existingPending
+        } else {
+          nextReview = openReview(item, nextReviewer, { now: input.now, actor: input.reviewer })
+          nextReviewOpened = true
+        }
+      }
     }
   } else {
     item.status = ITEM_STATUS.CHANGES_REQUESTED
   }
   state.phase = state.items.every((candidate) => candidate.status === ITEM_STATUS.APPROVED) ? RUN_PHASE.CONVERGED : RUN_PHASE.REVIEWING
   item.pendingReviewer = pendingReview(item)?.reviewer ?? null
+  item.pendingReviewers = pendingReviewerNames(item)
   state.updatedAt = input.now
-  return { item, review, nextReview, nextReviewer }
+  return { item, review, nextReview, nextReviewer, nextReviewOpened }
 }
 
 /**
@@ -697,9 +768,14 @@ export function applyReviewRespond(state, input) {
     throw new WorkflowError(`every finding needs a response; still open: ${missing}`, 'WORKFLOW_FINDINGS_UNRESOLVED')
   }
 
-  const pendingReviewRecord = item.reviews.filter((review) => review.status === 'submitted').at(-1)
-  const rebuttedBlocker = pendingReviewRecord?.findings.some((finding) => finding.severity === 'blocker' && finding.resolution?.state === 'rebut')
-  const lastReview = pendingReviewRecord
+  const seq = currentReportSeq(item)
+  const currentReviews = item.reviews.filter(
+    (review) => review.status === 'submitted' && (Number.isInteger(review.reportSeq) ? review.reportSeq : 0) === seq,
+  )
+  const rebuttedBlocker = currentReviews.some((review) =>
+    review.findings.some((finding) => finding.severity === 'blocker' && finding.resolution?.state === 'rebut'),
+  )
+  const lastReview = currentReviews.at(-1) ?? item.reviews.filter((review) => review.status === 'submitted').at(-1)
   if (rebuttedBlocker) {
     item.status = ITEM_STATUS.ESCALATED
     raiseEscalation(state, {
@@ -712,7 +788,7 @@ export function applyReviewRespond(state, input) {
       now: input.now,
     })
     state.updatedAt = input.now
-    return { item, nextReview: null, nextReviewer: null, escalated: true }
+    return { item, nextReview: null, nextReviewer: null, nextReviewers: [], escalated: true }
   }
 
   if (reworkRounds(item) >= input.settings.maxReviewRounds) {
@@ -727,14 +803,41 @@ export function applyReviewRespond(state, input) {
       now: input.now,
     })
     state.updatedAt = input.now
-    return { item, nextReview: null, nextReviewer: null, escalated: true }
+    return { item, nextReview: null, nextReviewer: null, nextReviewers: [], escalated: true }
   }
 
-  const reviewer = lastReview?.reviewer ?? outstandingReviewers(item)[0] ?? item.reviewers[0]
-  const nextReview = openReview(item, reviewer, { now: input.now, actor: input.author })
+  const nonApprovingReviewers = [
+    ...new Set(
+      currentReviews
+        .filter((review) => !isApproving(review.verdict))
+        .map((review) => review.reviewer)
+        .filter(Boolean),
+    ),
+  ]
+  const fallbackReviewer = lastReview?.reviewer ?? outstandingReviewers(item)[0] ?? item.reviewers[0]
+  const candidateReviewers = nonApprovingReviewers.length > 0 ? nonApprovingReviewers : (fallbackReviewer ? [fallbackReviewer] : [])
+  const parallel = input.settings?.parallelReviews !== false
+  const targetReviewers = parallel ? candidateReviewers : candidateReviewers.slice(0, 1)
+
+  const opened = []
+  for (const reviewer of targetReviewers) {
+    if (pendingReviewFor(item, reviewer) === null) {
+      opened.push(openReview(item, reviewer, { now: input.now, actor: input.author }))
+    }
+  }
+  item.status = ITEM_STATUS.IN_REVIEW
+  item.pendingReviewer = pendingReview(item)?.reviewer ?? null
+  item.pendingReviewers = pendingReviewerNames(item)
   appendEvent(state, { at: input.now, type: 'item/responded', actor: input.author, detail: `${item.id}: responded to ${input.responses.length} finding(s)` })
   state.updatedAt = input.now
-  return { item, nextReview, nextReviewer: reviewer, escalated: false }
+  const firstNext = opened[0] ?? pendingReview(item)
+  return {
+    item,
+    nextReview: firstNext,
+    nextReviewer: firstNext?.reviewer ?? null,
+    nextReviewers: opened.map((entry) => entry.reviewer),
+    escalated: false,
+  }
 }
 
 /**
@@ -825,6 +928,20 @@ export function evaluateGates(state, input) {
       for (const review of unverifiedApprovals) failures.push(`review round ${review.round} by ${review.reviewer} approved without declaring any inspected evidence`)
     } else if (unverifiedApprovals.length > 0) {
       warnings.push(`${unverifiedApprovals.length} approving review(s) declare no inspected evidence`)
+    }
+    const resolvedDepth = item.resolvedReview?.depth ?? (item.reviewDepth && item.reviewDepth !== 'auto' ? item.reviewDepth : null)
+    if (resolvedDepth === 'deep' && item.definitionOfDone.length > 0 && item.archived !== true) {
+      const missingDodApprovals = submitted.filter(
+        (review) =>
+          (Number.isInteger(review.reportSeq) ? review.reportSeq : 0) === currentReportSeq(item) &&
+          isApproving(review.verdict) &&
+          (!Array.isArray(review.dodChecks) || review.dodChecks.length === 0),
+      )
+      if (missingDodApprovals.length > 0) {
+        const msg = `deep review round ${missingDodApprovals.map((r) => r.round).join(', ')} omitted explicit dod_checks`
+        if (input.settings?.strictReviewRubric === true) failures.push(msg)
+        else warnings.push(msg)
+      }
     }
     for (const warning of item.report?.sequenceWarnings ?? []) warnings.push(warning)
 
@@ -1011,7 +1128,7 @@ export function nextActions(state, input) {
     for (const item of escalated) {
       actions.push(`Arbitrate ${item.id}: read the review history with team_flow_status {item_id:"${item.id}"}, then either team_flow_repair {action:"reopen", item_id:"${item.id}", reason:"..."} to require rework, or record a gate override with a reason.`)
     }
-    const stuckReviews = state.items.filter((item) => item.status === ITEM_STATUS.IN_REVIEW && pendingReview(item) !== null)
+    const stuckReviews = state.items.filter((item) => item.status === ITEM_STATUS.IN_REVIEW && pendingReviews(item).length > 0)
     if (stuckReviews.length > 0) {
       actions.push(`If a pending review stays stuck because its reviewer is inactive or was never spawned, use team_flow_repair {action:"reset_review", item_id:"<id>", reviewer:"<member>"} (or reassign the item) instead of waiting forever.`)
     }
@@ -1054,12 +1171,9 @@ export function nextActions(state, input) {
       actions.push(`${item.id} is waiting on the Lead's arbitration; do not change it unless the Lead messages you.`)
     }
   }
-  const assigned = state.items.filter((item) => {
-    const review = pendingReview(item)
-    return review !== null && review.reviewer === me
-  })
+  const assigned = state.items.filter((item) => pendingReviewFor(item, me) !== null)
   for (const item of assigned) {
-    const review = pendingReview(item)
+    const review = pendingReviewFor(item, me)
     actions.push(`Review ${item.id} round ${review.round}: inspect the reported files and evidence, then call team_flow_review_submit with a verdict and evidence-backed findings.`)
   }
   for (const itemId of collaboration.open_queue) {
@@ -1150,6 +1264,9 @@ export function buildStatus(state, input) {
       plan: item.plan ?? null,
       git: item.git ?? null,
       pending_reviewer: pending?.reviewer ?? item.pendingReviewer ?? null,
+      pending_reviewers: pendingReviewerNames(item),
+      review_depth: item.resolvedReview?.depth ?? item.reviewDepth ?? 'auto',
+      review_profile: item.resolvedReview?.profile ?? item.reviewProfile ?? 'auto',
       review_requests: item.reviewRequests ?? [],
       handoffs: item.handoffs ?? [],
       open_proposals: openBlockingProposals(state, item.id).length,
@@ -1178,6 +1295,7 @@ export function buildStatus(state, input) {
   return {
     workflow_version: state.workflowVersion,
     run_id: state.runId,
+    preset: state.preset ?? null,
     rev: state.rev,
     phase: state.phase,
     objective: state.objective.length > 400 ? `${state.objective.slice(0, 400)}…` : state.objective,
@@ -1324,6 +1442,7 @@ export function buildBriefStatus(state, input, options = {}) {
   return {
     workflow_version: state.workflowVersion,
     run_id: state.runId,
+    preset: state.preset ?? null,
     rev: state.rev,
     phase: state.phase,
     ...(firstRead
@@ -1974,6 +2093,14 @@ export function createItem(state, input) {
     if (reviewer === owner) throw new WorkflowError(`item cannot list its own owner "${reviewer}" as reviewer; reviews must be independent`, 'WORKFLOW_ITEM_SELF_REVIEW')
   }
   const id = nextMemberItemId(state)
+  const rawComplexity = typeof input.complexity === 'string' ? input.complexity.trim().toLowerCase() : 'normal'
+  const complexity = ['trivial', 'normal', 'complex'].includes(rawComplexity) ? rawComplexity : 'normal'
+  const rawTier = typeof input.thinkingTier === 'string' ? input.thinkingTier.trim().toLowerCase() : ''
+  const thinkingTier = ['off', 'low', 'medium', 'high', 'max', 'inherit'].includes(rawTier) ? rawTier : null
+  const rawDepth = typeof input.reviewDepth === 'string' ? input.reviewDepth.trim().toLowerCase() : 'auto'
+  const reviewDepth = REVIEW_DEPTHS.includes(rawDepth) ? rawDepth : 'auto'
+  const rawProfile = typeof input.reviewProfile === 'string' ? input.reviewProfile.trim().toLowerCase() : 'auto'
+  const reviewProfile = REVIEW_PROFILES.includes(rawProfile) ? rawProfile : 'auto'
   const item = {
     id,
     subject,
@@ -1984,7 +2111,13 @@ export function createItem(state, input) {
     handoffs: [],
     handoffPacket: null,
     pendingReviewer: null,
+    pendingReviewers: [],
     role: String(input.role ?? 'implementer').trim() || 'implementer',
+    complexity,
+    thinkingTier,
+    reviewDepth,
+    reviewProfile,
+    resolvedReview: null,
     writeScopes,
     blockedBy,
     definitionOfDone,

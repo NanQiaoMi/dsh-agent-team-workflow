@@ -17,7 +17,7 @@
  * - a conflicting merge is aborted and reported, never auto-resolved.
  *
  * The only shell usage is `gitVerify`, which runs the *configured* verify
- * commands through `/bin/sh -lc` exactly as docs/16 §2.1 specifies.
+ * commands through `/bin/sh -c` exactly as docs/16 §2.1 specifies.
  */
 
 import { execFile } from 'node:child_process'
@@ -536,7 +536,7 @@ export async function gitCommit(input = {}) {
 }
 
 /**
- * Run the configured verify commands through `/bin/sh -lc`.
+ * Run the configured verify commands through `/bin/sh -c`.
  * @param input - `{ cwd, commands, timeoutMs, exec }`.
  * @returns `{ ok, results: [{ command, exitCode, outputTail }] }`.
  */
@@ -549,7 +549,7 @@ export async function gitVerify(input = {}) {
     const results = []
     let failed = null
     for (const command of commands) {
-      const run = await invoke(input.exec, SHELL, ['-lc', command], { cwd, timeout })
+      const run = await invoke(input.exec, SHELL, ['-c', command], { cwd, timeout })
       const outputTail = tailOf(`${run.stdout}${run.stderr}`)
       const passed = run.exitCode === 0
       if (!passed && failed === null) failed = command
@@ -832,6 +832,134 @@ export async function gitPrMerge(input = {}) {
     return ok({ mode: 'gh', number, method, sha })
   } catch (error) {
     return fail(`gitPrMerge failed: ${messageOf(error)}`)
+  }
+}
+
+/**
+ * Inspect a pull request via `gh pr view` and optional `gh pr diff`.
+ * Falls back to `{ ok: true, mode: 'manual', available: false }` when `gh`
+ * is missing or unauthenticated.
+ *
+ * @param input - `{ cwd, number?, branch?, includeDiff?, maxDiffBytes?, exec, env }`.
+ * @returns `{ ok, mode: 'gh'|'manual', available, pr, files, reviews, checks, diff, diffTruncated }`.
+ */
+export async function gitPrInspect(input = {}) {
+  try {
+    const cwd = textOf(input.cwd).trim()
+    if (cwd.length === 0) return fail('gitPrInspect needs a cwd (repository path)')
+    const root = await repoRoot(input.exec, cwd)
+    if (root === null) return fail(`"${cwd}" is not a git repository`)
+
+    const remoteInfo = await gitRemoteInfo({ cwd: root, remote: input.remote, exec: input.exec })
+    if (!remoteInfo.ok || remoteInfo.provider !== 'github') {
+      return ok({
+        mode: 'manual',
+        available: false,
+        reason: remoteInfo.ok ? `remote "${remoteInfo.remote}" is not a GitHub host` : 'no usable remote',
+        pr: null,
+        files: [],
+        reviews: [],
+        checks: [],
+        diff: null,
+        diffTruncated: false,
+      })
+    }
+
+    const gh = await ghAvailable({ exec: input.exec, env: input.env })
+    if (!gh.installed || !gh.authenticated) {
+      return ok({
+        mode: 'manual',
+        available: false,
+        reason: gh.installed ? 'gh is not authenticated' : 'gh is not installed',
+        pr: null,
+        files: [],
+        reviews: [],
+        checks: [],
+        diff: null,
+        diffTruncated: false,
+      })
+    }
+
+    const num = prNumber(input.number)
+    const target = num !== null ? String(num) : (safeRefName(input.branch) ?? (await currentBranch(input.exec, root)))
+    if (!target || target.length === 0) return fail('gitPrInspect needs a PR number or branch name')
+
+    const options = ghOptions(input, root)
+    const fields = 'number,title,body,url,state,isDraft,baseRefName,headRefName,headRefOid,additions,deletions,changedFiles,files,reviews,statusCheckRollup,author,labels'
+    const viewed = await invoke(input.exec, 'gh', ['pr', 'view', target, '--json', fields], options)
+    if (viewed.exitCode !== 0) return fail(`gh pr view failed: ${tailOf(viewed.stderr || viewed.stdout, ERROR_TAIL)}`)
+
+    let parsed = null
+    try {
+      parsed = JSON.parse(viewed.stdout)
+    } catch {
+      return fail('gh pr view returned invalid JSON')
+    }
+    if (!isRecord(parsed)) return fail('gh pr view returned unexpected payload')
+
+    const files = (Array.isArray(parsed.files) ? parsed.files : []).map((f) => ({
+      path: textOf(f?.path).trim(),
+      additions: Number.isFinite(f?.additions) ? f.additions : 0,
+      deletions: Number.isFinite(f?.deletions) ? f.deletions : 0,
+    })).filter((f) => f.path.length > 0)
+
+    const reviews = (Array.isArray(parsed.reviews) ? parsed.reviews : []).map((r) => ({
+      author: textOf(r?.author?.login).trim() || null,
+      state: textOf(r?.state).trim() || null,
+      submittedAt: textOf(r?.submittedAt).trim() || null,
+      body: textOf(r?.body).slice(0, 1000),
+    }))
+
+    const checks = (Array.isArray(parsed.statusCheckRollup) ? parsed.statusCheckRollup : []).map((c) => ({
+      name: textOf(c?.name || c?.context).trim() || 'check',
+      status: textOf(c?.status || c?.state).trim() || null,
+      conclusion: textOf(c?.conclusion || c?.state).trim() || null,
+    }))
+
+    let diff = null
+    let diffTruncated = false
+    if (input.includeDiff !== false) {
+      const diffRes = await invoke(input.exec, 'gh', ['pr', 'diff', target], options)
+      if (diffRes.exitCode === 0) {
+        const rawDiff = textOf(diffRes.stdout)
+        const rawMax = Number.isInteger(input.maxDiffBytes) ? input.maxDiffBytes : 24576
+        const maxDiffBytes = Math.min(131072, Math.max(0, rawMax))
+        if (maxDiffBytes > 0 && rawDiff.length > maxDiffBytes) {
+          diff = rawDiff.slice(0, maxDiffBytes)
+          diffTruncated = true
+        } else {
+          diff = rawDiff
+        }
+      }
+    }
+
+    return ok({
+      mode: 'gh',
+      available: true,
+      pr: {
+        number: prNumber(parsed.number),
+        title: textOf(parsed.title).trim(),
+        body: textOf(parsed.body).slice(0, 8000),
+        url: textOf(parsed.url).trim() || null,
+        state: textOf(parsed.state).trim() || null,
+        isDraft: parsed.isDraft === true,
+        baseBranch: textOf(parsed.baseRefName).trim() || null,
+        headBranch: textOf(parsed.headRefName).trim() || null,
+        headSha: textOf(parsed.headRefOid).trim() || null,
+        author: textOf(parsed.author?.login).trim() || null,
+        labels: (Array.isArray(parsed.labels) ? parsed.labels : []).map((l) => textOf(l?.name).trim()).filter(Boolean),
+        additions: Number.isFinite(parsed.additions) ? parsed.additions : 0,
+        deletions: Number.isFinite(parsed.deletions) ? parsed.deletions : 0,
+        changedFiles: Number.isFinite(parsed.changedFiles) ? parsed.changedFiles : files.length,
+      },
+      files,
+      reviews,
+      checks,
+      diff,
+      diffTruncated,
+    })
+  } catch (error) {
+    return fail(`gitPrInspect failed: ${messageOf(error)}`)
   }
 }
 
