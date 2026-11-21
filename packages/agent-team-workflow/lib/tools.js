@@ -381,6 +381,10 @@ function normalizeItem(raw, index) {
   const blockedBy = Array.isArray(raw?.blocked_by) ? [...new Set(raw.blocked_by.map((entry) => String(entry).trim()).filter(Boolean))] : []
   const writeScopes = Array.isArray(raw?.write_scopes) ? [...new Set(raw.write_scopes.map((entry) => W.normalizeScope(entry)).filter((entry) => entry.length > 0))] : []
   const assignment = raw?.assignment === 'open' ? 'open' : 'lead'
+  const rawComplexity = typeof raw?.complexity === 'string' ? raw.complexity.trim().toLowerCase() : 'normal'
+  const complexity = ['trivial', 'normal', 'complex'].includes(rawComplexity) ? rawComplexity : 'normal'
+  const rawTier = typeof raw?.thinking_tier === 'string' ? raw.thinking_tier.trim().toLowerCase() : ''
+  const thinkingTier = ['off', 'low', 'medium', 'high', 'max', 'inherit'].includes(rawTier) ? rawTier : null
   return {
     id: String(raw?.id ?? `W${index + 1}`).trim(),
     subject,
@@ -391,6 +395,8 @@ function normalizeItem(raw, index) {
     handoffs: [],
     pendingReviewer: null,
     role: String(raw?.role ?? 'implementer').trim() || 'implementer',
+    complexity,
+    thinkingTier,
     writeScopes,
     blockedBy,
     definitionOfDone,
@@ -444,7 +450,7 @@ function reportView(item) {
  * @param options - `{ ctx, settings, store, version, tokenUsage?, orchestrator? }`.
  * @returns array of ToolDefinition-compatible objects.
  */
-export function buildTools({ ctx, settings, store, version, tokenUsage = () => null, orchestrator = null }) {
+export function buildTools({ ctx, settings, store, version, tokenUsage = () => null, orchestrator = null, thinkingRouter = null }) {
   function triggerOrchestrator(agent) {
     if (orchestrator && typeof orchestrator.reconcile === 'function') {
       void orchestrator.reconcile(agent).catch(() => {})
@@ -478,6 +484,8 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
                 needs_review: { type: 'boolean', description: 'Default true. Set false only with reviewers empty and an articulated reason.' },
                 reviewers: { type: 'array', items: { type: 'string' }, description: 'Independent reviewer member names; must not include the owner.' },
                 evidence_optional: { type: 'boolean', description: 'Set true only for read-only/research items where no command can be run.' },
+                complexity: { type: 'string', enum: ['trivial', 'normal', 'complex'], description: 'Item complexity for thinking routing.' },
+                thinking_tier: { type: 'string', enum: ['off', 'low', 'medium', 'high', 'max', 'inherit'], description: 'Explicit thinking tier override.' },
               },
               required: ['subject', 'definition_of_done'],
             },
@@ -1498,6 +1506,8 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           // so the gate can enforce budgets and the board can show real numbers.
           const readUsage = tokenUsage?.()
           const usage = computeUsage({ members, read: readUsage, state: current, now })
+          const routingSnapshot = thinkingRouter?.snapshot?.(current.teamId ?? store.teamIdOf?.(agent)) ?? null
+          if (routingSnapshot !== null) usage.routing = routingSnapshot
           current.usage = usage
           gate = W.evaluateGates(current, { settings: current.settings, members, nativeTasks, overrides, now })
           // Worktree isolation is only real if reported artifacts actually live
@@ -2477,6 +2487,8 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           reviewers: { type: 'array', items: { type: 'string' }, description: 'Optional reviewer names; empty means the owner invites a peer after reporting.' },
           evidence_optional: { type: 'boolean', description: 'Set true only for read-only/research items where no command can be run.' },
           lease_minutes: { type: 'integer', description: 'Advisory claim lease in minutes when the item is yours.' },
+          complexity: { type: 'string', enum: ['trivial', 'normal', 'complex'], description: 'Item complexity.' },
+          thinking_tier: { type: 'string', enum: ['off', 'low', 'medium', 'high', 'max', 'inherit'], description: 'Thinking tier override.' },
         },
         required: ['action', 'subject', 'write_scopes', 'definition_of_done'],
         additionalProperties: false,
@@ -2525,6 +2537,8 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             reviewers: args.reviewers,
             evidenceOptional: args.evidence_optional,
             leaseMinutes: args.lease_minutes,
+            complexity: args.complexity,
+            thinkingTier: args.thinking_tier,
             now: new Date().toISOString(),
             maxItems: settings.maxItems,
             allowScopeOverlap: current.settings?.allowScopeOverlap,

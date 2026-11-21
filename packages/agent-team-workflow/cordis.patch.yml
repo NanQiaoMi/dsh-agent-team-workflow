@@ -47,11 +47,13 @@
         # DSH providers used for auto-spawned teammates (native defaults).
         freshProvider: spawn
         forkProvider: fork
-        # Reusable roles: provider picks the model (DSH provider config), prompt
-        # appends domain guidance to that member's brief. Example:
+        # Reusable roles: `provider` selects the subagent transport ('spawn'/'fork');
+        # `llmProvider` + `model` + `thinking` + `maxTokens` route the LLM call via
+        # `agent/request`. Example:
         # roles:
         #   security-reviewer:
-        #     provider: review-fast
+        #     provider: spawn
+        #     thinking: high
         #     prompt: You focus on auth, secrets and injection risks.
         roles: {}
         # Lifecycle hooks (exit code 2 vetoes the action; event JSON on stdin).
@@ -89,3 +91,5 @@
         reviewDiffBytes: 12288
         watchdogIntervalSeconds: 30
         watchdogMaxIntervalSeconds: 180
+        thinkingRouting: auto
+        thinkingDefaultBias: low

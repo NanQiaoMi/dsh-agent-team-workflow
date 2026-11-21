@@ -83,29 +83,58 @@ function createContext(cwd) {
   const teammate = { id: 'session-worker', session: { id: 'session-worker' }, ctx: undefined }
   const outsider = { id: 'session-subagent', session: { id: 'session-subagent' }, ctx: undefined }
 
-  const scopedFor = (agent) => ({
-    tools: {
-      register(definition) {
-        tools.push({ agent: agent.id, name: definition.name, definition })
+  const scopedFor = (agent) => {
+    const scopedListeners = new Map()
+    return {
+      tools: {
+        register(definition) {
+          tools.push({ agent: agent.id, name: definition.name, definition })
+          return () => {
+            const index = tools.findIndex((entry) => entry.agent === agent.id && entry.name === definition.name)
+            if (index >= 0) tools.splice(index, 1)
+          }
+        },
+      },
+      on(event, handler, opts = {}) {
+        const list = scopedListeners.get(event) ?? []
+        if (opts.prepend) list.unshift(handler)
+        else list.push(handler)
+        scopedListeners.set(event, list)
         return () => {
-          const index = tools.findIndex((entry) => entry.agent === agent.id && entry.name === definition.name)
-          if (index >= 0) tools.splice(index, 1)
+          const current = scopedListeners.get(event) ?? []
+          scopedListeners.set(event, current.filter((candidate) => candidate !== handler))
         }
       },
-    },
-    systemPrompt: {
-      getSectionOrder: (name) => (name === 'TEAM_POLICY' ? 600 : 0),
-      getContextOrder: (name) => (name === 'TEAM_IDENTITY' ? 125 : 0),
-      section(entry) {
-        sections.push({ agent: agent.id, ...entry })
-        return () => sections.splice(sections.findIndex((candidate) => candidate.agent === agent.id && candidate.name === entry.name), 1)
+      async runWaterfall(event, payload, base) {
+        const list = [...(scopedListeners.get(event) ?? [])]
+        let idx = 0
+        const next = async () => {
+          if (idx < list.length) {
+            const fn = list[idx]
+            idx += 1
+            return await fn({ ...payload, agent }, next)
+          }
+          return base
+        }
+        return await next()
       },
-      context(entry) {
-        contexts.push({ agent: agent.id, ...entry })
-        return () => contexts.splice(contexts.findIndex((candidate) => candidate.agent === agent.id && candidate.name === entry.name), 1)
+      listenerCount(event) {
+        return (scopedListeners.get(event) ?? []).length
       },
-    },
-  })
+      systemPrompt: {
+        getSectionOrder: (name) => (name === 'TEAM_POLICY' ? 600 : 0),
+        getContextOrder: (name) => (name === 'TEAM_IDENTITY' ? 125 : 0),
+        section(entry) {
+          sections.push({ agent: agent.id, ...entry })
+          return () => sections.splice(sections.findIndex((candidate) => candidate.agent === agent.id && candidate.name === entry.name), 1)
+        },
+        context(entry) {
+          contexts.push({ agent: agent.id, ...entry })
+          return () => contexts.splice(contexts.findIndex((candidate) => candidate.agent === agent.id && candidate.name === entry.name), 1)
+        },
+      },
+    }
+  }
 
   for (const agent of [lead, teammate, outsider]) agent.ctx = scopedFor(agent)
   membership.set(lead.id, { root: lead, id: lead.id, name: 'lead', role: 'lead' })
@@ -526,6 +555,54 @@ test('event-driven agent/status idle wakes unblocked downstream members immediat
       const wake = harness.messages.find((m) => m.to === 'worker2' && m.text.includes('AUTO_DISPATCH'))
       assert.ok(wake, 'agent/status idle event must trigger immediate debounced dispatch for worker2')
       assert.match(wake.text, /W2/)
+    } finally {
+      for (const dispose of harness.effects) {
+        if (typeof dispose === 'function') dispose()
+      }
+    }
+  })
+})
+
+test('apply wires ctx.llm capability probing and agent/request thinking router cleanly until disposal', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createContext(cwd)
+    harness.ctx.llm = {
+      async resolveModelInfo(_provider, model) {
+        return { id: model, reasoning: { efforts: [{ id: 'off' }, { id: 'low' }, { id: 'high' }, { id: 'max' }] } }
+      },
+    }
+    apply(harness.ctx, { thinkingRouting: 'auto', watchdogIntervalSeconds: 0 })
+    try {
+      const planTool = harness.tools.find((entry) => entry.agent === harness.lead.id && entry.name === 'team_flow_plan')
+      await planTool.definition.execute(
+        {
+          objective: 'Test live thinking wiring',
+          acceptance_criteria: ['Done'],
+          items: [
+            {
+              id: 'W1',
+              subject: 'Complex core change',
+              owner: 'worker',
+              complexity: 'complex',
+              write_scopes: ['src/'],
+              definition_of_done: ['done'],
+              reviewers: ['lead'],
+            },
+          ],
+        },
+        { agent: harness.lead, signal: new AbortController().signal },
+      )
+
+      assert.equal(harness.teammate.ctx.listenerCount('agent/request'), 1)
+      const routed = await harness.teammate.ctx.runWaterfall(
+        'agent/request',
+        { turn: 1, step: 1, signal: new AbortController().signal },
+        { provider: 'deepseek', model: 'deepseek-v4-pro', reasoningEffort: 'low' },
+      )
+      assert.equal(routed.reasoningEffort, 'high', 'complex item must elevate worker thinking to high')
+
+      harness.ctx.emit('agent/disposed', { agent: harness.teammate })
+      assert.equal(harness.teammate.ctx.listenerCount('agent/request'), 0, 'disposal must unregister agent/request listener')
     } finally {
       for (const dispose of harness.effects) {
         if (typeof dispose === 'function') dispose()

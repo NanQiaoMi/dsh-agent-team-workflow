@@ -125,6 +125,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
   nitTolerance: true,
   /** Archive full reports and reviews of approved items to disk to reduce state payload. */
   archiveApprovedItems: false,
+  /** Thinking / reasoning-effort routing mode: 'auto' | 'role' | 'off'. */
+  thinkingRouting: 'auto',
+  /** Default semantic bias for normal implementation items on models without 'medium' effort: 'low' | 'high'. */
+  thinkingDefaultBias: 'low',
 })
 
 function clampInt(value, fallback, min, max) {
@@ -165,6 +169,16 @@ function readRoles(value) {
     const role = {}
     const provider = readString(rawRole.provider, '', 200)
     if (provider.length > 0) role.provider = provider
+    const llmProvider = readString(rawRole.llmProvider, '', 200)
+    if (llmProvider.length > 0) role.llmProvider = llmProvider
+    const model = readString(rawRole.model, '', 200)
+    if (model.length > 0) role.model = model
+    const thinking = readString(rawRole.thinking, '', 16).toLowerCase()
+    if (['off', 'low', 'medium', 'high', 'max', 'inherit'].includes(thinking)) role.thinking = thinking
+    if (rawRole.maxTokens !== undefined && rawRole.maxTokens !== null) {
+      const parsedTokens = Number.isInteger(rawRole.maxTokens) ? rawRole.maxTokens : Number.parseInt(String(rawRole.maxTokens), 10)
+      if (Number.isFinite(parsedTokens) && parsedTokens > 0) role.maxTokens = Math.min(1_000_000, Math.max(256, Math.trunc(parsedTokens)))
+    }
     const prompt = readString(rawRole.prompt, '', 4000)
     if (prompt.length > 0) role.prompt = prompt
     if (Array.isArray(rawRole.deny)) {
@@ -284,6 +298,11 @@ export function resolveSettings(raw = {}) {
     preReportCheck: readBool(config.preReportCheck, DEFAULT_SETTINGS.preReportCheck),
     nitTolerance: readBool(config.nitTolerance, DEFAULT_SETTINGS.nitTolerance),
     archiveApprovedItems: readBool(config.archiveApprovedItems, DEFAULT_SETTINGS.archiveApprovedItems),
+    thinkingRouting: (() => {
+      const mode = readString(config.thinkingRouting, DEFAULT_SETTINGS.thinkingRouting, 16).toLowerCase()
+      return mode === 'role' || mode === 'off' ? mode : 'auto'
+    })(),
+    thinkingDefaultBias: readString(config.thinkingDefaultBias, DEFAULT_SETTINGS.thinkingDefaultBias, 16).toLowerCase() === 'high' ? 'high' : 'low',
   })
 }
 
@@ -339,5 +358,7 @@ export function runSettings(settings) {
     preReportCheck: settings.preReportCheck,
     nitTolerance: settings.nitTolerance,
     archiveApprovedItems: settings.archiveApprovedItems,
+    thinkingRouting: settings.thinkingRouting,
+    thinkingDefaultBias: settings.thinkingDefaultBias,
   }
 }

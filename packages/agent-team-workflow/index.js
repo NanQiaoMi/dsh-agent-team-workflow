@@ -28,6 +28,7 @@ import { teamSubjectResolver } from './lib/tool-guard.js'
 import { scopeGuardReason } from './lib/scope-guard.js'
 import { createOrchestrator } from './lib/orchestrator.js'
 import { filterToolsByRole, resolveAllowedToolNames } from './lib/tool-matrix.js'
+import { createThinkingRouter } from './lib/thinking-router.js'
 
 export const name = 'agent-team-workflow'
 
@@ -40,8 +41,24 @@ const VERSION = '1.27.0'
 export function apply(ctx, config = {}) {
   const settings = resolveSettings(config)
   const store = createStore({ ctx, settings })
-  const orchestrator = createOrchestrator({ ctx, store, settings, tokenUsage: () => tokenUsage })
-  const tools = buildTools({ ctx, settings, store, version: VERSION, tokenUsage: () => tokenUsage, orchestrator })
+
+  // Optional seam: query model reasoning capabilities from Host LLM runtime.
+  let resolveModelInfoFn = null
+  ctx.inject(['llm'], (scope) => {
+    resolveModelInfoFn = (provider, model, signal) => scope.llm.resolveModelInfo(provider, model, signal)
+    scope.effect(() => () => {
+      resolveModelInfoFn = null
+    }, 'agent-team-workflow: llm capability seam')
+  })
+
+  const thinkingRouter = createThinkingRouter({
+    ctx,
+    store,
+    settings,
+    resolveModelInfo: () => resolveModelInfoFn,
+  })
+  const orchestrator = createOrchestrator({ ctx, store, settings, tokenUsage: () => tokenUsage, thinkingRouter })
+  const tools = buildTools({ ctx, settings, store, version: VERSION, tokenUsage: () => tokenUsage, orchestrator, thinkingRouter })
   const policy = buildPolicy(settings)
   const installed = new Map()
 
@@ -104,7 +121,7 @@ export function apply(ctx, config = {}) {
     const allowedNames = resolveAllowedToolNames({ role: membership.role, duties, settings })
     const scopedTools = filterToolsByRole(tools, allowedNames)
 
-    installed.set(agent, install(agent, ctx, { settings, tools: scopedTools, store, policy }))
+    installed.set(agent, install(agent, ctx, { settings, tools: scopedTools, store, policy, thinkingRouter }))
     // Warm the prompt-context summary so the first step already sees the run
     // instead of waiting for the member to call a tool. Best effort: a missing
     // or unreadable board is not an installation failure.
@@ -117,11 +134,13 @@ export function apply(ctx, config = {}) {
     const dispose = installed.get(agent)
     if (dispose !== undefined) dispose()
     installed.delete(agent)
+    thinkingRouter.clearAgent(agent.id)
   })
   ctx.effect(
     () => () => {
       for (const dispose of installed.values()) dispose()
       installed.clear()
+      thinkingRouter.clearCache()
     },
     'agent-team-workflow.scopedTools()',
   )
@@ -214,6 +233,7 @@ function install(agent, ctx, options) {
       )
     }
     for (const definition of options.tools) register(scoped.tools.register(definition))
+    if (options.thinkingRouter) register(options.thinkingRouter.install(agent))
   } catch (error) {
     for (const dispose of disposers.reverse()) dispose()
     throw error

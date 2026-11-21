@@ -29,7 +29,7 @@ import { autoCleanupRunWorktrees, getWorktreeDiffSummary } from './worktree-mana
  * @param options - `{ ctx, store, settings, tokenUsage }`
  * @returns orchestrator interface.
  */
-export function createOrchestrator({ ctx, store, settings, tokenUsage = () => null }) {
+export function createOrchestrator({ ctx, store, settings, tokenUsage = () => null, thinkingRouter = null }) {
   if (!settings?.autoOrchestrate) {
     return {
       reconcile: async () => ({ actionsTaken: [], converged: false }),
@@ -508,6 +508,8 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
         }
         const now = new Date().toISOString()
         const usage = readUsage(members, state)
+        const routingSnapshot = thinkingRouter?.snapshot?.(teamId) ?? null
+        if (usage !== null && routingSnapshot !== null) usage.routing = routingSnapshot
         const gate = evaluateGates(state, { settings: state.settings, members, nativeTasks, overrides: [], now })
         // The autonomous path must capture usage exactly like team_flow_gate
         // does, otherwise live budgets and the board's usage panel are blind.

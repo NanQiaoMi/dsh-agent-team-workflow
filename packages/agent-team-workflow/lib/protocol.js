@@ -546,6 +546,17 @@ export function renderReportMarkdown(state, gate) {
     }
     lines.push('')
   }
+  if (usage?.routing && typeof usage.routing === 'object' && Object.keys(usage.routing).length > 0) {
+    lines.push('## Model & thinking routing')
+    lines.push('')
+    lines.push('| member | role | model | last effort | stage | calls |')
+    lines.push('| --- | --- | --- | --- | --- | --- |')
+    for (const [memberName, entry] of Object.entries(usage.routing)) {
+      const modelLabel = entry.provider && entry.model ? `${entry.provider}/${entry.model}` : (entry.model ?? '-')
+      lines.push(`| ${memberName} | ${entry.role ?? '-'} | ${modelLabel} | ${entry.resolvedEffort ?? 'default'} | ${entry.stage ?? '-'} | ${entry.calls ?? 0} |`)
+    }
+    lines.push('')
+  }
   lines.push('## Audit trail (tail)')
   lines.push('')
   for (const event of state.events.slice(-40)) lines.push(`- ${event.at} [${event.type}] ${event.actor}: ${event.detail}`)

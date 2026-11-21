@@ -103,6 +103,8 @@ export function ensureCollaboration(state) {
       if (item.createdBy === undefined) item.createdBy = null
       if (item.git === undefined) item.git = null
       if (item.plan === undefined) item.plan = null
+      if (item.complexity !== 'trivial' && item.complexity !== 'normal' && item.complexity !== 'complex') item.complexity = 'normal'
+      if (item.thinkingTier === undefined) item.thinkingTier = null
     }
   }
   for (const proposal of Array.isArray(state.proposals) ? state.proposals : []) {
@@ -1975,6 +1977,10 @@ export function createItem(state, input) {
     if (reviewer === owner) throw new WorkflowError(`item cannot list its own owner "${reviewer}" as reviewer; reviews must be independent`, 'WORKFLOW_ITEM_SELF_REVIEW')
   }
   const id = nextMemberItemId(state)
+  const rawComplexity = typeof input.complexity === 'string' ? input.complexity.trim().toLowerCase() : 'normal'
+  const complexity = ['trivial', 'normal', 'complex'].includes(rawComplexity) ? rawComplexity : 'normal'
+  const rawTier = typeof input.thinkingTier === 'string' ? input.thinkingTier.trim().toLowerCase() : ''
+  const thinkingTier = ['off', 'low', 'medium', 'high', 'max', 'inherit'].includes(rawTier) ? rawTier : null
   const item = {
     id,
     subject,
@@ -1986,6 +1992,8 @@ export function createItem(state, input) {
     handoffPacket: null,
     pendingReviewer: null,
     role: String(input.role ?? 'implementer').trim() || 'implementer',
+    complexity,
+    thinkingTier,
     writeScopes,
     blockedBy,
     definitionOfDone,
