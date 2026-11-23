@@ -178,6 +178,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
   worktreeIsolation: 'off',
   /** Automatically provision worktrees for planned/created items when worktreeIsolation is active. */
   autoWorktree: true,
+  /** Provision worktrees only for unblocked items upfront; defer downstream waves until upstream merges. */
+  lazyWorktreeProvision: true,
+  /** Automatically commit dirty changes inside writeScopes when team_flow_report is called. */
+  autoCommitOnReport: true,
   /** Automatically merge an approved item's worktree branch into the run branch. */
   autoMergeWorktree: true,
   /** Automatically clean up temporary worktrees when the run is finalized. */
@@ -377,6 +381,8 @@ export function resolveSettings(raw = {}) {
     tokenBudgetPerRun: clampInt(config.tokenBudgetPerRun, DEFAULT_SETTINGS.tokenBudgetPerRun, 0, 1_000_000_000),
     worktreeIsolation: readWorktreeMode(config.worktreeIsolation),
     autoWorktree: readBool(config.autoWorktree, DEFAULT_SETTINGS.autoWorktree),
+    lazyWorktreeProvision: readBool(config.lazyWorktreeProvision, DEFAULT_SETTINGS.lazyWorktreeProvision),
+    autoCommitOnReport: readBool(config.autoCommitOnReport, DEFAULT_SETTINGS.autoCommitOnReport),
     autoMergeWorktree: readBool(config.autoMergeWorktree, DEFAULT_SETTINGS.autoMergeWorktree),
     autoCleanupWorktrees: readBool(config.autoCleanupWorktrees, DEFAULT_SETTINGS.autoCleanupWorktrees),
     autoOrchestrate: readBool(config.autoOrchestrate, DEFAULT_SETTINGS.autoOrchestrate),
@@ -446,6 +452,8 @@ export function runSettings(settings) {
     tokenBudgetPerRun: settings.tokenBudgetPerRun,
     worktreeIsolation: settings.worktreeIsolation,
     autoWorktree: settings.autoWorktree,
+    lazyWorktreeProvision: settings.lazyWorktreeProvision,
+    autoCommitOnReport: settings.autoCommitOnReport,
     autoMergeWorktree: settings.autoMergeWorktree,
     autoCleanupWorktrees: settings.autoCleanupWorktrees,
     autoOrchestrate: settings.autoOrchestrate,

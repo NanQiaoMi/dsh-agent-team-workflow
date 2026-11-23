@@ -23,7 +23,7 @@ import {
   roleGuidance,
 } from './protocol.js'
 import { computeUsage } from './telemetry.js'
-import { autoCleanupRunWorktrees, getWorktreeDiffSummary } from './worktree-manager.js'
+import { autoCleanupRunWorktrees, ensureItemWorktree, getWorktreeDiffSummary } from './worktree-manager.js'
 
 /**
  * Build an orchestrator instance bound to the plugin context and store.
@@ -160,7 +160,7 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
       members = []
     }
     const memberMap = new Map(members.map((m) => [m.name, m]))
-    const stateRev = Number.isInteger(state.rev) ? state.rev : 0
+    let stateRev = Number.isInteger(state.rev) ? state.rev : 0
     lastRevByTeam.set(teamId, stateRev)
 
     // Live budget breaker: sampling the projection is cheap and lets the team
@@ -279,6 +279,37 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
 
         if ((item.status === ITEM_STATUS.PENDING || item.status === ITEM_STATUS.CHANGES_REQUESTED) && isUnblocked) {
           if (item.owner && typeof item.owner === 'string' && item.owner.length > 0) {
+            if (
+              state.settings?.gitEnabled &&
+              state.settings?.worktreeIsolation !== 'off' &&
+              state.settings?.autoWorktree !== false &&
+              !item.git?.worktreePath
+            ) {
+              const ensured = await ensureItemWorktree({
+                cwd: store.workingDir(root),
+                state,
+                itemId: item.id,
+                agent: root,
+                store,
+              }).catch(() => null)
+              if (ensured?.ok && ensured.worktreePath) {
+                item.git = {
+                  ...(item.git ?? {}),
+                  worktree: ensured.relative ?? item.git?.worktree,
+                  worktreePath: ensured.worktreePath,
+                  worktreeBranch: ensured.branch ?? item.git?.worktreeBranch,
+                }
+                const refreshed = await store.readState(root).catch(() => null)
+                if (refreshed) {
+                  const updatedItem = refreshed.items?.find((it) => it.id === item.id)
+                  if (updatedItem?.git) item.git = updatedItem.git
+                  if (Number.isInteger(refreshed.rev) && refreshed.rev > stateRev) {
+                    stateRev = refreshed.rev
+                    lastRevByTeam.set(teamId, stateRev)
+                  }
+                }
+              }
+            }
             const m = memberMap.get(item.owner)
             const scopes = Array.isArray(item.writeScopes) && item.writeScopes.length > 0
               ? item.writeScopes.join(', ')
