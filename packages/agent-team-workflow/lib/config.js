@@ -186,6 +186,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   lazyWorktreeProvision: true,
   /** Automatically commit dirty changes inside writeScopes when team_flow_report is called. */
   autoCommitOnReport: true,
+  /** Automatically pre-sync an approved worktree against the latest runBranch before squash-merging. */
+  autoPresyncWorktree: true,
   /** Automatically merge an approved item's worktree branch into the run branch. */
   autoMergeWorktree: true,
   /** Automatically clean up temporary worktrees when the run is finalized. */
@@ -395,6 +397,7 @@ export function resolveSettings(raw = {}) {
     autoWorktree: readBool(config.autoWorktree, DEFAULT_SETTINGS.autoWorktree),
     lazyWorktreeProvision: readBool(config.lazyWorktreeProvision, DEFAULT_SETTINGS.lazyWorktreeProvision),
     autoCommitOnReport: readBool(config.autoCommitOnReport, DEFAULT_SETTINGS.autoCommitOnReport),
+    autoPresyncWorktree: readBool(config.autoPresyncWorktree, DEFAULT_SETTINGS.autoPresyncWorktree),
     autoMergeWorktree: readBool(config.autoMergeWorktree, DEFAULT_SETTINGS.autoMergeWorktree),
     autoCleanupWorktrees: readBool(config.autoCleanupWorktrees, DEFAULT_SETTINGS.autoCleanupWorktrees),
     autoOrchestrate: readBool(config.autoOrchestrate, DEFAULT_SETTINGS.autoOrchestrate),
@@ -471,6 +474,7 @@ export function runSettings(settings) {
     autoWorktree: settings.autoWorktree,
     lazyWorktreeProvision: settings.lazyWorktreeProvision,
     autoCommitOnReport: settings.autoCommitOnReport,
+    autoPresyncWorktree: settings.autoPresyncWorktree,
     autoMergeWorktree: settings.autoMergeWorktree,
     autoCleanupWorktrees: settings.autoCleanupWorktrees,
     autoOrchestrate: settings.autoOrchestrate,
