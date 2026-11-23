@@ -24,7 +24,7 @@ import {
   stallNudgeMessage,
 } from './protocol.js'
 import { computeUsage } from './telemetry.js'
-import { autoCleanupRunWorktrees, ensureItemWorktree, getWorktreeDiffSummary } from './worktree-manager.js'
+import { autoCleanupRunWorktrees, ensureItemWorktree, getWorktreeDiffSummary, runIntegrationVerify, toIntegrationGateRecord } from './worktree-manager.js'
 
 /**
  * Build an orchestrator instance bound to the plugin context and store.
@@ -731,13 +731,54 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
           if (gate.teamFailures.length > 0) gate.pass = false
         }
         if (gate.pass) {
+          let integrationGate = null
+          const integration = await runIntegrationVerify({ cwd: store.workingDir(root), state })
+          if (integration.skipped !== true) {
+            integrationGate = toIntegrationGateRecord(integration)
+            gate.integration = integrationGate
+            if (!integration.ok) {
+              const failureDetail = integration.summary || integration.error || 'integration verification failed'
+              gate.pass = false
+              gate.teamFailures.push(`integration gate failed: ${failureDetail}`)
+              await store.mutateState(root, (current) => {
+                current.integrationGate = integrationGate
+                current.gate = gate
+                current.updatedAt = now
+                appendEvent(current, {
+                  at: now,
+                  type: 'gate/integration-failed',
+                  actor: 'orchestrator',
+                  detail: failureDetail,
+                })
+                return current
+              })
+              const leadMember = members.find((m) => m.role === 'lead') ?? { name: 'lead' }
+              if (options.force || (!isThrottled(teamId, 'integration-gate-failed', leadMember.name, '') && !alreadySentForRev(teamId, 'integration-gate-failed', leadMember.name, '', stateRev))) {
+                const msg = `[INTEGRATION_GATE_FAILED] All ${state.items.length} work items in run "${state.runId}" were approved, but post-merge integration verification failed on branch "${integration.branch ?? 'workspace'}".\nFailure: ${failureDetail}\nAuto-finalize was blocked. Inspect the failure and repair via team_flow_repair or create a fix item.`
+                const ok = await sendNotice(root, leadMember.name, msg)
+                if (ok) markNotified(teamId, 'integration-gate-failed', leadMember.name, '', stateRev)
+              }
+              actionsTaken.push({ type: 'integration-gate-failed', runId: state.runId, error: failureDetail })
+              return { actionsTaken, converged: true, finalized: false, integrationFailed: true }
+            }
+          }
+
           let reportPath = null
           await store.mutateState(root, async (current) => {
+            if (integrationGate !== null) current.integrationGate = integrationGate
             current.gate = gate
             if (usage !== null) current.usage = usage
             current.updatedAt = now
             current.phase = RUN_PHASE.FINALIZED
             current.finalizedAt = now
+            if (integrationGate !== null) {
+              appendEvent(current, {
+                at: now,
+                type: 'gate/integration-passed',
+                actor: 'orchestrator',
+                detail: `${integrationGate.results.length} command(s) passed (${integrationGate.durationMs}ms)`,
+              })
+            }
             const markdown = renderReportMarkdown(current, gate)
             reportPath = await store.writeArtifact(root, `teams/${store.teamIdOf(root)}/report.md`, markdown)
             current.artifacts = { ...(current.artifacts ?? {}), reportPath }

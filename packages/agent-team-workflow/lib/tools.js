@@ -34,6 +34,8 @@ import {
   autoMergeApprovedWorktree,
   autoCleanupRunWorktrees,
   getWorktreeDiffSummary,
+  runIntegrationVerify,
+  toIntegrationGateRecord,
 } from './worktree-manager.js'
 import {
   approvedMessage,
@@ -1647,6 +1649,27 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             gate.teamFailures.push(`run used ${tokenTotal(usage.totals)} tokens (budget ${budget.perRun})`)
           }
           if (args.finalize === true && gate.pass) {
+            const integration = await runIntegrationVerify({ cwd: store.workingDir(agent), state: current })
+            if (integration.skipped !== true) {
+              const integrationGate = toIntegrationGateRecord(integration)
+              current.integrationGate = integrationGate
+              gate.integration = integrationGate
+              if (!integration.ok) {
+                const failureDetail = integration.summary || integration.error || 'integration verification failed'
+                gate.pass = false
+                gate.teamFailures.push(`integration gate failed: ${failureDetail}`)
+                W.appendEvent(current, { at: now, type: 'gate/integration-failed', actor: membership.name, detail: failureDetail })
+              } else {
+                W.appendEvent(current, {
+                  at: now,
+                  type: 'gate/integration-passed',
+                  actor: membership.name,
+                  detail: `${integrationGate.results.length} command(s) passed (${integrationGate.durationMs}ms)`,
+                })
+              }
+            }
+          }
+          if (args.finalize === true && gate.pass) {
             for (const override of overrides) {
               const item = W.findItem(current, override.itemId)
               item.overrideReason = override.reason
@@ -1712,6 +1735,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           finalized: args.finalize === true && gate.pass,
           item_gates: gate.itemGates,
           team_failures: gate.teamFailures,
+          integration_gate: state.integrationGate ?? null,
           report_path: reportPath,
           next_actions: nextActions,
         }
