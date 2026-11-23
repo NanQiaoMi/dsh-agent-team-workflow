@@ -747,3 +747,67 @@ test('presetToolPruning=false restores full role tool set even under fast-fix', 
     assert.equal(allowed.has(name), true, `expected ${name} when presetToolPruning is false`)
   }
 })
+
+test('presetToolPruning extends to feature and pr-review presets while preserving deep-audit', () => {
+  const settings = resolveSettings({ presetToolPruning: true })
+
+  // feature preset: prunes work/item/decide/contract when inactive, retains team_dev_lookup
+  const featureWorker = resolveAllowedToolNames({ role: 'implementer', settings, preset: 'feature' })
+  for (const retained of ['team_flow_report', 'team_flow_review_respond', 'team_flow_git', 'team_flow_talk', 'team_flow_read', 'team_flow_escalate', 'team_flow_status', 'team_dev_lookup']) {
+    assert.equal(featureWorker.has(retained), true, `feature worker must retain ${retained}`)
+  }
+  for (const pruned of ['team_flow_work', 'team_flow_item', 'team_flow_decide', 'team_dev_contract']) {
+    assert.equal(featureWorker.has(pruned), false, `feature worker should prune ${pruned} when inactive`)
+  }
+
+  // feature preset restores dynamically when open queue / proposal / contracts are active
+  const activeFeature = resolveAllowedToolNames({
+    role: 'implementer',
+    settings,
+    state: {
+      preset: 'feature',
+      items: [{ id: 'W1', assignment: 'open', handoffPacket: { contract_id: 'c-api' } }],
+      proposals: [{ id: 'P1', status: 'open' }],
+    },
+  })
+  for (const restored of ['team_flow_work', 'team_flow_item', 'team_flow_decide', 'team_dev_contract', 'team_dev_lookup']) {
+    assert.equal(activeFeature.has(restored), true, `feature should dynamically restore ${restored}`)
+  }
+
+  // pr-review preset: prunes decide/contract/lookup when inactive; strictContracts restores dev_contract/dev_lookup
+  const prReviewer = resolveAllowedToolNames({ role: 'reviewer', settings, preset: 'pr-review' })
+  assert.equal(prReviewer.has('team_flow_review_submit'), true)
+  for (const pruned of ['team_flow_decide', 'team_dev_contract', 'team_dev_lookup']) {
+    assert.equal(prReviewer.has(pruned), false, `pr-review reviewer should prune ${pruned}`)
+  }
+  const strictPrReviewer = resolveAllowedToolNames({
+    role: 'reviewer',
+    settings: resolveSettings({ presetToolPruning: true, strictContracts: true }),
+    preset: 'pr-review',
+  })
+  assert.equal(strictPrReviewer.has('team_dev_contract'), true)
+  assert.equal(strictPrReviewer.has('team_dev_lookup'), true)
+
+  // deep-audit preset retains full role tool set
+  const deepWorker = resolveAllowedToolNames({ role: 'implementer', settings, preset: 'deep-audit' })
+  for (const retained of ['team_flow_work', 'team_flow_item', 'team_flow_decide', 'team_dev_contract', 'team_dev_lookup']) {
+    assert.equal(deepWorker.has(retained), true, `deep-audit worker must retain ${retained}`)
+  }
+})
+
+test('slimmed tool schemas meet v2.2 budgets for lead and worker', () => {
+  const settings = resolveSettings({})
+  const allTools = buildTools({
+    ctx: { agentTeams: {}, agents: {}, tools: {} },
+    settings,
+    store: {},
+    version: '2.2.0',
+    tokenUsage: () => null,
+    orchestrator: {},
+  })
+  const serialize = (list) => Buffer.byteLength(JSON.stringify(list.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters }))), 'utf8')
+  const leadBytes = serialize(allTools)
+  const workerBytes = serialize(filterToolsByRole(allTools, resolveAllowedToolNames({ role: 'implementer', settings })))
+  assert.ok(leadBytes <= 19000, `expected tools.lead <= 19000 bytes, got ${leadBytes}`)
+  assert.ok(workerBytes <= 11000, `expected tools.worker <= 11000 bytes, got ${workerBytes}`)
+})
