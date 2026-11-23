@@ -19,6 +19,8 @@ import test from 'node:test'
 import { apply } from '../index.js'
 import { resolveSettings } from '../lib/config.js'
 import { createStore } from '../lib/store.js'
+import { filterToolsByRole, resolveAllowedToolNames } from '../lib/tool-matrix.js'
+import { buildTools } from '../lib/tools.js'
 import * as W from '../lib/workflow.js'
 
 const EXPECTED_TOOLS = [
@@ -673,4 +675,75 @@ test('apply refreshes tools additively when an implementer takes a peer review d
       }
     }
   })
+})
+
+test('presetToolPruning slims worker/reviewer tool schemas under fast-fix while keeping core tools', () => {
+  const settings = resolveSettings({ presetToolPruning: true })
+  const allTools = buildTools({
+    ctx: { agentTeams: {}, agents: {}, tools: {} },
+    settings,
+    store: {},
+    version: '2.1.0',
+    tokenUsage: () => null,
+    orchestrator: {},
+  })
+
+  const workerNames = resolveAllowedToolNames({ role: 'implementer', settings, preset: 'fast-fix' })
+  for (const core of [
+    'team_flow_report',
+    'team_flow_review_respond',
+    'team_flow_git',
+    'team_flow_talk',
+    'team_flow_read',
+    'team_flow_escalate',
+    'team_flow_status',
+  ]) {
+    assert.equal(workerNames.has(core), true, `worker must retain ${core}`)
+  }
+  for (const pruned of ['team_flow_work', 'team_flow_item', 'team_flow_decide', 'team_dev_contract', 'team_dev_lookup']) {
+    assert.equal(workerNames.has(pruned), false, `fast-fix worker should prune ${pruned}`)
+  }
+
+  const workerSchemas = filterToolsByRole(allTools, workerNames).map((t) => ({
+    name: t.name,
+    description: t.description,
+    parameters: t.parameters,
+  }))
+  const workerBytes = Buffer.byteLength(JSON.stringify(workerSchemas), 'utf8')
+  assert.ok(workerBytes <= 8500, `expected pruned worker schemas <= 8500 bytes, got ${workerBytes}`)
+
+  const reviewerNames = resolveAllowedToolNames({ role: 'reviewer', settings, preset: 'fast-fix' })
+  assert.equal(reviewerNames.has('team_flow_review_submit'), true)
+  assert.equal(reviewerNames.has('team_flow_decide'), false)
+  assert.equal(reviewerNames.has('team_dev_contract'), false)
+})
+
+test('presetToolPruning dynamically restores tools when open queue, open proposal, or contracts are active', () => {
+  const settings = resolveSettings({ presetToolPruning: true })
+  const state = {
+    preset: 'fast-fix',
+    items: [
+      { id: 'W1', assignment: 'open', handoffPacket: { contract_id: 'c-auth' } },
+    ],
+    proposals: [{ id: 'P1', status: 'open' }],
+  }
+  const allowed = resolveAllowedToolNames({ role: 'implementer', settings, state })
+  assert.equal(allowed.has('team_flow_work'), true)
+  assert.equal(allowed.has('team_flow_item'), true)
+  assert.equal(allowed.has('team_flow_decide'), true)
+  assert.equal(allowed.has('team_dev_contract'), true)
+  assert.equal(allowed.has('team_dev_lookup'), true)
+
+  const strictSettings = resolveSettings({ presetToolPruning: true, strictContracts: true })
+  const strictAllowed = resolveAllowedToolNames({ role: 'reviewer', settings: strictSettings, preset: 'fast-fix' })
+  assert.equal(strictAllowed.has('team_dev_contract'), true)
+  assert.equal(strictAllowed.has('team_dev_lookup'), true)
+})
+
+test('presetToolPruning=false restores full role tool set even under fast-fix', () => {
+  const settings = resolveSettings({ presetToolPruning: false })
+  const allowed = resolveAllowedToolNames({ role: 'implementer', settings, preset: 'fast-fix' })
+  for (const name of ['team_flow_work', 'team_flow_item', 'team_flow_decide', 'team_dev_contract', 'team_dev_lookup']) {
+    assert.equal(allowed.has(name), true, `expected ${name} when presetToolPruning is false`)
+  }
 })

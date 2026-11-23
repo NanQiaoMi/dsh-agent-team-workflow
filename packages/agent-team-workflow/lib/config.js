@@ -222,6 +222,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   legacyAllTools: false,
   /** Filter registered tools by role to reduce model prompt schema overhead. */
   roleToolScoping: true,
+  /** Prune redundant collaboration/devkit tools in lightweight presets (e.g. fast-fix) when inactive. */
+  presetToolPruning: true,
   /** Pre-flight check in team_flow_report: fail fast on non-zero exit codes. */
   preReportCheck: true,
   /** Require at least one minor/major finding for request_changes (disallows pure nit rework). */
@@ -409,6 +411,7 @@ export function resolveSettings(raw = {}) {
     boardPollMs: clampInt(config.boardPollMs, DEFAULT_SETTINGS.boardPollMs, 500, 60000),
     legacyAllTools: readBool(config.legacyAllTools, DEFAULT_SETTINGS.legacyAllTools),
     roleToolScoping: readBool(config.roleToolScoping, DEFAULT_SETTINGS.roleToolScoping),
+    presetToolPruning: readBool(config.presetToolPruning, DEFAULT_SETTINGS.presetToolPruning),
     preReportCheck: readBool(config.preReportCheck, DEFAULT_SETTINGS.preReportCheck),
     nitTolerance: readBool(config.nitTolerance, DEFAULT_SETTINGS.nitTolerance),
     archiveApprovedItems: readBool(config.archiveApprovedItems, DEFAULT_SETTINGS.archiveApprovedItems),
@@ -480,6 +483,7 @@ export function runSettings(settings) {
     boardPollMs: settings.boardPollMs,
     legacyAllTools: settings.legacyAllTools,
     roleToolScoping: settings.roleToolScoping,
+    presetToolPruning: settings.presetToolPruning,
     preReportCheck: settings.preReportCheck,
     nitTolerance: settings.nitTolerance,
     archiveApprovedItems: settings.archiveApprovedItems,
