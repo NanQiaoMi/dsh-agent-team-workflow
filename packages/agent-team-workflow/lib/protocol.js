@@ -614,3 +614,16 @@ export function reviewStatusLine(item) {
   if (latest === undefined) return `${submittedRounds(item)} round(s) submitted`
   return `latest round ${latest.round}: ${latest.verdict} by ${latest.reviewer}`
 }
+
+/**
+ * Compact, action-forcing nudge sent when an inactive member has not advanced
+ * item progress after being woken.
+ * @param {object} options
+ * @returns {string}
+ */
+export function stallNudgeMessage({ item, role, expectedTool, requiredFields = [], attempt = 1, maxAttempts = 2 }) {
+  const fieldsText = Array.isArray(requiredFields) && requiredFields.length > 0 ? requiredFields.join(', ') : 'item_id'
+  const subject = String(item?.subject ?? '').slice(0, 80)
+  const wt = item?.git?.worktreePath ? ` Worktree: ${item.git.worktreePath}.` : ''
+  return `[STALL_NUDGE ${attempt}/${maxAttempts}] ${item?.id ?? ''} "${subject}" (${role}) has no workflow state update yet.${wt} Do NOT reply with plain text only, and do NOT call team_flow_status unless context was lost. Complete your action and call \`${expectedTool}\` with required fields (${fieldsText}), or call \`team_flow_escalate\` if blocked.`
+}

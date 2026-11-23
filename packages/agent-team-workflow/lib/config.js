@@ -200,6 +200,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
   watchdogIntervalSeconds: 30,
   /** Maximum interval in seconds for adaptive watchdog backoff when run rev is idle. */
   watchdogMaxIntervalSeconds: 180,
+  /** Max automatic nudges for an inactive member with no item progress before escalating to Lead (0 disables). */
+  maxStallNudges: 2,
+  /** Minimum seconds elapsed since last wake/nudge before treating an inactive member as stalled. */
+  stallNudgeDelaySeconds: 45,
   /** Subscribe to agent/status idle events for near-instant orchestration. */
   eventDrivenOrchestrator: true,
   /** Spawn Wave 1 workers upfront and defer Wave 2+/pure reviewers until ready/reported. */
@@ -392,6 +396,8 @@ export function resolveSettings(raw = {}) {
     autoFinalize: readBool(config.autoFinalize, DEFAULT_SETTINGS.autoFinalize),
     watchdogIntervalSeconds: clampInt(config.watchdogIntervalSeconds, DEFAULT_SETTINGS.watchdogIntervalSeconds, 0, 3600),
     watchdogMaxIntervalSeconds: clampInt(config.watchdogMaxIntervalSeconds, DEFAULT_SETTINGS.watchdogMaxIntervalSeconds, 30, 3600),
+    maxStallNudges: clampInt(config.maxStallNudges, DEFAULT_SETTINGS.maxStallNudges, 0, 5),
+    stallNudgeDelaySeconds: clampInt(config.stallNudgeDelaySeconds, DEFAULT_SETTINGS.stallNudgeDelaySeconds, 0, 3600),
     eventDrivenOrchestrator: readBool(config.eventDrivenOrchestrator, DEFAULT_SETTINGS.eventDrivenOrchestrator),
     lazyStaffing: readBool(config.lazyStaffing, DEFAULT_SETTINGS.lazyStaffing),
     statusView: readString(config.statusView, DEFAULT_SETTINGS.statusView, 16) === 'brief' ? 'brief' : 'full',
@@ -463,6 +469,8 @@ export function runSettings(settings) {
     autoFinalize: settings.autoFinalize,
     watchdogIntervalSeconds: settings.watchdogIntervalSeconds,
     watchdogMaxIntervalSeconds: settings.watchdogMaxIntervalSeconds,
+    maxStallNudges: settings.maxStallNudges,
+    stallNudgeDelaySeconds: settings.stallNudgeDelaySeconds,
     eventDrivenOrchestrator: settings.eventDrivenOrchestrator,
     lazyStaffing: settings.lazyStaffing,
     boardPollMs: settings.boardPollMs,
