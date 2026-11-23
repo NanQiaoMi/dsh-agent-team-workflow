@@ -145,6 +145,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   gitBranchPrefix: 'agentteam/',
   /** Verification commands the `verify` action runs. */
   gitVerifyCommands: [],
+  /** Verification commands executed on runBranch after all item worktrees merge and before finalization. */
+  integrationVerifyCommands: [],
   /** Require item git verification to pass before the gate accepts it. */
   gitRequireVerify: false,
   /** DSH provider name used when spawning a fresh teammate. */
@@ -365,6 +367,7 @@ export function resolveSettings(raw = {}) {
     gitRemote: readString(config.gitRemote, DEFAULT_SETTINGS.gitRemote, 200),
     gitBranchPrefix: readString(config.gitBranchPrefix, DEFAULT_SETTINGS.gitBranchPrefix, 200),
     gitVerifyCommands: readCommands(config.gitVerifyCommands),
+    integrationVerifyCommands: readCommands(config.integrationVerifyCommands),
     gitRequireVerify: readBool(config.gitRequireVerify, DEFAULT_SETTINGS.gitRequireVerify),
     freshProvider: readString(config.freshProvider, DEFAULT_SETTINGS.freshProvider, 200),
     forkProvider: readString(config.forkProvider, DEFAULT_SETTINGS.forkProvider, 200),
@@ -434,6 +437,7 @@ export function runSettings(settings) {
     gitRemote: settings.gitRemote,
     gitBranchPrefix: settings.gitBranchPrefix,
     gitVerifyCommands: [...settings.gitVerifyCommands],
+    integrationVerifyCommands: [...settings.integrationVerifyCommands],
     gitRequireVerify: settings.gitRequireVerify,
     freshProvider: settings.freshProvider,
     forkProvider: settings.forkProvider,

@@ -345,3 +345,128 @@ export async function getWorktreeDiffSummary({ cwd, state, item, maxLines = 120,
   const diffOut = await execGit(cwd, diffArgs, 2 * 1024 * 1024)
   return formatDiffSummary(stat, diffOut, limit)
 }
+
+function execGitResult(cwd, args, timeout = 15_000) {
+  return new Promise((resolve) => {
+    execFile('git', args, { cwd, timeout, maxBuffer: 1024 * 1024, encoding: 'utf8' }, (err, stdout, stderr) => {
+      const exitCode = err === null || err === undefined ? 0 : Number.isInteger(err.code) ? err.code : 1
+      resolve({ exitCode, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') })
+    })
+  })
+}
+
+/**
+ * Normalize a `runIntegrationVerify` result into the persisted `state.integrationGate`
+ * and `gate.integration` structure.
+ */
+export function toIntegrationGateRecord(integration) {
+  return {
+    pass: integration.ok === true,
+    branch: integration.branch ?? null,
+    ranAt: integration.ranAt ?? new Date().toISOString(),
+    durationMs: Number.isFinite(integration.durationMs) ? integration.durationMs : 0,
+    results: Array.isArray(integration.results) ? integration.results : [],
+    summary: integration.summary ?? null,
+  }
+}
+
+/**
+ * Run post-merge integration verification commands against the run branch (using
+ * an isolated detached temporary worktree when the main checkout is on another branch).
+ * @param options - `{ cwd, state, timeoutMs? }`
+ * @returns `{ ok, skipped, branch, ranAt?, durationMs?, results, error?, summary? }`
+ */
+export async function runIntegrationVerify({ cwd, state, timeoutMs = 120_000 } = {}) {
+  const commands = Array.isArray(state?.settings?.integrationVerifyCommands)
+    ? state.settings.integrationVerifyCommands.map((c) => String(c ?? '').trim()).filter((c) => c.length > 0)
+    : []
+  const runBranch = typeof state?.git?.branch === 'string' && state.git.branch.length > 0 ? state.git.branch : null
+
+  if (commands.length === 0) {
+    return { ok: true, skipped: true, branch: runBranch, commands: [], results: [] }
+  }
+  if (typeof cwd !== 'string' || cwd.length === 0) {
+    return {
+      ok: false,
+      skipped: false,
+      branch: runBranch,
+      ranAt: new Date().toISOString(),
+      durationMs: 0,
+      results: [],
+      error: 'integration verification requires a workspace cwd',
+      summary: 'integration verification requires a workspace cwd',
+    }
+  }
+
+  const startedAt = Date.now()
+  let verifyCwd = cwd
+  let tempWorktreeRel = null
+
+  if (runBranch !== null) {
+    const status = await G.gitStatus({ cwd })
+    if (status.ok && status.branch !== runBranch) {
+      await ensureExcludeAgentteamHelper(status, cwd)
+      const safeRunId = String(state?.runId ?? 'run').replace(/[^A-Za-z0-9._-]+/g, '-')
+      tempWorktreeRel = `.agentteam/worktrees/${safeRunId}/__integration__-${Date.now()}`
+      const added = await execGitResult(cwd, ['worktree', 'add', '--detach', tempWorktreeRel, runBranch])
+      if (added.exitCode !== 0) {
+        const errMsg = (added.stderr || added.stdout || 'git worktree add --detach failed').trim()
+        return {
+          ok: false,
+          skipped: false,
+          branch: runBranch,
+          ranAt: new Date().toISOString(),
+          durationMs: Date.now() - startedAt,
+          results: [],
+          error: errMsg,
+          summary: errMsg,
+        }
+      }
+      verifyCwd = path.resolve(cwd, tempWorktreeRel)
+    }
+  }
+
+  try {
+    const verified = await G.gitVerify({ cwd: verifyCwd, commands, timeoutMs })
+    const durationMs = Date.now() - startedAt
+    const ranAt = new Date().toISOString()
+    const results = Array.isArray(verified.results) ? verified.results : []
+    if (verified.ok === true) {
+      return { ok: true, skipped: false, branch: runBranch, ranAt, durationMs, results }
+    }
+    const failing = results.filter((r) => r.exitCode !== 0)
+    const summary = failing.length > 0
+      ? failing
+          .map((r) => {
+            const tail = String(r.outputTail ?? '').slice(-250).trim()
+            return tail.length > 0 ? `${r.command} (exit ${r.exitCode}): ${tail}` : `${r.command} (exit ${r.exitCode})`
+          })
+          .join('; ')
+      : (verified.error ?? 'integration verification failed')
+    return {
+      ok: false,
+      skipped: false,
+      branch: runBranch,
+      ranAt,
+      durationMs,
+      results,
+      error: verified.error ?? summary,
+      summary,
+    }
+  } finally {
+    if (tempWorktreeRel !== null) {
+      await execGitResult(cwd, ['worktree', 'remove', '--force', tempWorktreeRel]).catch(() => {})
+    }
+  }
+}
+
+async function ensureExcludeAgentteamHelper(status, cwd) {
+  try {
+    const fs = await import('node:fs/promises')
+    const excludePath = path.join(status.root ?? cwd, '.git', 'info', 'exclude')
+    const currentExclude = await fs.readFile(excludePath, 'utf8').catch(() => '')
+    if (!currentExclude.includes('.agentteam')) {
+      await fs.appendFile(excludePath, '\n.agentteam/\n', 'utf8').catch(() => {})
+    }
+  } catch {}
+}

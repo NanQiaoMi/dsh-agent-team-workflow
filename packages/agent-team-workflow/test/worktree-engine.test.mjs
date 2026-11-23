@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { resolveSettings } from '../lib/config.js'
+import { createOrchestrator } from '../lib/orchestrator.js'
 import { createStore } from '../lib/store.js'
 import { buildTools } from '../lib/tools.js'
 import * as Git from '../lib/git.js'
@@ -680,5 +681,277 @@ test('getWorktreeDiffSummary computes incremental diff using sinceSha when provi
     assert.ok(deltaDiff !== null)
     assert.match(deltaDiff, /round2\.txt/)
     assert.ok(!deltaDiff.includes('round1.txt'), 'incremental diff must exclude changes already reviewed in round 1')
+  })
+})
+
+test('post-merge integration gate passes on autoFinalize when merged branches work together', async () => {
+  await withRepo(async ({ repo }) => {
+    const harness = createHarness(repo)
+    const settings = resolveSettings({
+      gitEnabled: true,
+      gitBaseBranch: 'main',
+      worktreeIsolation: 'parallel',
+      autoWorktree: true,
+      autoMergeWorktree: true,
+      autoCleanupWorktrees: true,
+      autoFinalize: true,
+      autoStaff: false,
+      integrationVerifyCommands: [
+        'node -e "import(\'./a.mjs\').then(async a => { const b = await import(\'./b.mjs\'); if (a.val + b.val !== 3) process.exit(1) })"',
+      ],
+    })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const orchestrator = createOrchestrator({ ctx: harness.ctx, store, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: '2.1.0' })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const gitTool = tools.find((t) => t.name === 'team_flow_git')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const reviewTool = tools.find((t) => t.name === 'team_flow_review_submit')
+
+    const worker1Agent = { id: 'session-w1', session: { id: 'session-w1' } }
+    const worker2Agent = { id: 'session-w2', session: { id: 'session-w2' } }
+    const reviewer1Agent = { id: 'session-r1', session: { id: 'session-r1' } }
+
+    await planTool.execute(
+      {
+        objective: 'Verify passing post-merge integration gate',
+        acceptance_criteria: ['Integration command passes on runBranch'],
+        items: [
+          {
+            id: 'T1',
+            subject: 'Create a.mjs',
+            owner: 'worker1',
+            reviewers: ['reviewer1'],
+            write_scopes: ['a.mjs'],
+            definition_of_done: ['Export val = 1'],
+            evidence_commands: ['echo ok'],
+          },
+          {
+            id: 'T2',
+            subject: 'Create b.mjs',
+            owner: 'worker2',
+            reviewers: ['reviewer1'],
+            write_scopes: ['b.mjs'],
+            definition_of_done: ['Export val = 2'],
+            evidence_commands: ['echo ok'],
+          },
+        ],
+      },
+      { agent: harness.lead },
+    )
+
+    let state = await store.readState(harness.lead)
+    const t1 = state.items.find((it) => it.id === 'T1')
+    const t2 = state.items.find((it) => it.id === 'T2')
+
+    await writeFile(join(t1.git.worktreePath, 'a.mjs'), 'export const val = 1\n')
+    await gitTool.execute({ action: 'commit', item_id: 'T1', files: ['a.mjs'], message: 'feat: add a.mjs' }, { agent: worker1Agent })
+    await reportTool.execute(
+      { item_id: 'T1', summary: 'Added a.mjs', files: ['a.mjs'], commands: [{ command: 'echo ok', exit_code: 0 }], evidence: ['ok'] },
+      { agent: worker1Agent },
+    )
+
+    await writeFile(join(t2.git.worktreePath, 'b.mjs'), 'export const val = 2\n')
+    await gitTool.execute({ action: 'commit', item_id: 'T2', files: ['b.mjs'], message: 'feat: add b.mjs' }, { agent: worker2Agent })
+    await reportTool.execute(
+      { item_id: 'T2', summary: 'Added b.mjs', files: ['b.mjs'], commands: [{ command: 'echo ok', exit_code: 0 }], evidence: ['ok'] },
+      { agent: worker2Agent },
+    )
+
+    await reviewTool.execute({ item_id: 'T1', verdict: 'approve', summary: 'Approved', evidence_checked: ['diff'] }, { agent: reviewer1Agent })
+    await reviewTool.execute({ item_id: 'T2', verdict: 'approve', summary: 'Approved', evidence_checked: ['diff'] }, { agent: reviewer1Agent })
+
+    const res = await orchestrator.reconcile(harness.lead, { force: true })
+    assert.equal(res.finalized, true)
+
+    state = await store.readState(harness.lead)
+    assert.equal(state.phase, 'finalized')
+    assert.equal(state.integrationGate?.pass, true)
+    assert.ok(state.events.some((e) => e.type === 'gate/integration-passed'))
+  })
+})
+
+test('post-merge integration gate failure blocks autoFinalize and notifies Lead', async () => {
+  await withRepo(async ({ repo }) => {
+    const harness = createHarness(repo)
+    const settings = resolveSettings({
+      gitEnabled: true,
+      gitBaseBranch: 'main',
+      worktreeIsolation: 'parallel',
+      autoWorktree: true,
+      autoMergeWorktree: true,
+      autoCleanupWorktrees: true,
+      autoFinalize: true,
+      autoStaff: false,
+      integrationVerifyCommands: [
+        'node -e "import(\'./api.mjs\').then(async api => { const c = await import(\'./consumer.mjs\'); if (!c.check(api)) { console.error(\'API mismatch\'); process.exit(1) } })"',
+      ],
+    })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const orchestrator = createOrchestrator({ ctx: harness.ctx, store, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: '2.1.0' })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const gitTool = tools.find((t) => t.name === 'team_flow_git')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const reviewTool = tools.find((t) => t.name === 'team_flow_review_submit')
+
+    const worker1Agent = { id: 'session-w1', session: { id: 'session-w1' } }
+    const worker2Agent = { id: 'session-w2', session: { id: 'session-w2' } }
+    const reviewer1Agent = { id: 'session-r1', session: { id: 'session-r1' } }
+
+    await planTool.execute(
+      {
+        objective: 'Detect cross-branch integration breakage before autoFinalize',
+        acceptance_criteria: ['Broken merge blocked before finalize'],
+        items: [
+          {
+            id: 'T1',
+            subject: 'API v1',
+            owner: 'worker1',
+            reviewers: ['reviewer1'],
+            write_scopes: ['api.mjs'],
+            definition_of_done: ['Export version v1'],
+            evidence_commands: ['echo ok'],
+          },
+          {
+            id: 'T2',
+            subject: 'Consumer expecting v2',
+            owner: 'worker2',
+            reviewers: ['reviewer1'],
+            write_scopes: ['consumer.mjs'],
+            definition_of_done: ['Check version'],
+            evidence_commands: ['echo ok'],
+          },
+        ],
+      },
+      { agent: harness.lead },
+    )
+
+    let state = await store.readState(harness.lead)
+    const t1 = state.items.find((it) => it.id === 'T1')
+    const t2 = state.items.find((it) => it.id === 'T2')
+
+    await writeFile(join(t1.git.worktreePath, 'api.mjs'), 'export const version = 1\n')
+    await gitTool.execute({ action: 'commit', item_id: 'T1', files: ['api.mjs'], message: 'feat: api v1' }, { agent: worker1Agent })
+    await reportTool.execute(
+      { item_id: 'T1', summary: 'API v1', files: ['api.mjs'], commands: [{ command: 'echo ok', exit_code: 0 }], evidence: ['ok'] },
+      { agent: worker1Agent },
+    )
+
+    await writeFile(join(t2.git.worktreePath, 'consumer.mjs'), 'export const check = (api) => api.version === 2\n')
+    await gitTool.execute({ action: 'commit', item_id: 'T2', files: ['consumer.mjs'], message: 'feat: consumer v2' }, { agent: worker2Agent })
+    await reportTool.execute(
+      { item_id: 'T2', summary: 'Consumer v2', files: ['consumer.mjs'], commands: [{ command: 'echo ok', exit_code: 0 }], evidence: ['ok'] },
+      { agent: worker2Agent },
+    )
+
+    await reviewTool.execute({ item_id: 'T1', verdict: 'approve', summary: 'Approved', evidence_checked: ['diff'] }, { agent: reviewer1Agent })
+    await reviewTool.execute({ item_id: 'T2', verdict: 'approve', summary: 'Approved', evidence_checked: ['diff'] }, { agent: reviewer1Agent })
+
+    harness.messages.length = 0
+    const res = await orchestrator.reconcile(harness.lead, { force: true })
+    assert.equal(res.finalized, false)
+    assert.equal(res.integrationFailed, true)
+    assert.ok(res.actionsTaken.some((a) => a.type === 'integration-gate-failed'))
+
+    state = await store.readState(harness.lead)
+    assert.notEqual(state.phase, 'finalized')
+    assert.equal(state.integrationGate?.pass, false)
+    assert.match(state.integrationGate?.summary ?? '', /API mismatch|exit 1/)
+    assert.ok(state.events.some((e) => e.type === 'gate/integration-failed'))
+
+    const leadNotice = harness.messages.find((m) => m.target === 'lead' && m.text.includes('INTEGRATION_GATE_FAILED'))
+    assert.ok(leadNotice, 'Lead must be notified when integration gate fails')
+  })
+})
+
+test('post-merge integration gate failure blocks team_flow_gate finalize', async () => {
+  await withRepo(async ({ repo }) => {
+    const harness = createHarness(repo)
+    const settings = resolveSettings({
+      gitEnabled: true,
+      gitBaseBranch: 'main',
+      worktreeIsolation: 'parallel',
+      autoWorktree: true,
+      autoMergeWorktree: true,
+      autoCleanupWorktrees: true,
+      autoStaff: false,
+      integrationVerifyCommands: [
+        'node -e "import(\'./api.mjs\').then(async api => { const c = await import(\'./consumer.mjs\'); if (!c.check(api)) process.exit(1) })"',
+      ],
+    })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: '2.1.0' })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const gitTool = tools.find((t) => t.name === 'team_flow_git')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const reviewTool = tools.find((t) => t.name === 'team_flow_review_submit')
+    const gateTool = tools.find((t) => t.name === 'team_flow_gate')
+
+    const worker1Agent = { id: 'session-w1', session: { id: 'session-w1' } }
+    const worker2Agent = { id: 'session-w2', session: { id: 'session-w2' } }
+    const reviewer1Agent = { id: 'session-r1', session: { id: 'session-r1' } }
+
+    await planTool.execute(
+      {
+        objective: 'Verify team_flow_gate blocks finalize on integration failure',
+        acceptance_criteria: ['Manual gate finalize blocked'],
+        items: [
+          {
+            id: 'T1',
+            subject: 'API v1',
+            owner: 'worker1',
+            reviewers: ['reviewer1'],
+            write_scopes: ['api.mjs'],
+            definition_of_done: ['Export version v1'],
+            evidence_commands: ['echo ok'],
+          },
+          {
+            id: 'T2',
+            subject: 'Consumer expecting v2',
+            owner: 'worker2',
+            reviewers: ['reviewer1'],
+            write_scopes: ['consumer.mjs'],
+            definition_of_done: ['Check version'],
+            evidence_commands: ['echo ok'],
+          },
+        ],
+      },
+      { agent: harness.lead },
+    )
+
+    let state = await store.readState(harness.lead)
+    const t1 = state.items.find((it) => it.id === 'T1')
+    const t2 = state.items.find((it) => it.id === 'T2')
+
+    await writeFile(join(t1.git.worktreePath, 'api.mjs'), 'export const version = 1\n')
+    await gitTool.execute({ action: 'commit', item_id: 'T1', files: ['api.mjs'], message: 'feat: api v1' }, { agent: worker1Agent })
+    await reportTool.execute(
+      { item_id: 'T1', summary: 'API v1', files: ['api.mjs'], commands: [{ command: 'echo ok', exit_code: 0 }], evidence: ['ok'] },
+      { agent: worker1Agent },
+    )
+
+    await writeFile(join(t2.git.worktreePath, 'consumer.mjs'), 'export const check = (api) => api.version === 2\n')
+    await gitTool.execute({ action: 'commit', item_id: 'T2', files: ['consumer.mjs'], message: 'feat: consumer v2' }, { agent: worker2Agent })
+    await reportTool.execute(
+      { item_id: 'T2', summary: 'Consumer v2', files: ['consumer.mjs'], commands: [{ command: 'echo ok', exit_code: 0 }], evidence: ['ok'] },
+      { agent: worker2Agent },
+    )
+
+    await reviewTool.execute({ item_id: 'T1', verdict: 'approve', summary: 'Approved', evidence_checked: ['diff'] }, { agent: reviewer1Agent })
+    await reviewTool.execute({ item_id: 'T2', verdict: 'approve', summary: 'Approved', evidence_checked: ['diff'] }, { agent: reviewer1Agent })
+
+    await assert.rejects(
+      () => gateTool.execute({ finalize: true }, { agent: harness.lead }),
+      /integration gate failed/,
+    )
+
+    state = await store.readState(harness.lead)
+    assert.notEqual(state.phase, 'finalized')
+    assert.equal(state.integrationGate?.pass, false)
+    assert.ok(state.events.some((e) => e.type === 'gate/integration-failed'))
   })
 })
