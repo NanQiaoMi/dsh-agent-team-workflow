@@ -180,6 +180,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
   worktreeIsolation: 'off',
   /** Automatically provision worktrees for planned/created items when worktreeIsolation is active. */
   autoWorktree: true,
+  /** Provision worktrees only for unblocked items upfront; defer downstream waves until upstream merges. */
+  lazyWorktreeProvision: true,
+  /** Automatically commit dirty changes inside writeScopes when team_flow_report is called. */
+  autoCommitOnReport: true,
   /** Automatically merge an approved item's worktree branch into the run branch. */
   autoMergeWorktree: true,
   /** Automatically clean up temporary worktrees when the run is finalized. */
@@ -198,6 +202,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
   watchdogIntervalSeconds: 30,
   /** Maximum interval in seconds for adaptive watchdog backoff when run rev is idle. */
   watchdogMaxIntervalSeconds: 180,
+  /** Max automatic nudges for an inactive member with no item progress before escalating to Lead (0 disables). */
+  maxStallNudges: 2,
+  /** Minimum seconds elapsed since last wake/nudge before treating an inactive member as stalled. */
+  stallNudgeDelaySeconds: 45,
   /** Subscribe to agent/status idle events for near-instant orchestration. */
   eventDrivenOrchestrator: true,
   /** Spawn Wave 1 workers upfront and defer Wave 2+/pure reviewers until ready/reported. */
@@ -380,6 +388,8 @@ export function resolveSettings(raw = {}) {
     tokenBudgetPerRun: clampInt(config.tokenBudgetPerRun, DEFAULT_SETTINGS.tokenBudgetPerRun, 0, 1_000_000_000),
     worktreeIsolation: readWorktreeMode(config.worktreeIsolation),
     autoWorktree: readBool(config.autoWorktree, DEFAULT_SETTINGS.autoWorktree),
+    lazyWorktreeProvision: readBool(config.lazyWorktreeProvision, DEFAULT_SETTINGS.lazyWorktreeProvision),
+    autoCommitOnReport: readBool(config.autoCommitOnReport, DEFAULT_SETTINGS.autoCommitOnReport),
     autoMergeWorktree: readBool(config.autoMergeWorktree, DEFAULT_SETTINGS.autoMergeWorktree),
     autoCleanupWorktrees: readBool(config.autoCleanupWorktrees, DEFAULT_SETTINGS.autoCleanupWorktrees),
     autoOrchestrate: readBool(config.autoOrchestrate, DEFAULT_SETTINGS.autoOrchestrate),
@@ -389,6 +399,8 @@ export function resolveSettings(raw = {}) {
     autoFinalize: readBool(config.autoFinalize, DEFAULT_SETTINGS.autoFinalize),
     watchdogIntervalSeconds: clampInt(config.watchdogIntervalSeconds, DEFAULT_SETTINGS.watchdogIntervalSeconds, 0, 3600),
     watchdogMaxIntervalSeconds: clampInt(config.watchdogMaxIntervalSeconds, DEFAULT_SETTINGS.watchdogMaxIntervalSeconds, 30, 3600),
+    maxStallNudges: clampInt(config.maxStallNudges, DEFAULT_SETTINGS.maxStallNudges, 0, 5),
+    stallNudgeDelaySeconds: clampInt(config.stallNudgeDelaySeconds, DEFAULT_SETTINGS.stallNudgeDelaySeconds, 0, 3600),
     eventDrivenOrchestrator: readBool(config.eventDrivenOrchestrator, DEFAULT_SETTINGS.eventDrivenOrchestrator),
     lazyStaffing: readBool(config.lazyStaffing, DEFAULT_SETTINGS.lazyStaffing),
     statusView: readString(config.statusView, DEFAULT_SETTINGS.statusView, 16) === 'brief' ? 'brief' : 'full',
@@ -450,6 +462,8 @@ export function runSettings(settings) {
     tokenBudgetPerRun: settings.tokenBudgetPerRun,
     worktreeIsolation: settings.worktreeIsolation,
     autoWorktree: settings.autoWorktree,
+    lazyWorktreeProvision: settings.lazyWorktreeProvision,
+    autoCommitOnReport: settings.autoCommitOnReport,
     autoMergeWorktree: settings.autoMergeWorktree,
     autoCleanupWorktrees: settings.autoCleanupWorktrees,
     autoOrchestrate: settings.autoOrchestrate,
@@ -459,6 +473,8 @@ export function runSettings(settings) {
     autoFinalize: settings.autoFinalize,
     watchdogIntervalSeconds: settings.watchdogIntervalSeconds,
     watchdogMaxIntervalSeconds: settings.watchdogMaxIntervalSeconds,
+    maxStallNudges: settings.maxStallNudges,
+    stallNudgeDelaySeconds: settings.stallNudgeDelaySeconds,
     eventDrivenOrchestrator: settings.eventDrivenOrchestrator,
     lazyStaffing: settings.lazyStaffing,
     boardPollMs: settings.boardPollMs,

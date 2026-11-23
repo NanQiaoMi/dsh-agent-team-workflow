@@ -29,6 +29,7 @@ import { classifyDiffRisk, formatPrReviewMarkdown, normalizeDodChecks, renderRev
 import { computeUsage } from './telemetry.js'
 import * as W from './workflow.js'
 import {
+  autoCommitWorktreeIfSafe,
   autoProvisionWorktrees,
   autoMergeApprovedWorktree,
   autoCleanupRunWorktrees,
@@ -1010,6 +1011,29 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
         }))
         const files = (Array.isArray(args.files) ? args.files : []).map((file) => W.normalizePath(file)).filter((file) => file.length > 0)
         const cwd = store.workingDir(agent)
+        const snapshot = await store.readState(agent)
+        const targetItem = snapshot?.items?.find((it) => it.id === String(args.item_id ?? ''))
+        let autoCommit = null
+        if (targetItem && targetItem.owner === membership.name && targetItem.status !== W.ITEM_STATUS.APPROVED) {
+          autoCommit = await autoCommitWorktreeIfSafe({ cwd, state: snapshot, item: targetItem })
+          if (autoCommit.ok === false) {
+            if (autoCommit.outOfScope && !args.deviation) {
+              throw new Error(
+                `team_flow_report rejected: worktree has uncommitted changes outside declared writeScopes (${autoCommit.outside.join(', ')}). Revert or move them inside scope before reporting, or explain in "deviation".`,
+              )
+            }
+            if (!autoCommit.outOfScope && !args.deviation) {
+              throw new Error(`team_flow_report rejected: failed to auto-commit worktree changes: ${autoCommit.error}`)
+            }
+          } else if (autoCommit.committed === true && Array.isArray(autoCommit.files)) {
+            for (const committedFile of autoCommit.files) {
+              const normalized = W.normalizePath(committedFile)
+              if (normalized.length > 0 && !files.includes(normalized)) {
+                files.push(normalized)
+              }
+            }
+          }
+        }
         const handoffPacket = args.handoff_packet && typeof args.handoff_packet === 'object'
           ? {
               contract_id: args.handoff_packet.contract_id ? String(args.handoff_packet.contract_id).trim() : null,
@@ -1071,6 +1095,19 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           }
 
           const applied = W.applyReport(current, { itemId: item.id, caller: membership.name, report, handoffPacket, now, settings: current.settings })
+          if (autoCommit?.committed === true) {
+            applied.item.git = {
+              ...(applied.item.git ?? {}),
+              lastAutoCommitSha: autoCommit.sha ?? null,
+              autoCommitCount: (applied.item.git?.autoCommitCount ?? 0) + 1,
+            }
+            W.appendEvent(current, {
+              at: now,
+              type: 'git/auto-commit',
+              actor: 'worktree-manager',
+              detail: `${item.id} (${autoCommit.files.length} file(s), ${autoCommit.sha?.slice(0, 7) ?? ''})`,
+            })
+          }
           applied.item.resolvedReview = classifyDiffRisk({ files: applied.item.report.files, item: applied.item, settings: current.settings })
           outcome = applied
           return current
@@ -1150,6 +1187,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           sequence_warnings: item.report?.sequenceWarnings ?? [],
           sync_warnings: syncWarnings,
           notified,
+          auto_commit: autoCommit?.committed === true ? { committed: true, sha: autoCommit.sha ?? null, files: autoCommit.files } : null,
           next_actions: item.status === W.ITEM_STATUS.IN_REVIEW ? ['Stop and let the reviewer work; the Lead will message you if changes are requested.'] : status.next_actions,
         }
       },
@@ -1324,7 +1362,10 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           const cwd = store.workingDir(agent)
           await autoMergeApprovedWorktree({ cwd, state, itemId: item.id, agent, store }).catch(() => {})
           state = (await store.readState(agent)) ?? state
-          if (state?.settings?.worktreeIsolation === 'serial') {
+          if (
+            state?.settings?.worktreeIsolation === 'serial' ||
+            (state?.settings?.worktreeIsolation === 'parallel' && state?.settings?.lazyWorktreeProvision !== false)
+          ) {
             await autoProvisionWorktrees({ cwd, state, agent, store }).catch(() => {})
             state = (await store.readState(agent)) ?? state
           }

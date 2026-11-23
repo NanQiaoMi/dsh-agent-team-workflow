@@ -749,3 +749,265 @@ test('orchestrator enforces single-flight per team and coalesces concurrent reco
   })
 })
 
+test('orchestrator sends graduated stall nudges to stalled worker and escalates to Lead', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    harness.members.push(
+      { name: 'worker-1', role: 'teammate', id: 'session-w1', status: 'inactive' },
+      { name: 'rev-1', role: 'teammate', id: 'session-rev', status: 'inactive' },
+    )
+    let clockMs = 1_000_000
+    const settings = resolveSettings({
+      autoOrchestrate: true,
+      autoStaff: false,
+      maxStallNudges: 2,
+      stallNudgeDelaySeconds: 45,
+    })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const orchestrator = createOrchestrator({ ctx: harness.ctx, store, settings, now: () => clockMs })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: '2.1.0', orchestrator })
+
+    await tools.find((t) => t.name === 'team_flow_plan').execute(
+      {
+        objective: 'Graduated stall nudge test',
+        acceptance_criteria: ['Worker nudged twice then escalated'],
+        items: [
+          {
+            id: 'W1',
+            subject: 'Implement auth handler',
+            owner: 'worker-1',
+            reviewers: ['rev-1'],
+            write_scopes: ['src/'],
+            definition_of_done: ['Handler complete'],
+          },
+        ],
+      },
+      { agent: harness.lead, signal: new AbortController().signal },
+    )
+
+    // Initial wake (triggered by team_flow_plan -> orchestrator)
+    await orchestrator.whenIdle()
+    assert.equal(harness.messages.filter((m) => m.target === 'worker-1').length, 1)
+
+    // Before delay passes, reconcile must NOT nudge
+    clockMs += 30_000
+    const rBefore = await orchestrator.reconcile(harness.lead)
+    assert.equal(rBefore.actionsTaken.length, 0)
+
+    // Advance past 45s -> nudge 1/2
+    clockMs += 20_000
+    const r1 = await orchestrator.reconcile(harness.lead)
+    assert.ok(r1.actionsTaken.some((a) => a.type === 'stall-nudge' && a.target === 'worker-1' && a.attempt === 1))
+    const nudge1 = harness.messages.filter((m) => m.target === 'worker-1').at(-1)
+    assert.match(nudge1.text, /\[STALL_NUDGE 1\/2\]/)
+    assert.match(nudge1.text, /team_flow_report/)
+
+    // Advance past 45s -> nudge 2/2
+    clockMs += 50_000
+    const r2 = await orchestrator.reconcile(harness.lead)
+    assert.ok(r2.actionsTaken.some((a) => a.type === 'stall-nudge' && a.target === 'worker-1' && a.attempt === 2))
+    const nudge2 = harness.messages.filter((m) => m.target === 'worker-1').at(-1)
+    assert.match(nudge2.text, /\[STALL_NUDGE 2\/2\]/)
+
+    // Advance past 45s -> escalate to Lead
+    clockMs += 50_000
+    const r3 = await orchestrator.reconcile(harness.lead)
+    assert.ok(r3.actionsTaken.some((a) => a.type === 'stall-escalated' && a.stalledMember === 'worker-1' && a.itemId === 'W1'))
+    const leadMsg = harness.messages.find((m) => m.target === 'lead' && m.text.includes('LEAD_ARBITRATION_REQUIRED'))
+    assert.ok(leadMsg, 'Lead must receive arbitration notice after max nudges')
+    assert.match(leadMsg.text, /worker-1/)
+    assert.match(leadMsg.text, /team_flow_repair/)
+
+    // Subsequent reconciles after escalation must NOT spam
+    clockMs += 120_000
+    const r4 = await orchestrator.reconcile(harness.lead)
+    assert.equal(r4.actionsTaken.length, 0)
+
+    const state = await store.readState(harness.lead)
+    assert.equal(state.events.filter((e) => e.type === 'member/stall-nudge').length, 2)
+    assert.equal(state.events.filter((e) => e.type === 'member/stall-escalated').length, 1)
+  })
+})
+
+test('orchestrator nudges stalled reviewer after report notification', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const worker1 = { id: 'session-w1', session: { id: 'session-w1' } }
+    const rev1 = { id: 'session-rev', session: { id: 'session-rev' } }
+    harness.members.push(
+      { name: 'worker-1', role: 'teammate', id: worker1.id, status: 'inactive' },
+      { name: 'rev-1', role: 'teammate', id: rev1.id, status: 'inactive' },
+    )
+    let clockMs = 2_000_000
+    const settings = resolveSettings({
+      autoOrchestrate: true,
+      autoStaff: false,
+      maxStallNudges: 2,
+      stallNudgeDelaySeconds: 45,
+    })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const orchestrator = createOrchestrator({ ctx: harness.ctx, store, settings, now: () => clockMs })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: '2.1.0', orchestrator })
+
+    await tools.find((t) => t.name === 'team_flow_plan').execute(
+      {
+        objective: 'Reviewer stall test',
+        acceptance_criteria: ['Stalled reviewer receives nudge'],
+        items: [
+          {
+            id: 'W1',
+            subject: 'Verify cache layer',
+            owner: 'worker-1',
+            reviewers: ['rev-1'],
+            write_scopes: ['src/'],
+            definition_of_done: ['Cache tested'],
+          },
+        ],
+      },
+      { agent: harness.lead, signal: new AbortController().signal },
+    )
+
+    await tools.find((t) => t.name === 'team_flow_report').execute(
+      {
+        item_id: 'W1',
+        summary: 'Built cache layer',
+        files: ['src/cache.js'],
+        commands: [{ command: 'npm test', exit_code: 0 }],
+        evidence: ['all tests green'],
+      },
+      { agent: worker1, signal: new AbortController().signal },
+    )
+    await orchestrator.whenIdle()
+    assert.equal(harness.messages.filter((m) => m.target === 'rev-1').length, 1)
+
+    clockMs += 50_000
+    const r = await orchestrator.reconcile(harness.lead)
+    assert.ok(r.actionsTaken.some((a) => a.type === 'stall-nudge' && a.target === 'rev-1' && a.attempt === 1))
+    const revNudge = harness.messages.filter((m) => m.target === 'rev-1').at(-1)
+    assert.match(revNudge.text, /\[STALL_NUDGE 1\/2\]/)
+    assert.match(revNudge.text, /team_flow_review_submit/)
+  })
+})
+
+test('orchestrator never nudges a running member and resets stall tracker on item progress', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    const worker1 = { id: 'session-w1', session: { id: 'session-w1' } }
+    harness.members.push(
+      { name: 'worker-1', role: 'teammate', id: worker1.id, status: 'inactive' },
+      { name: 'rev-1', role: 'teammate', id: 'session-rev', status: 'inactive' },
+    )
+    let clockMs = 3_000_000
+    const settings = resolveSettings({
+      autoOrchestrate: true,
+      autoStaff: false,
+      maxStallNudges: 2,
+      stallNudgeDelaySeconds: 45,
+    })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const orchestrator = createOrchestrator({ ctx: harness.ctx, store, settings, now: () => clockMs })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: '2.1.0', orchestrator })
+
+    await tools.find((t) => t.name === 'team_flow_plan').execute(
+      {
+        objective: 'Running & progress reset test',
+        acceptance_criteria: ['Running member spared, progress resets'],
+        items: [
+          {
+            id: 'W1',
+            subject: 'Long running task',
+            owner: 'worker-1',
+            reviewers: ['rev-1'],
+            write_scopes: ['src/'],
+            definition_of_done: ['Done'],
+          },
+        ],
+      },
+      { agent: harness.lead, signal: new AbortController().signal },
+    )
+
+    await orchestrator.whenIdle()
+    assert.equal(harness.messages.filter((m) => m.target === 'worker-1').length, 1)
+    // Member transitions to running; even after 60s, no nudge while running
+    harness.members.find((m) => m.name === 'worker-1').status = 'running'
+    clockMs += 60_000
+    const rRunning = await orchestrator.reconcile(harness.lead)
+    assert.equal(rRunning.actionsTaken.length, 0)
+
+    // Member returns to inactive, but delay starts from when it stopped running
+    harness.members.find((m) => m.name === 'worker-1').status = 'inactive'
+    clockMs += 20_000
+    const rJustStopped = await orchestrator.reconcile(harness.lead)
+    assert.equal(rJustStopped.actionsTaken.length, 0)
+
+    // Now delay elapses -> nudge 1/2 sent
+    clockMs += 30_000
+    const rNudge = await orchestrator.reconcile(harness.lead)
+    assert.ok(rNudge.actionsTaken.some((a) => a.type === 'stall-nudge' && a.target === 'worker-1'))
+
+    // Worker finally calls team_flow_report -> stall tracker for worker-1 clears
+    await tools.find((t) => t.name === 'team_flow_report').execute(
+      {
+        item_id: 'W1',
+        summary: 'Completed after nudge',
+        files: ['src/app.js'],
+        commands: [{ command: 'npm test', exit_code: 0 }],
+        evidence: ['ok'],
+      },
+      { agent: worker1, signal: new AbortController().signal },
+    )
+    await orchestrator.whenIdle()
+
+    const msgCountBefore = harness.messages.filter((m) => m.target === 'worker-1').length
+    clockMs += 60_000
+    await orchestrator.reconcile(harness.lead)
+    const msgCountAfter = harness.messages.filter((m) => m.target === 'worker-1').length
+    assert.equal(msgCountAfter, msgCountBefore, 'worker-1 must not be nudged after submitting report')
+  })
+})
+
+test('maxStallNudges=0 disables automatic stall nudging and escalation', () => {
+  return withWorkspace(async (cwd) => {
+    const harness = createHarness(cwd)
+    harness.members.push(
+      { name: 'worker-1', role: 'teammate', id: 'session-w1', status: 'inactive' },
+      { name: 'rev-1', role: 'teammate', id: 'session-rev', status: 'inactive' },
+    )
+    let clockMs = 4_000_000
+    const settings = resolveSettings({
+      autoOrchestrate: true,
+      autoStaff: false,
+      maxStallNudges: 0,
+      stallNudgeDelaySeconds: 10,
+    })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const orchestrator = createOrchestrator({ ctx: harness.ctx, store, settings, now: () => clockMs })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: '2.1.0', orchestrator })
+
+    await tools.find((t) => t.name === 'team_flow_plan').execute(
+      {
+        objective: 'Disable stall nudging',
+        acceptance_criteria: ['Zero nudges when maxStallNudges=0'],
+        items: [
+          {
+            id: 'W1',
+            subject: 'Task',
+            owner: 'worker-1',
+            reviewers: ['rev-1'],
+            write_scopes: ['src/'],
+            definition_of_done: ['Done'],
+          },
+        ],
+      },
+      { agent: harness.lead, signal: new AbortController().signal },
+    )
+
+    await orchestrator.reconcile(harness.lead)
+    clockMs += 120_000
+    const r = await orchestrator.reconcile(harness.lead)
+    assert.equal(r.actionsTaken.length, 0)
+    assert.equal(harness.messages.filter((m) => m.text.includes('STALL_NUDGE')).length, 0)
+    assert.equal(harness.messages.filter((m) => m.text.includes('LEAD_ARBITRATION_REQUIRED')).length, 0)
+  })
+})
+

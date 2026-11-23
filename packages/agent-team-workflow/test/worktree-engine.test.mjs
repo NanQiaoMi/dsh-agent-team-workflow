@@ -22,7 +22,7 @@ import { createOrchestrator } from '../lib/orchestrator.js'
 import { createStore } from '../lib/store.js'
 import { buildTools } from '../lib/tools.js'
 import * as Git from '../lib/git.js'
-import { getWorktreeDiffSummary } from '../lib/worktree-manager.js'
+import { autoMergeApprovedWorktree, getWorktreeDiffSummary } from '../lib/worktree-manager.js'
 
 function realExec(file, args, options = {}) {
   return new Promise((resolvePromise) => {
@@ -681,6 +681,325 @@ test('getWorktreeDiffSummary computes incremental diff using sinceSha when provi
     assert.ok(deltaDiff !== null)
     assert.match(deltaDiff, /round2\.txt/)
     assert.ok(!deltaDiff.includes('round1.txt'), 'incremental diff must exclude changes already reviewed in round 1')
+  })
+})
+
+test('lazyWorktreeProvision defers Wave 1+ until Wave 0 merges into runBranch', async () => {
+  await withRepo(async ({ repo }) => {
+    const harness = createHarness(repo)
+    const settings = resolveSettings({
+      gitEnabled: true,
+      gitBaseBranch: 'main',
+      worktreeIsolation: 'parallel',
+      autoWorktree: true,
+      lazyWorktreeProvision: true,
+      autoMergeWorktree: true,
+      autoStaff: false,
+    })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: '2.1.0' })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const reviewTool = tools.find((t) => t.name === 'team_flow_review_submit')
+
+    const worker1Agent = { id: 'session-w1', session: { id: 'session-w1' } }
+    const reviewer1Agent = { id: 'session-r1', session: { id: 'session-r1' } }
+
+    await planTool.execute(
+      {
+        objective: 'Verify lazy wave worktree provisioning',
+        acceptance_criteria: ['W2 inherits W1 output'],
+        items: [
+          {
+            id: 'W1',
+            subject: 'Wave 0 base module',
+            owner: 'worker1',
+            reviewers: ['reviewer1'],
+            write_scopes: ['wave0.txt'],
+            definition_of_done: ['Create wave0.txt'],
+            evidence_commands: ['echo ok'],
+          },
+          {
+            id: 'W2',
+            subject: 'Wave 1 dependent module',
+            owner: 'worker2',
+            reviewers: ['reviewer1'],
+            blocked_by: ['W1'],
+            write_scopes: ['wave1.txt'],
+            definition_of_done: ['Consume wave0.txt'],
+            evidence_commands: ['echo ok'],
+          },
+        ],
+      },
+      { agent: harness.lead },
+    )
+
+    let state = await store.readState(harness.lead)
+    const w1 = state.items.find((it) => it.id === 'W1')
+    const w2Before = state.items.find((it) => it.id === 'W2')
+    assert.ok(w1.git?.worktreePath, 'W1 (Wave 0) must be provisioned upfront')
+    assert.equal(w2Before.git?.worktreePath ?? null, null, 'W2 (Wave 1) must be deferred until W1 merges')
+
+    await writeFile(join(w1.git.worktreePath, 'wave0.txt'), 'from wave 0\n')
+    await reportTool.execute(
+      {
+        item_id: 'W1',
+        summary: 'Implemented wave 0',
+        files: ['wave0.txt'],
+        commands: [{ command: 'echo ok', exit_code: 0 }],
+        evidence: ['wave0.txt created'],
+      },
+      { agent: worker1Agent },
+    )
+
+    await reviewTool.execute(
+      {
+        item_id: 'W1',
+        verdict: 'approve',
+        summary: 'Looks good',
+        evidence_checked: ['diff verified'],
+      },
+      { agent: reviewer1Agent },
+    )
+
+    state = await store.readState(harness.lead)
+    const w1After = state.items.find((it) => it.id === 'W1')
+    const w2After = state.items.find((it) => it.id === 'W2')
+    assert.ok(w1After.git?.worktreeMergedAt, 'W1 must be merged into runBranch')
+    assert.ok(w2After.git?.worktreePath, 'W2 must be lazily provisioned after W1 merges')
+
+    const inherited = await readFile(join(w2After.git.worktreePath, 'wave0.txt'), 'utf8')
+    assert.equal(inherited, 'from wave 0\n', 'W2 worktree must be created from updated runBranch containing W1 changes')
+  })
+})
+
+test('team_flow_report safely auto-commits uncommitted in-scope changes and preserves diff/merge', async () => {
+  await withRepo(async ({ repo }) => {
+    const harness = createHarness(repo)
+    const settings = resolveSettings({
+      gitEnabled: true,
+      gitBaseBranch: 'main',
+      worktreeIsolation: 'parallel',
+      autoWorktree: true,
+      autoCommitOnReport: true,
+      autoMergeWorktree: true,
+      autoStaff: false,
+    })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: '2.1.0' })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const reviewTool = tools.find((t) => t.name === 'team_flow_review_submit')
+
+    const worker1Agent = { id: 'session-w1', session: { id: 'session-w1' } }
+    const reviewer1Agent = { id: 'session-r1', session: { id: 'session-r1' } }
+
+    await planTool.execute(
+      {
+        objective: 'Verify auto-commit on report',
+        acceptance_criteria: ['Uncommitted in-scope changes are committed automatically'],
+        items: [
+          {
+            id: 'T1',
+            subject: 'Build feature without manual commit',
+            owner: 'worker1',
+            reviewers: ['reviewer1'],
+            write_scopes: ['src'],
+            definition_of_done: ['Add src/feature.js'],
+            evidence_commands: ['echo ok'],
+          },
+        ],
+      },
+      { agent: harness.lead },
+    )
+
+    let state = await store.readState(harness.lead)
+    const t1 = state.items.find((it) => it.id === 'T1')
+    await mkdir(join(t1.git.worktreePath, 'src'), { recursive: true })
+    await writeFile(join(t1.git.worktreePath, 'src', 'feature.js'), 'export const ok = true\n')
+
+    const reportRes = await reportTool.execute(
+      {
+        item_id: 'T1',
+        summary: 'Implemented src/feature.js',
+        files: [],
+        commands: [{ command: 'echo ok', exit_code: 0 }],
+        evidence: ['created src/feature.js'],
+      },
+      { agent: worker1Agent },
+    )
+
+    assert.equal(reportRes.auto_commit?.committed, true)
+    assert.ok(reportRes.auto_commit?.sha)
+    assert.ok(reportRes.auto_commit?.files.includes('src/feature.js'))
+
+    state = await store.readState(harness.lead)
+    const reportedT1 = state.items.find((it) => it.id === 'T1')
+    assert.ok(reportedT1.report.files.includes('src/feature.js'))
+
+    const diff = await getWorktreeDiffSummary({ cwd: repo, state, item: reportedT1, maxLines: 50 })
+    assert.ok(diff && diff.includes('src/feature.js'), 'diff summary must include auto-committed file')
+
+    await reviewTool.execute(
+      {
+        item_id: 'T1',
+        verdict: 'approve',
+        summary: 'Verified auto-committed diff',
+        evidence_checked: ['diff inspected'],
+      },
+      { agent: reviewer1Agent },
+    )
+
+    const mergedContent = await gitRun(repo, ['show', `${state.git.branch}:src/feature.js`])
+    assert.equal(mergedContent, 'export const ok = true\n')
+  })
+})
+
+test('team_flow_report rejects dirty uncommitted files outside declared writeScopes', async () => {
+  await withRepo(async ({ repo }) => {
+    const harness = createHarness(repo)
+    const settings = resolveSettings({
+      gitEnabled: true,
+      gitBaseBranch: 'main',
+      worktreeIsolation: 'parallel',
+      autoWorktree: true,
+      autoCommitOnReport: true,
+      autoStaff: false,
+    })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: '2.1.0' })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const worker1Agent = { id: 'session-w1', session: { id: 'session-w1' } }
+
+    await planTool.execute(
+      {
+        objective: 'Reject out-of-scope dirty worktree changes',
+        acceptance_criteria: ['Out-of-scope edits rejected'],
+        items: [
+          {
+            id: 'T1',
+            subject: 'Scoped edit',
+            owner: 'worker1',
+            reviewers: ['reviewer1'],
+            write_scopes: ['src'],
+            definition_of_done: ['Edit src only'],
+            evidence_commands: ['echo ok'],
+          },
+        ],
+      },
+      { agent: harness.lead },
+    )
+
+    const state = await store.readState(harness.lead)
+    const t1 = state.items.find((it) => it.id === 'T1')
+    await mkdir(join(t1.git.worktreePath, 'docs'), { recursive: true })
+    await writeFile(join(t1.git.worktreePath, 'docs', 'outside.md'), 'unauthorized edit\n')
+
+    await assert.rejects(
+      () =>
+        reportTool.execute(
+          {
+            item_id: 'T1',
+            summary: 'Attempted report with out-of-scope dirty file',
+            files: ['docs/outside.md'],
+            commands: [{ command: 'echo ok', exit_code: 0 }],
+            evidence: ['edited'],
+          },
+          { agent: worker1Agent },
+        ),
+      /outside declared writeScopes.*docs\/outside\.md/,
+    )
+
+    const wtStatus = await Git.gitStatus({ cwd: t1.git.worktreePath })
+    assert.equal(wtStatus.clean, false, 'out-of-scope file must remain uncommitted')
+  })
+})
+
+test('autoMergeApprovedWorktree refuses silent merge when worktree has uncommitted changes', async () => {
+  await withRepo(async ({ repo }) => {
+    const harness = createHarness(repo)
+    const settings = resolveSettings({
+      gitEnabled: true,
+      gitBaseBranch: 'main',
+      worktreeIsolation: 'parallel',
+      autoWorktree: true,
+      autoCommitOnReport: false,
+      autoMergeWorktree: true,
+      autoStaff: false,
+    })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: '2.1.0' })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const reviewTool = tools.find((t) => t.name === 'team_flow_review_submit')
+
+    const worker1Agent = { id: 'session-w1', session: { id: 'session-w1' } }
+    const reviewer1Agent = { id: 'session-r1', session: { id: 'session-r1' } }
+
+    await planTool.execute(
+      {
+        objective: 'Prevent silent loss on uncommitted worktree',
+        acceptance_criteria: ['Dirty worktree blocks merge'],
+        items: [
+          {
+            id: 'T1',
+            subject: 'Dirty worktree check',
+            owner: 'worker1',
+            reviewers: ['reviewer1'],
+            write_scopes: ['src'],
+            definition_of_done: ['Add src/uncommitted.js'],
+            evidence_commands: ['echo ok'],
+          },
+        ],
+      },
+      { agent: harness.lead },
+    )
+
+    let state = await store.readState(harness.lead)
+    const t1 = state.items.find((it) => it.id === 'T1')
+    await mkdir(join(t1.git.worktreePath, 'src'), { recursive: true })
+    await writeFile(join(t1.git.worktreePath, 'src', 'uncommitted.js'), 'export const dirty = true\n')
+
+    await reportTool.execute(
+      {
+        item_id: 'T1',
+        summary: 'Reported without committing while autoCommitOnReport is off',
+        files: ['src/uncommitted.js'],
+        commands: [{ command: 'echo ok', exit_code: 0 }],
+        evidence: ['created file'],
+      },
+      { agent: worker1Agent },
+    )
+
+    await reviewTool.execute(
+      {
+        item_id: 'T1',
+        verdict: 'approve',
+        summary: 'Approved',
+        evidence_checked: ['reviewed'],
+      },
+      { agent: reviewer1Agent },
+    )
+
+    state = await store.readState(harness.lead)
+    const mergedAttempt = state.items.find((it) => it.id === 'T1')
+    assert.equal(mergedAttempt.git?.worktreeMergedAt ?? null, null, 'dirty worktree must not be marked merged')
+    assert.match(mergedAttempt.git?.worktreeMergeError ?? '', /uncommitted changes/i)
+
+    const directMerge = await autoMergeApprovedWorktree({
+      cwd: repo,
+      state,
+      itemId: 'T1',
+      agent: harness.lead,
+      store,
+    })
+    assert.equal(directMerge.ok, false)
+    assert.equal(directMerge.dirty, true)
   })
 })
 
