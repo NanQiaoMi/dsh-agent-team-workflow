@@ -96,6 +96,31 @@ function requireWritableRun(state, toolName) {
   }
 }
 
+/** Format a structured tool validation error with optional missing fields and copyable fix example. */
+function formatToolValidationError({ tool, reason, missing = [], example = null }) {
+  const parts = [`${tool} rejected: ${reason}`]
+  if (Array.isArray(missing) && missing.length > 0) {
+    parts.push(`Missing/invalid: ${missing.join(', ')}`)
+  }
+  if (example !== null && example !== undefined) {
+    const rendered = typeof example === 'string' ? example : JSON.stringify(example)
+    parts.push(`Fix example: ${rendered}`)
+  }
+  return parts.join('\n')
+}
+
+/** Read current git HEAD SHA for a directory, or null if unavailable. */
+function readHeadSha(cwd) {
+  if (typeof cwd !== 'string' || cwd.length === 0) return Promise.resolve(null)
+  return new Promise((resolve) => {
+    execFile('git', ['rev-parse', 'HEAD'], { cwd, timeout: 5000, encoding: 'utf8' }, (err, stdout) => {
+      if (err) return resolve(null)
+      const sha = String(stdout ?? '').trim()
+      resolve(sha.length > 0 ? sha : null)
+    })
+  })
+}
+
 /** Validate a spawnable member name (lower-kebab-case, never the Lead). */
 function assertMemberName(name, field) {
   const value = String(name ?? '').trim()
@@ -583,8 +608,29 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           items,
         }
         const validation = W.validatePlan(plan, effective)
-        if (validation.errors.length > 0) {
-          throw new Error(`the plan violates the workflow rules:\n- ${validation.errors.join('\n- ')}`)
+        const preflight = W.preflightPlan(plan, effective)
+        const allErrors = [...new Set([...validation.errors, ...preflight.errors])]
+        if (allErrors.length > 0) {
+          throw new Error(
+            formatToolValidationError({
+              tool: 'team_flow_plan',
+              reason: `the plan violates the workflow rules:\n- ${allErrors.join('\n- ')}`,
+              example: {
+                objective: '...',
+                acceptance_criteria: ['...'],
+                items: [
+                  {
+                    id: 'W1',
+                    subject: '...',
+                    owner: 'worker1',
+                    reviewers: ['rev1'],
+                    write_scopes: ['src/'],
+                    definition_of_done: ['...'],
+                  },
+                ],
+              },
+            }),
+          )
         }
 
         const outcome = await store.lock(agent, async () => {
@@ -802,6 +848,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           ...reviewerNotes,
           'Then call wait_agent and re-read team_flow_status after each change; do not do the workers\' edits yourself.',
           ...validation.warnings,
+          ...preflight.warnings,
         ]
         triggerOrchestrator(agent)
         refreshMemberTools?.(agent, null, state)
@@ -815,7 +862,8 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           staffed,
           open_queue: openItems.map((item) => item.id),
           reviewer_spawn: reviewerSpawn,
-          warnings: [...archived.map((path) => `archived previous run state to ${path}`), ...validation.warnings],
+          preflight_warnings: preflight.warnings,
+          warnings: [...archived.map((path) => `archived previous run state to ${path}`), ...validation.warnings, ...preflight.warnings],
           next_actions: nextActions,
         }
       },
@@ -1014,6 +1062,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
         const snapshot = await store.readState(agent)
         const targetItem = snapshot?.items?.find((it) => it.id === String(args.item_id ?? ''))
         let autoCommit = null
+        let hostVerified = null
         if (targetItem && targetItem.owner === membership.name && targetItem.status !== W.ITEM_STATUS.APPROVED) {
           autoCommit = await autoCommitWorktreeIfSafe({ cwd, state: snapshot, item: targetItem })
           if (autoCommit.ok === false) {
@@ -1031,6 +1080,40 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
               if (normalized.length > 0 && !files.includes(normalized)) {
                 files.push(normalized)
               }
+            }
+          }
+          const hostVerifyEnabled = snapshot?.settings?.hostVerifyOnReport ?? settings.hostVerifyOnReport
+          const verifyCommands = Array.isArray(snapshot?.settings?.gitVerifyCommands)
+            ? snapshot.settings.gitVerifyCommands.filter((c) => typeof c === 'string' && c.trim().length > 0)
+            : []
+          if (hostVerifyEnabled !== false && verifyCommands.length > 0) {
+            const verifyCwd = targetItem.git?.worktreePath || cwd
+            const sha = await readHeadSha(verifyCwd)
+            const verified = await G.gitVerify({ cwd: verifyCwd, commands: verifyCommands, timeoutMs: 60_000 })
+            hostVerified = {
+              ok: verified.ok === true,
+              sha,
+              cwd: verifyCwd,
+              capturedAt: now,
+              commands: (verified.results ?? []).map((r) => ({
+                command: r.command,
+                exitCode: r.exitCode,
+                outputTail: clip(String(r.outputTail ?? ''), 300),
+              })),
+            }
+            if (!hostVerified.ok && settings.preReportCheck !== false && !args.deviation) {
+              const failing = hostVerified.commands.filter((c) => c.exitCode !== 0)
+              const summary = failing.length > 0
+                ? failing.map((c) => `"${c.command}" (exit ${c.exitCode})`).join(', ')
+                : (verified.error ?? 'verification command failed')
+              throw new Error(
+                formatToolValidationError({
+                  tool: 'team_flow_report',
+                  reason: `host verification failed: ${summary}`,
+                  missing: ['passing verification commands'],
+                  example: 'Fix the failing command(s) in your workspace and re-run team_flow_report, or explain in "deviation".',
+                }),
+              )
             }
           }
         }
@@ -1065,6 +1148,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           risks: (Array.isArray(args.risks) ? args.risks : []).map((entry) => clip(entry, 1000)),
           deviation: args.deviation === undefined ? null : clip(args.deviation, 2000),
           contractValidation: contractValidation && contractValidation.skipped !== true ? contractValidation : null,
+          hostVerified,
         }
         let state = await store.mutateState(agent, (current) => {
           if (current === null) throw new Error('no workflow run exists yet; the Lead must call team_flow_plan first')
@@ -1080,17 +1164,38 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
             const failedCommands = commands.filter((c) => Number.isInteger(c.exitCode) && c.exitCode !== 0)
             if (failedCommands.length > 0 && !args.deviation) {
               const summary = failedCommands.map((c) => `"${c.command}" (exit code ${c.exitCode})`).join(', ')
-              throw new Error(`team_flow_report rejected: verification command failed: ${summary}. Fix the failing command(s) before reporting, or explain the failure in "deviation".`)
+              throw new Error(
+                formatToolValidationError({
+                  tool: 'team_flow_report',
+                  reason: `verification command failed: ${summary}. Fix the failing command(s) before reporting, or explain the failure in "deviation".`,
+                  missing: ['commands[].exit_code === 0'],
+                  example: { item_id: item.id, summary: '...', files: ['...'], commands: [{ command: 'npm test', exit_code: 0 }], evidence: ['...'] },
+                }),
+              )
             }
             if (settings.strictScopes) {
               const outside = files.filter((f) => item.writeScopes.length > 0 && !item.writeScopes.some((s) => W.pathInScope(f, s)))
               if (outside.length > 0 && !args.deviation) {
-                throw new Error(`team_flow_report rejected: modified files outside declared writeScopes (${outside.join(', ')}). In strictScopes mode, revert outside files or explain in "deviation".`)
+                throw new Error(
+                  formatToolValidationError({
+                    tool: 'team_flow_report',
+                    reason: `modified files outside declared writeScopes (${outside.join(', ')}). In strictScopes mode, revert outside files or explain in "deviation".`,
+                    missing: ['files inside writeScopes'],
+                    example: { item_id: item.id, files: item.writeScopes, deviation: 'explain why out-of-scope file was modified' },
+                  }),
+                )
               }
             }
             if (settings.strictContracts && contractValidation && !contractValidation.ok && !args.deviation) {
               const summary = contractValidation.error || `missing required methods [${contractValidation.missing.join(', ')}]`
-              throw new Error(`team_flow_report rejected: contract "${contractValidation.contractId}" violation: ${summary}. Fix missing exports or explain in "deviation".`)
+              throw new Error(
+                formatToolValidationError({
+                  tool: 'team_flow_report',
+                  reason: `contract "${contractValidation.contractId}" violation: ${summary}. Fix missing exports or explain in "deviation".`,
+                  missing: contractValidation.missing ?? [],
+                  example: { item_id: item.id, handoff_packet: { contract_id: contractValidation.contractId, entry: '...', exports: ['...'] } },
+                }),
+              )
             }
           }
 
@@ -1106,6 +1211,14 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
               type: 'git/auto-commit',
               actor: 'worktree-manager',
               detail: `${item.id} (${autoCommit.files.length} file(s), ${autoCommit.sha?.slice(0, 7) ?? ''})`,
+            })
+          }
+          if (hostVerified !== null) {
+            W.appendEvent(current, {
+              at: now,
+              type: 'git/host-verified',
+              actor: 'host',
+              detail: `${item.id} ${hostVerified.ok ? 'passed' : 'failed'} (${hostVerified.commands.length} command(s), ${hostVerified.sha?.slice(0, 7) ?? 'workspace'})`,
             })
           }
           applied.item.resolvedReview = classifyDiffRisk({ files: applied.item.report.files, item: applied.item, settings: current.settings })
@@ -1187,6 +1300,7 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           sequence_warnings: item.report?.sequenceWarnings ?? [],
           sync_warnings: syncWarnings,
           notified,
+          host_verified: hostVerified,
           auto_commit: autoCommit?.committed === true ? { committed: true, sha: autoCommit.sha ?? null, files: autoCommit.files } : null,
           next_actions: item.status === W.ITEM_STATUS.IN_REVIEW ? ['Stop and let the reviewer work; the Lead will message you if changes are requested.'] : status.next_actions,
         }
@@ -1274,7 +1388,19 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           findings.every((f) => f.severity === 'nit')
         ) {
           throw new Error(
-            'team_flow_review_submit: all findings have "nit" severity. Non-blocking stylistic notes do not justify a blocking rework cycle. Use verdict: "approve_with_nits" to record observations without blocking the run, or elevate at least one finding to "minor", "major", or "blocker" if author rework is necessary.'
+            formatToolValidationError({
+              tool: 'team_flow_review_submit',
+              reason:
+                'all findings have "nit" severity. Non-blocking stylistic notes do not justify a blocking rework cycle. Use verdict: "approve_with_nits" to record observations without blocking the run, or elevate at least one finding to "minor", "major", or "blocker" if author rework is necessary.',
+              missing: ['verdict: "approve_with_nits" or >=1 non-nit finding'],
+              example: {
+                item_id: String(args.item_id ?? 'W1'),
+                verdict: 'approve_with_nits',
+                summary: 'Approved with minor style observations',
+                findings,
+                evidence_checked: ['diff and tests verified'],
+              },
+            }),
           )
         }
 
@@ -1452,9 +1578,25 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
           note: response?.note === undefined ? null : clip(response.note, 2000),
         }))
         for (const response of responses) {
-          if (!W.FINDING_RESOLUTIONS.includes(response.state)) throw new Error(`response for "${response.findingId}" has state "${response.state}"; use one of ${W.FINDING_RESOLUTIONS.join('/')}`)
+          if (!W.FINDING_RESOLUTIONS.includes(response.state)) {
+            throw new Error(
+              formatToolValidationError({
+                tool: 'team_flow_review_respond',
+                reason: `response for "${response.findingId}" has state "${response.state}"; use one of ${W.FINDING_RESOLUTIONS.join('/')}`,
+                missing: ['responses[].state'],
+                example: { item_id: String(args.item_id ?? 'W1'), responses: [{ finding_id: response.findingId || 'F1', state: 'fixed', evidence: 'test passed' }] },
+              }),
+            )
+          }
           if ((response.state === 'rebut' || response.state === 'accepted_risk') && (response.note === null || response.note.length === 0)) {
-            throw new Error(`response for "${response.findingId}" is ${response.state} and needs a note explaining why`)
+            throw new Error(
+              formatToolValidationError({
+                tool: 'team_flow_review_respond',
+                reason: `response for "${response.findingId}" is ${response.state} and needs a note explaining why`,
+                missing: ['responses[].note'],
+                example: { item_id: String(args.item_id ?? 'W1'), responses: [{ finding_id: response.findingId || 'F1', state: response.state, evidence: '...', note: 'rationale here' }] },
+              }),
+            )
           }
         }
         let outcome = null

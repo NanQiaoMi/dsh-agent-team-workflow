@@ -149,6 +149,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   integrationVerifyCommands: [],
   /** Require item git verification to pass before the gate accepts it. */
   gitRequireVerify: false,
+  /** Execute configured gitVerifyCommands on the host during team_flow_report to attach a tamper-proof snapshot. */
+  hostVerifyOnReport: true,
   /** DSH provider name used when spawning a fresh teammate. */
   freshProvider: 'spawn',
   /** DSH provider name used when spawning a teammate that inherits the Lead. */
@@ -379,6 +381,7 @@ export function resolveSettings(raw = {}) {
     gitVerifyCommands: readCommands(config.gitVerifyCommands),
     integrationVerifyCommands: readCommands(config.integrationVerifyCommands),
     gitRequireVerify: readBool(config.gitRequireVerify, DEFAULT_SETTINGS.gitRequireVerify),
+    hostVerifyOnReport: readBool(config.hostVerifyOnReport, DEFAULT_SETTINGS.hostVerifyOnReport),
     freshProvider: readString(config.freshProvider, DEFAULT_SETTINGS.freshProvider, 200),
     forkProvider: readString(config.forkProvider, DEFAULT_SETTINGS.forkProvider, 200),
     roles: readRoles(config.roles),
@@ -454,6 +457,7 @@ export function runSettings(settings) {
     gitVerifyCommands: [...settings.gitVerifyCommands],
     integrationVerifyCommands: [...settings.integrationVerifyCommands],
     gitRequireVerify: settings.gitRequireVerify,
+    hostVerifyOnReport: settings.hostVerifyOnReport,
     freshProvider: settings.freshProvider,
     forkProvider: settings.forkProvider,
     roles: { ...settings.roles },

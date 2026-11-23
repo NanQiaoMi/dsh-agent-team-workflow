@@ -302,3 +302,45 @@ test('parallel multi-reviewer workflow supports concurrent out-of-order submissi
   })
   assert.equal(finalSub.item.status, W.ITEM_STATUS.APPROVED)
 })
+
+test('preflightPlan rejects unsafe writeScopes with parent traversal or absolute paths', () => {
+  const res = W.preflightPlan(
+    {
+      items: [
+        { id: 'W1', writeScopes: ['../outside.js'], definitionOfDone: ['Valid DoD'], evidenceCommands: ['npm test'] },
+        { id: 'W2', writeScopes: ['/etc/passwd'], definitionOfDone: ['Valid DoD'], evidenceCommands: ['npm test'] },
+      ],
+    },
+    {},
+  )
+  assert.equal(res.errors.length, 2)
+  assert.match(res.errors[0], /parent traversal "\.\."/)
+  assert.match(res.errors[1], /not an absolute path/)
+})
+
+test('preflightPlan warns on broad wildcard scope, overloaded item, terse DoD, and unverified deep scope', () => {
+  const res = W.preflightPlan(
+    {
+      items: [
+        {
+          id: 'W1',
+          writeScopes: ['*', 'src/auth.js', 'a', 'b', 'c', 'd', 'e', 'f', 'g'],
+          definitionOfDone: ['ok'],
+          evidenceCommands: [],
+        },
+        {
+          id: 'W2',
+          writeScopes: ['docs/readme.md'],
+          definitionOfDone: ['Update README examples'],
+          evidenceCommands: [],
+        },
+      ],
+    },
+    { gitVerifyCommands: [] },
+  )
+  assert.equal(res.errors.length, 0)
+  assert.ok(res.warnings.some((w) => w.includes('broad wildcard writeScope "*"')))
+  assert.ok(res.warnings.some((w) => w.includes('declares 9 writeScopes')))
+  assert.ok(res.warnings.some((w) => w.includes('overly terse definition_of_done')))
+  assert.ok(res.warnings.some((w) => w.includes('touches high-risk scope') && w.includes('without evidence_commands')))
+})

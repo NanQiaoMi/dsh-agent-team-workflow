@@ -10,7 +10,7 @@
 /** Current workflow schema version written into run state. */
 export const WORKFLOW_VERSION = 2
 
-import { REVIEW_DEPTHS, REVIEW_PROFILES, validateReviewSubmission } from './review-policy.js'
+import { classifyDiffRisk, REVIEW_DEPTHS, REVIEW_PROFILES, validateReviewSubmission } from './review-policy.js'
 
 /** Item lifecycle states. */
 export const ITEM_STATUS = Object.freeze({
@@ -299,6 +299,62 @@ export function findScopeConflicts(items, waves) {
 }
 
 /**
+ * Static plan preflight checks: detects unsafe writeScopes, broad wildcards in
+ * multi-item plans, overloaded items, terse DoDs, and high-risk items lacking
+ * verification commands.
+ * @param plan - normalized `{ items }` plan.
+ * @param settings - run-scoped settings.
+ * @returns `{ errors: string[], warnings: string[] }`.
+ */
+export function preflightPlan(plan, settings = {}) {
+  const errors = []
+  const warnings = []
+  const items = Array.isArray(plan?.items) ? plan.items : []
+  const verifyCommands = Array.isArray(settings?.gitVerifyCommands)
+    ? settings.gitVerifyCommands.filter((c) => typeof c === 'string' && c.trim().length > 0)
+    : []
+
+  for (const item of items) {
+    const id = item?.id ?? '(unknown)'
+    const scopes = Array.isArray(item?.writeScopes) ? item.writeScopes : []
+    const dod = Array.isArray(item?.definitionOfDone) ? item.definitionOfDone : []
+    const evidenceCmds = Array.isArray(item?.evidenceCommands)
+      ? item.evidenceCommands.filter((c) => typeof c === 'string' && c.trim().length > 0)
+      : []
+
+    for (const rawScope of scopes) {
+      const scope = String(rawScope ?? '').trim().replaceAll('\\', '/')
+      if (scope.startsWith('/') || /^[A-Za-z]:\//.test(scope)) {
+        errors.push(`item "${id}" writeScope "${rawScope}" must be workspace-relative, not an absolute path`)
+      } else if (/(?:^|\/)\.\.(?:\/|$)/.test(scope)) {
+        errors.push(`item "${id}" writeScope "${rawScope}" contains unsafe parent traversal ".."`)
+      } else if (items.length > 1 && (scope === '*' || scope === '**' || scope === '.')) {
+        warnings.push(`item "${id}" uses broad wildcard writeScope "${rawScope}" in a multi-item plan; narrow it to reduce conflicts`)
+      }
+    }
+
+    if (scopes.length > 8) {
+      warnings.push(`item "${id}" declares ${scopes.length} writeScopes; consider splitting into smaller focused items`)
+    }
+    if (dod.length > 8) {
+      warnings.push(`item "${id}" declares ${dod.length} definition_of_done entries; consider splitting into smaller items`)
+    }
+    for (const entry of dod) {
+      if (String(entry ?? '').trim().length < 4) {
+        warnings.push(`item "${id}" has an overly terse definition_of_done entry ("${String(entry ?? '').trim()}"); make acceptance criteria specific`)
+      }
+    }
+
+    const risk = classifyDiffRisk({ files: scopes, item, settings })
+    if (risk.depth === 'deep' && evidenceCmds.length === 0 && verifyCommands.length === 0) {
+      warnings.push(`item "${id}" touches high-risk scope (${risk.profile}/${risk.depth}) without evidence_commands or gitVerifyCommands; add verification commands`)
+    }
+  }
+
+  return { errors, warnings }
+}
+
+/**
  * Validate a normalized plan against the workflow rules.
  * @param plan - `{ objective, acceptanceCriteria, constraints, items }`.
  * @param settings - run-scoped settings.
@@ -561,6 +617,7 @@ export function applyReport(state, input) {
     openQuestions: report.openQuestions,
     risks: report.risks,
     deviation: report.deviation ?? null,
+    ...(report.hostVerified ? { hostVerified: report.hostVerified } : {}),
     sequenceWarnings: [],
     submittedBy: input.caller,
     submittedAt: now,

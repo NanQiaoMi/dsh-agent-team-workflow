@@ -326,6 +326,15 @@ export function reviewRequestMessage(state, item, diff = null, risk = null) {
     reasons: effectiveRisk.reasons,
   })
   const wt = item.git?.worktreePath ? `\nWorktree path: ${item.git.worktreePath}` : ''
+  const hv = report?.hostVerified
+  let hostVerifiedSection = ''
+  if (hv && hv.ok === true && Array.isArray(hv.commands) && hv.commands.length > 0) {
+    const shaTag = hv.sha ? hv.sha.slice(0, 7) : 'ok'
+    const fastPathHint = effectiveRisk.depth === 'light'
+      ? `\nLight-review fast-path: the host already executed and verified the commands above on this snapshot. Do NOT re-run identical test commands; focus on diff correctness, scope, and DoD coverage, and cite "hostVerified:${shaTag}" in evidence_checked.`
+      : ''
+    hostVerifiedSection = `\n\n# Host-Verified Evidence (Tamper-Proof)\nSnapshot SHA: ${hv.sha ? hv.sha.slice(0, 7) : 'workspace'}\n${bullets(hv.commands.map((c) => `\`${c.command}\` → exit ${c.exitCode}`))}${fastPathHint}`
+  }
   const diffSection = diff ? `\n\n# Code Changes (Diff)\n${diff}` : ''
   return `[REVIEW] ${item.id} "${item.subject}" is ready for your review (round ${review?.round ?? '?'}).${wt}
 
@@ -335,7 +344,7 @@ ${bullets(report?.files ?? [])}
 Commands reported:
 ${bullets((report?.commands ?? []).map((command) => `\`${command.command}\` → exit ${command.exitCode}`))}
 Author summary: ${clipText(report?.summary ?? '(missing)', 900)}
-Author-declared risks: ${bullets((report?.risks ?? []).slice(0, 3).map((riskEntry) => clipText(riskEntry, 200)), 'none')}${diffSection}
+Author-declared risks: ${bullets((report?.risks ?? []).slice(0, 3).map((riskEntry) => clipText(riskEntry, 200)), 'none')}${hostVerifiedSection}${diffSection}
 
 Definition of done:
 ${bullets(item.definitionOfDone)}
