@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { resolveSettings } from '../lib/config.js'
+import { reviewRequestMessage } from '../lib/protocol.js'
 import { createStore } from '../lib/store.js'
 import { buildTools } from '../lib/tools.js'
 import * as Git from '../lib/git.js'
@@ -680,5 +681,188 @@ test('getWorktreeDiffSummary computes incremental diff using sinceSha when provi
     assert.ok(deltaDiff !== null)
     assert.match(deltaDiff, /round2\.txt/)
     assert.ok(!deltaDiff.includes('round1.txt'), 'incremental diff must exclude changes already reviewed in round 1')
+  })
+})
+
+test('hostVerifyOnReport records tamper-proof hostVerified snapshot and enables light-review fast-path', async () => {
+  await withRepo(async ({ repo }) => {
+    const harness = createHarness(repo)
+    const settings = resolveSettings({
+      gitEnabled: true,
+      gitBaseBranch: 'main',
+      worktreeIsolation: 'parallel',
+      autoWorktree: true,
+      autoStaff: false,
+      hostVerifyOnReport: true,
+      gitVerifyCommands: ['node -e "process.exit(0)"'],
+    })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: '2.1.0' })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const gitTool = tools.find((t) => t.name === 'team_flow_git')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const worker1Agent = { id: 'session-w1', session: { id: 'session-w1' } }
+
+    await planTool.execute(
+      {
+        preset: 'fast-fix',
+        objective: 'Verify hostVerified snapshot and light-review fast-path',
+        acceptance_criteria: ['Host snapshot recorded'],
+        items: [
+          {
+            id: 'T1',
+            subject: 'Small doc tweak',
+            owner: 'worker1',
+            reviewers: ['reviewer1'],
+            write_scopes: ['docs/note.md'],
+            definition_of_done: ['Add docs/note.md'],
+            evidence_commands: ['node -e "process.exit(0)"'],
+          },
+        ],
+      },
+      { agent: harness.lead },
+    )
+
+    let state = await store.readState(harness.lead)
+    const t1 = state.items.find((it) => it.id === 'T1')
+    await mkdir(join(t1.git.worktreePath, 'docs'), { recursive: true })
+    await writeFile(join(t1.git.worktreePath, 'docs', 'note.md'), '# Note\n')
+    await gitTool.execute({ action: 'commit', item_id: 'T1', files: ['docs/note.md'], message: 'docs: add note' }, { agent: worker1Agent })
+
+    const reportRes = await reportTool.execute(
+      {
+        item_id: 'T1',
+        summary: 'Added docs/note.md',
+        files: ['docs/note.md'],
+        commands: [{ command: 'node -e "process.exit(0)"', exit_code: 0 }],
+        evidence: ['note added'],
+      },
+      { agent: worker1Agent },
+    )
+
+    assert.equal(reportRes.host_verified?.ok, true)
+    assert.ok(reportRes.host_verified?.sha)
+    assert.equal(reportRes.host_verified?.commands.length, 1)
+
+    state = await store.readState(harness.lead)
+    const reportedT1 = state.items.find((it) => it.id === 'T1')
+    assert.equal(reportedT1.report.hostVerified?.ok, true)
+    assert.ok(state.events.some((e) => e.type === 'git/host-verified' && e.detail.includes('passed')))
+
+    const reviewMsg = reviewRequestMessage(state, reportedT1, null, { depth: 'light', profile: 'docs', reasons: ['docs only'] })
+    assert.match(reviewMsg, /# Host-Verified Evidence \(Tamper-Proof\)/)
+    assert.match(reviewMsg, /Light-review fast-path/)
+    assert.match(reviewMsg, /Do NOT re-run identical test commands/)
+  })
+})
+
+test('hostVerifyOnReport rejects falsified exit_code=0 report when host command fails', async () => {
+  await withRepo(async ({ repo }) => {
+    const harness = createHarness(repo)
+    const settings = resolveSettings({
+      gitEnabled: true,
+      gitBaseBranch: 'main',
+      worktreeIsolation: 'parallel',
+      autoWorktree: true,
+      autoStaff: false,
+      hostVerifyOnReport: true,
+      gitVerifyCommands: ['node -e "console.error(\'boom\'); process.exit(1)"'],
+    })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: '2.1.0' })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const worker1Agent = { id: 'session-w1', session: { id: 'session-w1' } }
+
+    await planTool.execute(
+      {
+        objective: 'Reject falsified green self-report',
+        acceptance_criteria: ['Host catches failing verify command'],
+        items: [
+          {
+            id: 'T1',
+            subject: 'Failing verification',
+            owner: 'worker1',
+            reviewers: ['reviewer1'],
+            write_scopes: ['README.md'],
+            definition_of_done: ['Tests pass'],
+            evidence_commands: ['echo ok'],
+          },
+        ],
+      },
+      { agent: harness.lead },
+    )
+
+    harness.messages.length = 0
+    await assert.rejects(
+      () =>
+        reportTool.execute(
+          {
+            item_id: 'T1',
+            summary: 'Claimed tests pass',
+            files: ['README.md'],
+            commands: [{ command: 'echo ok', exit_code: 0 }],
+            evidence: ['all green'],
+          },
+          { agent: worker1Agent },
+        ),
+      /team_flow_report rejected: host verification failed.*Fix example:/s,
+    )
+
+    assert.equal(harness.messages.filter((m) => m.target === 'reviewer1').length, 0, 'reviewer must not be woken on failed host verification')
+  })
+})
+
+test('hostVerifyOnReport=false skips host verification and sets host_verified to null', async () => {
+  await withRepo(async ({ repo }) => {
+    const harness = createHarness(repo)
+    const settings = resolveSettings({
+      gitEnabled: true,
+      gitBaseBranch: 'main',
+      worktreeIsolation: 'parallel',
+      autoWorktree: true,
+      autoStaff: false,
+      hostVerifyOnReport: false,
+      gitVerifyCommands: ['node -e "process.exit(1)"'],
+    })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: '2.1.0' })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const worker1Agent = { id: 'session-w1', session: { id: 'session-w1' } }
+
+    await planTool.execute(
+      {
+        objective: 'Verify hostVerifyOnReport=false rollback switch',
+        acceptance_criteria: ['Skipped when disabled'],
+        items: [
+          {
+            id: 'T1',
+            subject: 'Skip host verify',
+            owner: 'worker1',
+            reviewers: ['reviewer1'],
+            write_scopes: ['README.md'],
+            definition_of_done: ['Reported cleanly'],
+            evidence_commands: ['echo ok'],
+          },
+        ],
+      },
+      { agent: harness.lead },
+    )
+
+    const reportRes = await reportTool.execute(
+      {
+        item_id: 'T1',
+        summary: 'Reported with hostVerifyOnReport off',
+        files: ['README.md'],
+        commands: [{ command: 'echo ok', exit_code: 0 }],
+        evidence: ['ok'],
+      },
+      { agent: worker1Agent },
+    )
+    assert.equal(reportRes.host_verified, null)
   })
 })
