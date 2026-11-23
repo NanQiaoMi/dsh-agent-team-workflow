@@ -8,7 +8,13 @@ import test from 'node:test'
 import { resolveSettings } from '../lib/config.js'
 import { renderReportMarkdown } from '../lib/protocol.js'
 import { createStore } from '../lib/store.js'
-import { createThinkingRouter, mapTierToEffort, selectThinkingPlan } from '../lib/thinking-router.js'
+import {
+  BUDGET_DOWNGRADE_RATIO,
+  computeBudgetPressure,
+  createThinkingRouter,
+  mapTierToEffort,
+  selectThinkingPlan,
+} from '../lib/thinking-router.js'
 import * as W from '../lib/workflow.js'
 
 const NOW = '2026-11-21T00:00:00.000Z'
@@ -330,4 +336,204 @@ test('createThinkingRouter locks effort per turn, updates on next turn, and hand
   const failRes = await failAgent.runRequest({ turn: 1, step: 1 }, { provider: 'deepseek', model: 'deepseek-v4-pro', reasoningEffort: 'high' })
   assert.equal(failRes.reasoningEffort, 'high')
   assert.equal(failRes.model, 'deepseek-v4-pro')
+})
+
+test('selectThinkingPlan escalates multi-round/blocker rework to max and stall recovery nudges to high', () => {
+  const settings = resolveSettings({})
+
+  // Round-1 minor rework stays 'high'
+  const minorRework = makeItem({
+    status: W.ITEM_STATUS.CHANGES_REQUESTED,
+    reviews: [{ round: 1, status: 'submitted', reviewer: 'rev', verdict: 'request_changes', findings: [{ id: 'F1', severity: 'minor' }] }],
+  })
+  const minorPlan = selectThinkingPlan({ membership: { name: 'impl', role: 'teammate' }, state: makeState([minorRework]), settings })
+  assert.equal(minorPlan.tier, 'high')
+  assert.equal(minorPlan.stage, 'rework')
+  assert.equal(minorPlan.reason, 'rework-escalate')
+
+  // Round-1 blocker rework upgrades to 'max' (rework-deep)
+  const blockerRework = makeItem({
+    status: W.ITEM_STATUS.CHANGES_REQUESTED,
+    reviews: [{ round: 1, status: 'submitted', reviewer: 'rev', verdict: 'request_changes', findings: [{ id: 'F1', severity: 'blocker' }] }],
+  })
+  const blockerPlan = selectThinkingPlan({ membership: { name: 'impl', role: 'teammate' }, state: makeState([blockerRework]), settings })
+  assert.equal(blockerPlan.tier, 'max')
+  assert.equal(blockerPlan.stage, 'rework-deep')
+  assert.equal(blockerPlan.reason, 'rework-max-escalate')
+
+  // Round >= 2 rework upgrades to 'max' (rework-deep)
+  const multiRoundRework = makeItem({
+    status: W.ITEM_STATUS.CHANGES_REQUESTED,
+    reviews: [
+      { round: 1, status: 'submitted', reviewer: 'rev', verdict: 'request_changes', findings: [{ id: 'F1', severity: 'minor' }] },
+      { round: 2, status: 'submitted', reviewer: 'rev', verdict: 'request_changes', findings: [{ id: 'F2', severity: 'minor' }] },
+    ],
+  })
+  const multiPlan = selectThinkingPlan({ membership: { name: 'impl', role: 'teammate' }, state: makeState([multiRoundRework]), settings })
+  assert.equal(multiPlan.tier, 'max')
+  assert.equal(multiPlan.stage, 'rework-deep')
+
+  // Stall nudge triggers high recovery tier for both worker and reviewer
+  const workerStallState = makeState([makeItem({ complexity: 'trivial' })], {
+    events: [{ type: 'member/stall-nudge', detail: 'impl on W1 (worker, nudge 1/2)' }],
+  })
+  const workerRecovery = selectThinkingPlan({ membership: { name: 'impl', role: 'teammate' }, state: workerStallState, settings })
+  assert.equal(workerRecovery.tier, 'high')
+  assert.equal(workerRecovery.stage, 'stall-recovery')
+  assert.equal(workerRecovery.reason, 'stall-recovery-escalate')
+
+  const reviewerStallState = makeState(
+    [
+      makeItem({
+        status: W.ITEM_STATUS.IN_REVIEW,
+        reviewDepth: 'light',
+        reviews: [{ round: 1, status: 'pending', reviewer: 'rev', findings: [] }],
+      }),
+    ],
+    {
+      events: [{ type: 'member/stall-nudge', detail: 'rev on W1 (reviewer, nudge 1/2)' }],
+    },
+  )
+  const reviewerRecovery = selectThinkingPlan({ membership: { name: 'rev', role: 'teammate' }, state: reviewerStallState, settings })
+  assert.equal(reviewerRecovery.tier, 'high')
+  assert.equal(reviewerRecovery.stage, 'review-stall-recovery')
+  assert.equal(reviewerRecovery.reason, 'stall-recovery-escalate')
+})
+
+test('selectThinkingPlan downgrades non-blocking turns at >= 80% token budget while protecting critical stages', () => {
+  const settings = resolveSettings({ tokenBudgetPerRun: 1000 })
+  assert.equal(BUDGET_DOWNGRADE_RATIO, 0.8)
+
+  const usage79 = { totals: { uncachedInputTokens: 700, outputTokens: 90, cacheReadTokens: 0, cacheWriteTokens: 0 } }
+  const usage80 = { totals: { uncachedInputTokens: 700, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0 } }
+  assert.equal(computeBudgetPressure(usage79, settings).active, false)
+  assert.equal(computeBudgetPressure(usage80, settings).active, true)
+
+  // Below 80%: normal complex item stays high
+  const complexItem = makeItem({ complexity: 'complex' })
+  assert.equal(
+    selectThinkingPlan({ membership: { name: 'impl', role: 'teammate' }, state: makeState([complexItem]), settings, usage: usage79 }).tier,
+    'high',
+  )
+
+  // At 80%: routine complex implementer, standard reviewer, and lead planning downgrade to low
+  const downgradedImpl = selectThinkingPlan({ membership: { name: 'impl', role: 'teammate' }, state: makeState([complexItem]), settings, usage: usage80 })
+  assert.equal(downgradedImpl.tier, 'low')
+  assert.equal(downgradedImpl.bias, 'low')
+  assert.equal(downgradedImpl.budgetDowngraded, true)
+  assert.match(downgradedImpl.reason, /:budget-downgrade$/)
+
+  const revItem = makeItem({
+    status: W.ITEM_STATUS.IN_REVIEW,
+    reviewDepth: 'standard',
+    reviews: [{ round: 1, status: 'pending', reviewer: 'rev', findings: [] }],
+  })
+  const downgradedRev = selectThinkingPlan({ membership: { name: 'rev', role: 'teammate' }, state: makeState([revItem]), settings, usage: usage80 })
+  assert.equal(downgradedRev.tier, 'low')
+  assert.equal(downgradedRev.budgetDowngraded, true)
+
+  const downgradedLeadPlan = selectThinkingPlan({
+    membership: { name: 'lead', role: 'lead' },
+    state: makeState([complexItem], { phase: W.RUN_PHASE.PLANNED }),
+    settings,
+    usage: usage80,
+  })
+  assert.equal(downgradedLeadPlan.tier, 'low')
+  assert.equal(downgradedLeadPlan.budgetDowngraded, true)
+
+  // Protected stages remain undowngraded at >= 80% budget
+  const leadArb = selectThinkingPlan({
+    membership: { name: 'lead', role: 'lead' },
+    state: makeState([makeItem({ status: W.ITEM_STATUS.ESCALATED })]),
+    settings,
+    usage: usage80,
+  })
+  assert.equal(leadArb.tier, 'high')
+  assert.equal(leadArb.budgetDowngraded, undefined)
+
+  const reworkProtected = selectThinkingPlan({
+    membership: { name: 'impl', role: 'teammate' },
+    state: makeState([makeItem({ status: W.ITEM_STATUS.CHANGES_REQUESTED })]),
+    settings,
+    usage: usage80,
+  })
+  assert.equal(reworkProtected.tier, 'high')
+
+  const rebuttalProtected = selectThinkingPlan({
+    membership: { name: 'rev', role: 'teammate' },
+    state: makeState([
+      makeItem({
+        status: W.ITEM_STATUS.IN_REVIEW,
+        reviews: [
+          { round: 1, status: 'submitted', reviewer: 'rev', verdict: 'request_changes', findings: [{ id: 'F1', resolution: { state: 'rebut' } }] },
+          { round: 2, status: 'pending', reviewer: 'rev', findings: [] },
+        ],
+      }),
+    ]),
+    settings,
+    usage: usage80,
+  })
+  assert.equal(rebuttalProtected.tier, 'high')
+
+  const stallProtected = selectThinkingPlan({
+    membership: { name: 'impl', role: 'teammate' },
+    state: makeState([makeItem()], { events: [{ type: 'member/stall-nudge', detail: 'impl on W1 (worker, nudge 1/2)' }] }),
+    settings,
+    usage: usage80,
+  })
+  assert.equal(stallProtected.tier, 'high')
+
+  const overrideProtected = selectThinkingPlan({
+    membership: { name: 'impl', role: 'teammate' },
+    state: makeState([makeItem({ thinkingTier: 'max' })]),
+    settings,
+    usage: usage80,
+  })
+  assert.equal(overrideProtected.tier, 'max')
+})
+
+test('createThinkingRouter dynamically downgrades reasoningEffort via live tokenUsage sampler at 80% budget', async () => {
+  const lead = makeScopedAgent('session-lead')
+  const impl = makeScopedAgent('session-impl')
+  const members = [
+    { id: lead.id, name: 'lead', role: 'lead', agent: lead },
+    { id: impl.id, name: 'impl', role: 'teammate', agent: impl },
+  ]
+  const settings = resolveSettings({ tokenBudgetPerRun: 1000 })
+  const state = makeState([makeItem({ owner: 'impl', complexity: 'complex' })], { settings })
+  let used = 400
+  const ctx = {
+    agentTeams: {
+      tryMembership: (a) => {
+        const m = members.find((x) => x.id === a.id)
+        return m ? { root: lead, id: a.id, name: m.name, role: m.role } : undefined
+      },
+      listMembers: () => members,
+    },
+    logger: { warn() {}, debug() {} },
+  }
+  const store = {
+    cachedState: () => state,
+    teamIdOf: () => 'session-lead',
+  }
+  const router = createThinkingRouter({
+    ctx,
+    store,
+    settings,
+    resolveModelInfo: async () => ({
+      id: 'deepseek-v4-pro',
+      reasoning: { efforts: [{ id: 'off' }, { id: 'low' }, { id: 'high' }, { id: 'max' }] },
+    }),
+    tokenUsage: () => (agent) => (agent?.id === impl.id ? { uncachedInputTokens: used, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 } : null),
+  })
+  router.install(impl)
+
+  // Turn 1 (40% used): complex item gets 'high'
+  const t1 = await impl.runRequest({ turn: 1, step: 1 }, { provider: 'deepseek', model: 'deepseek-v4-pro', reasoningEffort: 'high' })
+  assert.equal(t1.reasoningEffort, 'high')
+
+  // Turn 2 (85% used): complex non-blocking item automatically downgrades to 'low'
+  used = 850
+  const t2 = await impl.runRequest({ turn: 2, step: 1 }, { provider: 'deepseek', model: 'deepseek-v4-pro', reasoningEffort: 'high' })
+  assert.equal(t2.reasoningEffort, 'low')
 })
