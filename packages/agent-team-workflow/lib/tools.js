@@ -498,37 +498,37 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_flow_plan',
       description:
-        'Lead-only. Create the standard workflow run: turn the objective into work items with disjoint write scopes, a definition of done, dependencies, and independent reviewers. Returns each item backing Team task id plus the exact spawn prompt and reviewer prompt to pass to spawn_teammate. Refuses dependency cycles, self-review, and write-scope overlap inside one execution wave.',
+        'Lead-only. Create workflow run with disjoint-scope items, DoD, dependencies, and reviewers; returns task ids and spawn briefs.',
       parameters: {
         type: 'object',
         properties: {
-          objective: { type: 'string', description: 'The team-level objective, including what "done" means for the user.' },
-          acceptance_criteria: { type: 'array', items: { type: 'string' }, description: 'Verifiable team-level acceptance criteria (at least one).' },
-          constraints: { type: 'array', items: { type: 'string' }, description: 'Hard constraints every member must respect.' },
+          objective: { type: 'string' },
+          acceptance_criteria: { type: 'array', items: { type: 'string' } },
+          constraints: { type: 'array', items: { type: 'string' } },
           items: {
             type: 'array',
             items: {
               type: 'object',
               properties: {
-                id: { type: 'string', description: 'Stable short id such as W1; auto-assigned when omitted.' },
-                subject: { type: 'string', description: 'One-line deliverable title.' },
-                owner: { type: 'string', description: 'Teammate name that will do the work (never "lead"); omit when assignment is "open" so a peer claims it.' },
-                assignment: { type: 'string', enum: ['lead', 'open'], description: 'Who picks the item: "lead" assigns owner now (default), "open" publishes it to the queue for a peer to claim.' },
-                role: { type: 'string', description: 'implementer | verifier | researcher | architect | writer.' },
-                write_scopes: { type: 'array', items: { type: 'string' }, description: 'Workspace-relative paths this owner may modify. Must be disjoint from other items in the same wave.' },
-                blocked_by: { type: 'array', items: { type: 'string' }, description: 'Item ids that must be approved first.' },
-                definition_of_done: { type: 'array', items: { type: 'string' }, description: 'Checkable completion conditions (at least one).' },
-                needs_review: { type: 'boolean', description: 'Default true. Set false only with reviewers empty and an articulated reason.' },
-                reviewers: { type: 'array', items: { type: 'string' }, description: 'Independent reviewer member names; must not include the owner.' },
-                evidence_optional: { type: 'boolean', description: 'Set true only for read-only/research items where no command can be run.' },
-                complexity: { type: 'string', enum: ['trivial', 'normal', 'complex'], description: 'Complexity for thinking routing.' },
-                thinking_tier: { type: 'string', enum: ['off', 'low', 'medium', 'high', 'max', 'inherit'], description: 'Thinking tier override.' },
-                review_depth: { type: 'string', enum: ['auto', 'light', 'standard', 'deep'], description: 'Review depth standard.' },
-                review_profile: { type: 'string', enum: ['auto', 'code', 'security', 'api', 'docs', 'tests', 'refactor'], description: 'Review rubric profile.' },
+                id: { type: 'string', description: 'Short id e.g. W1.' },
+                subject: { type: 'string' },
+                owner: { type: 'string', description: 'Owner name (never "lead"); omit for open queue.' },
+                assignment: { type: 'string', enum: ['lead', 'open'], description: 'lead (default) or open queue.' },
+                role: { type: 'string', description: 'implementer|verifier|researcher|architect|writer.' },
+                write_scopes: { type: 'array', items: { type: 'string' }, description: 'Relative paths; disjoint within a wave.' },
+                blocked_by: { type: 'array', items: { type: 'string' }, description: 'Prerequisite item ids.' },
+                definition_of_done: { type: 'array', items: { type: 'string' } },
+                needs_review: { type: 'boolean', description: 'Default true.' },
+                reviewers: { type: 'array', items: { type: 'string' }, description: 'Independent reviewers (not owner).' },
+                evidence_optional: { type: 'boolean', description: 'True only for read-only/research.' },
+                complexity: { type: 'string', enum: ['trivial', 'normal', 'complex'] },
+                thinking_tier: { type: 'string', enum: ['off', 'low', 'medium', 'high', 'max', 'inherit'] },
+                review_depth: { type: 'string', enum: ['auto', 'light', 'standard', 'deep'] },
+                review_profile: { type: 'string', enum: ['auto', 'code', 'security', 'api', 'docs', 'tests', 'refactor'] },
               },
               required: ['subject', 'definition_of_done'],
             },
-            description: 'Work items; each becomes one shared Team task plus one owner brief (or an open-queue entry a peer claims).',
+            description: 'Planned items.',
           },
           workers: {
             type: 'array',
@@ -538,10 +538,10 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
                 { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string' } }, required: ['name'] },
               ],
             },
-            description: 'Workers for the open-queue pool: a member name, or {name, role} to pick a configured role (provider/model + role prompt).',
+            description: 'Open-queue pool: name or {name,role}.',
           },
-          replace: { type: 'boolean', description: 'Archive the existing run and start a new one.' },
-          preset: { type: 'string', enum: ['fast-fix', 'feature', 'pr-review', 'deep-audit'], description: 'Workflow preset.' },
+          replace: { type: 'boolean', description: 'Archive existing run and restart.' },
+          preset: { type: 'string', enum: ['fast-fix', 'feature', 'pr-review', 'deep-audit'] },
         },
         required: ['objective', 'acceptance_criteria', 'items'],
       },
@@ -873,20 +873,13 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_flow_status',
       description:
-        'Read the workflow board: run phase, every work item with review state, your assigned actions, open escalations, and Team member status. Call this first, and re-read it after every peer message. next_actions is the authoritative assignment for the calling member.',
+        'Read board state, items, review state, and next_actions. Call first and after peer messages.',
       parameters: {
         type: 'object',
         properties: {
-          item_id: { type: 'string', description: 'Optional work item id; when given, its full report and review records are included.' },
-          view: {
-            type: 'string',
-            enum: ['brief', 'full'],
-            description: 'Projection: brief (default per config; action-oriented, bounded) or full (legacy, larger).',
-          },
-          since_rev: {
-            type: 'integer',
-            description: 'Last rev you saw; when the board is unchanged this returns a tiny {unchanged:true} answer.',
-          },
+          item_id: { type: 'string', description: 'Include full report/reviews for item.' },
+          view: { type: 'string', enum: ['brief', 'full'], description: 'brief (compact) or full.' },
+          since_rev: { type: 'integer', description: 'Return {unchanged:true} if rev matches.' },
         },
         additionalProperties: false,
       },
@@ -991,38 +984,38 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_flow_report',
       description:
-        'Owner-only. Submit the structured work report for your item: summary, changed files, verification commands with integer exit codes, quoted evidence, open questions, and risks. This is the deliverable a reviewer inspects; it also completes the backing Team task and hands the item to its reviewer.',
+        'Owner-only. Submit work report (summary, files, commands with exit_code, evidence) to hand item to reviewer.',
       parameters: {
         type: 'object',
         properties: {
-          item_id: { type: 'string', description: 'Your workflow item id, e.g. W1.' },
-          summary: { type: 'string', description: 'What you did and what is now true, in plain language.' },
-          files: { type: 'array', items: { type: 'string' }, description: 'Workspace-relative files you created or modified.' },
+          item_id: { type: 'string' },
+          summary: { type: 'string' },
+          files: { type: 'array', items: { type: 'string' }, description: 'Modified relative paths.' },
           commands: {
             type: 'array',
             items: {
               type: 'object',
               properties: {
-                command: { type: 'string', description: 'Exact command line.' },
-                exit_code: { type: 'integer', description: 'Observed exit code.' },
-                note: { type: 'string', description: 'Optional one-line interpretation.' },
+                command: { type: 'string' },
+                exit_code: { type: 'integer' },
+                note: { type: 'string' },
               },
               required: ['command', 'exit_code'],
             },
-            description: 'Verification commands you actually ran.',
+            description: 'Ran verification commands.',
           },
-          evidence: { type: 'array', items: { type: 'string' }, description: 'Quoted output, test names, or artifact paths that prove the claims.' },
-          open_questions: { type: 'array', items: { type: 'string' }, description: 'Anything still unresolved, including assumptions you need confirmed.' },
-          risks: { type: 'array', items: { type: 'string' }, description: 'Known risks, residual defects, or follow-up work.' },
-          deviation: { type: 'string', description: 'Any deviation from the brief (scope, approach, DoD) and why.' },
+          evidence: { type: 'array', items: { type: 'string' }, description: 'Quoted outputs/tests.' },
+          open_questions: { type: 'array', items: { type: 'string' } },
+          risks: { type: 'array', items: { type: 'string' } },
+          deviation: { type: 'string', description: 'Brief/DoD deviation and rationale.' },
           handoff_packet: {
             type: 'object',
-            description: 'Optional machine-readable handoff packet for downstream items or consumers.',
+            description: 'Optional handoff metadata.',
             properties: {
-              contract_id: { type: 'string', description: 'Registered contract id.' },
-              entry: { type: 'string', description: 'Primary entry point file path.' },
-              exports: { type: 'array', items: { type: 'string' }, description: 'Exported symbol names.' },
-              notes: { type: 'string', description: 'Usage notes for downstream items.' },
+              contract_id: { type: 'string' },
+              entry: { type: 'string' },
+              exports: { type: 'array', items: { type: 'string' } },
+              notes: { type: 'string' },
             },
           },
         },
@@ -1311,30 +1304,29 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_flow_review_submit',
       description:
-        'Reviewer-only. Submit verdict (approve|approve_with_nits|request_changes|block), findings with file/line, evidence_checked, and optional dod_checks. Non-approvals need >=1 finding.',
+        'Reviewer-only. Submit verdict, findings, and evidence_checked (non-approvals require >=1 finding).',
       parameters: {
         type: 'object',
         properties: {
-          item_id: { type: 'string', description: 'Item id to review.' },
-          verdict: { type: 'string', enum: ['approve', 'approve_with_nits', 'request_changes', 'block'], description: 'Verdict.' },
-          summary: { type: 'string', description: 'Concise assessment.' },
+          item_id: { type: 'string' },
+          verdict: { type: 'string', enum: ['approve', 'approve_with_nits', 'request_changes', 'block'] },
+          summary: { type: 'string' },
           findings: {
             type: 'array',
             items: {
               type: 'object',
               properties: {
-                id: { type: 'string', description: 'Short id e.g. F1.' },
-                severity: { type: 'string', enum: ['blocker', 'major', 'minor', 'nit'], description: 'Severity.' },
-                file: { type: 'string', description: 'Relative file path.' },
-                line: { type: 'integer', description: 'Line number.' },
-                claim: { type: 'string', description: 'Defect description.' },
-                suggestion: { type: 'string', description: 'Suggested fix.' },
+                id: { type: 'string' },
+                severity: { type: 'string', enum: ['blocker', 'major', 'minor', 'nit'] },
+                file: { type: 'string' },
+                line: { type: 'integer' },
+                claim: { type: 'string' },
+                suggestion: { type: 'string' },
               },
               required: ['id', 'severity', 'claim'],
             },
-            description: 'Severity-tagged findings.',
           },
-          evidence_checked: { type: 'array', items: { type: 'string' }, description: 'Files/commands verified.' },
+          evidence_checked: { type: 'array', items: { type: 'string' } },
           dod_checks: {
             type: 'array',
             items: {
@@ -1346,7 +1338,6 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
               },
               required: ['item', 'status'],
             },
-            description: 'DoD verification checks.',
           },
         },
         required: ['item_id', 'verdict', 'summary', 'findings', 'evidence_checked'],
@@ -1533,24 +1524,24 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_flow_review_respond',
       description:
-        'Owner-only. Answer every open review finding of your item: fixed | rebut | accepted_risk, each with the evidence that supports it. When all findings are answered the reviewer gets the next round; a rebutted blocker, or an exhausted round budget, escalates to the Lead instead.',
+        'Owner-only. Answer open findings (fixed|rebut|accepted_risk) with evidence; all answered triggers next round.',
       parameters: {
         type: 'object',
         properties: {
-          item_id: { type: 'string', description: 'Your item id.' },
+          item_id: { type: 'string' },
           responses: {
             type: 'array',
             items: {
               type: 'object',
               properties: {
-                finding_id: { type: 'string', description: 'Finding id from the review.' },
-                state: { type: 'string', enum: ['fixed', 'rebut', 'accepted_risk'], description: 'What you did about it.' },
-                evidence: { type: 'string', description: 'Command, diff, or quoted output that supports this response.' },
-                note: { type: 'string', description: 'Short rationale, mandatory for rebut and accepted_risk.' },
+                finding_id: { type: 'string' },
+                state: { type: 'string', enum: ['fixed', 'rebut', 'accepted_risk'] },
+                evidence: { type: 'string' },
+                note: { type: 'string', description: 'Required for rebut/accepted_risk.' },
               },
               required: ['finding_id', 'state'],
             },
-            description: 'One response per open finding.',
+            description: 'One per open finding.',
           },
         },
         required: ['item_id', 'responses'],
@@ -1673,22 +1664,22 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_flow_gate',
       description:
-        'Lead-only. Evaluate the quality gates (report presence, evidence quality, reviewer approval, unresolved findings, write-scope discipline, blocking escalations) and optionally finalize: only a passing gate may converge the run and write the report. Overrides are recorded with a reason and still show as overridden in the report.',
+        'Lead-only. Evaluate quality gates and optionally finalize the run.',
       parameters: {
         type: 'object',
         properties: {
-          finalize: { type: 'boolean', description: 'Write the report and converge the run when every gate passes.' },
+          finalize: { type: 'boolean', description: 'Finalize and write report when gates pass.' },
           overrides: {
             type: 'array',
             items: {
               type: 'object',
               properties: {
-                item_id: { type: 'string', description: 'Item whose failures the Lead accepts.' },
-                reason: { type: 'string', description: 'Why the remaining failures are acceptable; recorded in the report.' },
+                item_id: { type: 'string' },
+                reason: { type: 'string' },
               },
               required: ['item_id', 'reason'],
             },
-            description: 'Explicit Lead risk acceptance for specific items.',
+            description: 'Explicit Lead risk acceptances.',
           },
         },
       },
@@ -1888,17 +1879,17 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_flow_escalate',
       description:
-        'Any member. Raise a structured escalation to the Lead (blocker, conflicting requirements, scope change, decision, or arbitration) or, as Lead, resolve one. Blocking escalations stop the gate from passing, which is how the workflow refuses to converge silently.',
+        'Raise a structured escalation to the Lead (blocking pauses gate) or, as Lead, resolve one.',
       parameters: {
         type: 'object',
         properties: {
-          kind: { type: 'string', enum: ['blocker', 'conflict', 'scope_change', 'decision', 'arbitration'], description: 'Escalation kind.' },
-          subject: { type: 'string', description: 'One-line subject for a new escalation.' },
-          detail: { type: 'string', description: 'Full context the Lead needs to decide, including what you already tried.' },
-          blocking: { type: 'boolean', description: 'Default true. Set false for informational notes.' },
-          item_id: { type: 'string', description: 'Related work item id.' },
-          escalation_id: { type: 'string', description: 'Lead-only: id of the escalation to resolve.' },
-          resolution: { type: 'string', description: 'Lead-only: the decision and its rationale, recorded in the report.' },
+          kind: { type: 'string', enum: ['blocker', 'conflict', 'scope_change', 'decision', 'arbitration'] },
+          subject: { type: 'string' },
+          detail: { type: 'string', description: 'Context and attempts so far.' },
+          blocking: { type: 'boolean', description: 'Default true.' },
+          item_id: { type: 'string' },
+          escalation_id: { type: 'string', description: 'Lead-only: escalation to resolve.' },
+          resolution: { type: 'string', description: 'Lead-only: decision and rationale.' },
         },
       },
       output: jsonOutput({
@@ -1975,15 +1966,15 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_flow_repair',
       description:
-        'Lead-only repair for a stuck run: reopen a work item so it can be redone, reassign its owner, or reset a stuck review to another reviewer. Every repair records the reason in the audit trail and notifies the affected member, so recovery is explicit instead of a silent re-plan.',
+        'Lead-only. Repair a stuck item (reopen, reassign owner, or reset_review) with an audited reason.',
       parameters: {
         type: 'object',
         properties: {
-          item_id: { type: 'string', description: 'Work item to repair.' },
-          action: { type: 'string', enum: ['reopen', 'reassign', 'reset_review'], description: 'Repair action.' },
-          reason: { type: 'string', description: 'Why the repair is needed; recorded in the audit trail and shown to the member.' },
-          owner: { type: 'string', description: 'reassign: new owner member name (lower-kebab-case).' },
-          reviewer: { type: 'string', description: 'reset_review: reviewer to assign (defaults to the next outstanding reviewer).' },
+          item_id: { type: 'string' },
+          action: { type: 'string', enum: ['reopen', 'reassign', 'reset_review'] },
+          reason: { type: 'string' },
+          owner: { type: 'string', description: 'reassign: new owner name.' },
+          reviewer: { type: 'string', description: 'reset_review: reviewer name (optional).' },
         },
         required: ['item_id', 'action', 'reason'],
       },
@@ -2125,12 +2116,12 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_flow_staff',
       description:
-        'Lead-only. Make sure the Team actually exists: spawn missing owners/reviewers/pool members for the given (or all unfinished) items and wake inactive ones with their brief. Use it when a later wave becomes ready, or when a member went missing.',
+        'Lead-only. Spawn missing owners/reviewers/pool and wake inactive ones with their brief.',
       parameters: {
         type: 'object',
         properties: {
-          items: { type: 'array', items: { type: 'string' }, description: 'Item ids to staff; omit to staff every unfinished item.' },
-          reason: { type: 'string', description: 'Optional note recorded in the tool result.' },
+          items: { type: 'array', items: { type: 'string' }, description: 'Target item ids (defaults to all unfinished).' },
+          reason: { type: 'string' },
         },
         additionalProperties: false,
       },
@@ -2193,20 +2184,20 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_flow_git',
       description:
-        'Git/PR workflow (when gitEnabled). Actions: status, prepare, commit, verify, push, pr, pr_inspect, review, merge, worktree_*.',
+        'Git/PR workflow (when gitEnabled).',
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['status', 'prepare', 'commit', 'verify', 'push', 'pr', 'pr_inspect', 'review', 'merge', 'worktree_add', 'worktree_remove', 'worktree_list', 'worktree_sync'], description: 'Git/PR action.' },
-          item_id: { type: 'string', description: 'Work item id (commit/verify/review/merge).' },
-          pr_number: { type: 'integer', description: 'PR number for pr_inspect/review.' },
-          message: { type: 'string', description: 'Commit/merge message.' },
-          files: { type: 'array', items: { type: 'string' }, description: 'Files to commit.' },
-          commands: { type: 'array', items: { type: 'string' }, description: 'Verify commands.' },
-          method: { type: 'string', enum: ['squash', 'merge', 'no-ff'], description: 'Merge strategy.' },
-          title: { type: 'string', description: 'PR title.' },
-          body: { type: 'string', description: 'PR/review body.' },
-          abort_on_conflict: { type: 'boolean', description: 'Abort worktree_sync on conflict.' },
+          action: { type: 'string', enum: ['status', 'prepare', 'commit', 'verify', 'push', 'pr', 'pr_inspect', 'review', 'merge', 'worktree_add', 'worktree_remove', 'worktree_list', 'worktree_sync'] },
+          item_id: { type: 'string' },
+          pr_number: { type: 'integer' },
+          message: { type: 'string' },
+          files: { type: 'array', items: { type: 'string' } },
+          commands: { type: 'array', items: { type: 'string' } },
+          method: { type: 'string', enum: ['squash', 'merge', 'no-ff'] },
+          title: { type: 'string' },
+          body: { type: 'string' },
+          abort_on_conflict: { type: 'boolean' },
         },
         required: ['action'],
         additionalProperties: false,
@@ -2603,14 +2594,14 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_flow_stop',
       description:
-        'Graceful shutdown protocol. The Lead requests a teammate stop (the teammate accepts or rejects with a reason) or escalates to an interrupt; any member can answer a pending stop request addressed to it. status lists recent stop records.',
+        'Graceful shutdown protocol: Lead requests/interrupts member stop; member accepts/rejects.',
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['request', 'accept', 'reject', 'interrupt', 'status'], description: 'Stop action.' },
-          member: { type: 'string', description: 'request/interrupt: teammate name to stop.' },
-          reason: { type: 'string', description: 'Optional reason shown to the member (request/interrupt) or to the Lead (accept/reject).' },
-          stop_id: { type: 'string', description: 'interrupt: optional stop record id to escalate; defaults to the newest open record for the member.' },
+          action: { type: 'string', enum: ['request', 'accept', 'reject', 'interrupt', 'status'] },
+          member: { type: 'string', description: 'request/interrupt: teammate name.' },
+          reason: { type: 'string' },
+          stop_id: { type: 'string', description: 'interrupt: optional stop record id.' },
         },
         required: ['action'],
         additionalProperties: false,
@@ -2691,22 +2682,22 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_flow_plan_approval',
       description:
-        'Plan-first workflow: the item owner submits a short implementation plan (steps/files/risks); the Lead (or the first peer reviewer when planApprover is "peer") approves or rejects it. With autoApprovePlan the plan is approved immediately, matching the official "lead did not review it" default.',
+        'Plan-first workflow: owner submits item plan; Lead or peer approver approves or rejects.',
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['submit', 'approve', 'reject', 'status'], description: 'Plan action.' },
-          item_id: { type: 'string', description: 'Work item id.' },
+          action: { type: 'string', enum: ['submit', 'approve', 'reject', 'status'] },
+          item_id: { type: 'string' },
           plan: {
             type: 'object',
             properties: {
-              steps: { type: 'array', items: { type: 'string' }, description: 'Ordered implementation steps (at least one).' },
-              files: { type: 'array', items: { type: 'string' }, description: 'Files the plan expects to touch.' },
-              risks: { type: 'array', items: { type: 'string' }, description: 'Known risks or open questions.' },
+              steps: { type: 'array', items: { type: 'string' } },
+              files: { type: 'array', items: { type: 'string' } },
+              risks: { type: 'array', items: { type: 'string' } },
             },
-            description: 'submit: the plan itself.',
+            description: 'submit: implementation plan.',
           },
-          reason: { type: 'string', description: 'reject: why the plan was sent back; approve: optional note.' },
+          reason: { type: 'string', description: 'reject rationale or optional approve note.' },
         },
         required: ['action', 'item_id'],
         additionalProperties: false,
@@ -2767,25 +2758,25 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_flow_item',
       description:
-        'Member autonomy: add a new work item to the live run when you discover work that the plan missed (a missing example, an untested branch, a contract bug). The item gets its own write scope, definition of done, backing shared task and the same review/gate rules as planned items. Owner defaults to you; use owner:"open" to publish it to the queue.',
+        'Add a missing work item to the live run (same scope, DoD, and review rules as planned items).',
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['create'], description: 'Item action (only "create" is supported today).' },
-          subject: { type: 'string', description: 'One-line deliverable title (at most 200 characters).' },
-          role: { type: 'string', description: 'Role label for the item; default implementer.' },
-          write_scopes: { type: 'array', items: { type: 'string' }, description: 'Workspace-relative paths you may modify for this item (at least one).' },
-          definition_of_done: { type: 'array', items: { type: 'string' }, description: 'Checkable completion conditions (at least one).' },
-          owner: { type: 'string', description: '"self" (default), "open" to publish to the open queue, or another member name.' },
-          blocked_by: { type: 'array', items: { type: 'string' }, description: 'Existing item ids that must be approved first.' },
-          needs_review: { type: 'boolean', description: 'Default true; set false only for read-only work.' },
-          reviewers: { type: 'array', items: { type: 'string' }, description: 'Optional reviewer names; empty means the owner invites a peer after reporting.' },
-          evidence_optional: { type: 'boolean', description: 'Set true only for read-only/research items where no command can be run.' },
-          lease_minutes: { type: 'integer', description: 'Advisory claim lease in minutes when the item is yours.' },
-          complexity: { type: 'string', enum: ['trivial', 'normal', 'complex'], description: 'Item complexity.' },
-          thinking_tier: { type: 'string', enum: ['off', 'low', 'medium', 'high', 'max', 'inherit'], description: 'Thinking tier override.' },
-          review_depth: { type: 'string', enum: ['auto', 'light', 'standard', 'deep'], description: 'Review depth.' },
-          review_profile: { type: 'string', enum: ['auto', 'code', 'security', 'api', 'docs', 'tests', 'refactor'], description: 'Review profile.' },
+          action: { type: 'string', enum: ['create'] },
+          subject: { type: 'string' },
+          role: { type: 'string', description: 'Default implementer.' },
+          write_scopes: { type: 'array', items: { type: 'string' } },
+          definition_of_done: { type: 'array', items: { type: 'string' } },
+          owner: { type: 'string', description: '"self" (default), "open", or member name.' },
+          blocked_by: { type: 'array', items: { type: 'string' } },
+          needs_review: { type: 'boolean', description: 'Default true.' },
+          reviewers: { type: 'array', items: { type: 'string' } },
+          evidence_optional: { type: 'boolean', description: 'True only for read-only/research.' },
+          lease_minutes: { type: 'integer', description: 'Advisory claim lease minutes.' },
+          complexity: { type: 'string', enum: ['trivial', 'normal', 'complex'] },
+          thinking_tier: { type: 'string', enum: ['off', 'low', 'medium', 'high', 'max', 'inherit'] },
+          review_depth: { type: 'string', enum: ['auto', 'light', 'standard', 'deep'] },
+          review_profile: { type: 'string', enum: ['auto', 'code', 'security', 'api', 'docs', 'tests', 'refactor'] },
         },
         required: ['action', 'subject', 'write_scopes', 'definition_of_done'],
         additionalProperties: false,
@@ -2906,16 +2897,16 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_flow_talk',
       description:
-        'Peer channel. Send one message to a teammate or the whole Team and record it on the workflow board. Use it to ask the peer who owns a dependency, answer questions addressed to you, or object to a decision. Delivery uses the native Team transport; the board keeps the thread and the dashboard shows it.',
+        'Peer channel: send a message to a teammate or "team" and record it on the board.',
       parameters: {
         type: 'object',
         properties: {
-          target: { type: 'string', description: 'Teammate name (lower-kebab-case) or "team" to broadcast to every other member.' },
-          kind: { type: 'string', enum: [...W.CHANNEL_KINDS], description: 'Message kind; default "note".' },
-          text: { type: 'string', description: 'Message text, at most 4000 characters.' },
-          item_id: { type: 'string', description: 'Optional work item id this message is about.' },
-          finding_id: { type: 'string', description: 'Optional review finding id this message is about.' },
-          reply_to: { type: 'string', description: 'Optional channel message id this message answers.' },
+          target: { type: 'string', description: 'Teammate name or "team".' },
+          kind: { type: 'string', enum: [...W.CHANNEL_KINDS], description: 'Default "note".' },
+          text: { type: 'string' },
+          item_id: { type: 'string' },
+          finding_id: { type: 'string' },
+          reply_to: { type: 'string', description: 'Channel message id being answered.' },
         },
         required: ['target', 'text'],
         additionalProperties: false,
@@ -2976,21 +2967,20 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_flow_work',
       description:
-        'Peer work coordination: claim an open-queue item, release it, invite a peer to review, accept a review invitation, or hand an unfinished item to a peer (offer / accept / decline). Use it instead of asking the Lead to assign or relay work.',
+        'Peer work coordination: claim/release open-queue items, request/take reviews, or hand off items.',
       parameters: {
         type: 'object',
         properties: {
           action: {
             type: 'string',
             enum: ['claim', 'release', 'request_review', 'take_review', 'handoff_offer', 'handoff_accept', 'handoff_decline'],
-            description: 'Coordination action to perform.',
           },
-          item_id: { type: 'string', description: 'Work item id.' },
-          reviewer: { type: 'string', description: 'request_review only: peer name to invite; omit for an open invitation any peer can take.' },
-          to: { type: 'string', description: 'handoff_offer only: peer to offer the item to.' },
-          reason: { type: 'string', description: 'Optional reason (release/handoff decline).' },
-          note: { type: 'string', description: 'Optional claim note.' },
-          lease_minutes: { type: 'integer', description: 'Optional advisory claim lease in minutes (default 30).' },
+          item_id: { type: 'string' },
+          reviewer: { type: 'string', description: 'request_review: peer name (omit for open).' },
+          to: { type: 'string', description: 'handoff_offer: target peer.' },
+          reason: { type: 'string' },
+          note: { type: 'string' },
+          lease_minutes: { type: 'integer', description: 'Claim lease minutes (default 30).' },
         },
         required: ['action', 'item_id'],
         additionalProperties: false,
@@ -3126,19 +3116,19 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_flow_decide',
       description:
-        'Peer decision protocol: open a proposal about a definition of done, scope, re-plan or review policy, vote on proposals that affect you, or withdraw your own. Affected peers (item owner + reviewers, or the whole Team) each vote once; accepted dod proposals amend the item; ties escalate to the Lead.',
+        'Peer decision protocol: propose/vote/withdraw DoD, scope, or policy changes; Lead resolves ties.',
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['propose', 'vote', 'withdraw', 'resolve'], description: 'Decision action. "resolve" is Lead-only arbitration of a tied/escalated proposal.' },
-          kind: { type: 'string', enum: [...W.PROPOSAL_KINDS], description: 'propose only: proposal kind.' },
-          item_id: { type: 'string', description: 'propose only: work item the proposal is about; omit for a team-wide proposal.' },
-          text: { type: 'string', description: 'propose only: proposal text stating what should change and why.' },
-          proposal_id: { type: 'string', description: 'vote/withdraw only: proposal id, e.g. p1.' },
-          vote: { type: 'string', enum: ['yes', 'no', 'abstain'], description: 'vote only: your vote.' },
-          comment: { type: 'string', description: 'vote/resolve: optional rationale recorded with the decision.' },
-          timeout_minutes: { type: 'integer', description: 'propose only: minutes before the proposal auto-settles (1-1440); defaults to the run setting.' },
-          outcome: { type: 'string', enum: ['accepted', 'rejected'], description: 'resolve only: the Lead decision on the proposal.' },
+          action: { type: 'string', enum: ['propose', 'vote', 'withdraw', 'resolve'], description: 'resolve is Lead-only.' },
+          kind: { type: 'string', enum: [...W.PROPOSAL_KINDS], description: 'propose: proposal kind.' },
+          item_id: { type: 'string', description: 'propose: item id (omit for team-wide).' },
+          text: { type: 'string', description: 'propose: change and rationale.' },
+          proposal_id: { type: 'string' },
+          vote: { type: 'string', enum: ['yes', 'no', 'abstain'] },
+          comment: { type: 'string' },
+          timeout_minutes: { type: 'integer', description: 'propose: auto-settle minutes (1-1440).' },
+          outcome: { type: 'string', enum: ['accepted', 'rejected'], description: 'resolve: Lead decision.' },
         },
         required: ['action'],
         additionalProperties: false,
@@ -3242,13 +3232,13 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_flow_read',
       description:
-        'Read the peer-collaboration context: recent Team channel messages, open proposals, the open queue, review invitations and handoffs addressed to you, unanswered questions, and (with item_id) that item thread. Use it before acting and after any peer message.',
+        'Read collaboration inbox: channel tail, proposals, open queue, review invites, handoffs, and item thread.',
       parameters: {
         type: 'object',
         properties: {
-          item_id: { type: 'string', description: 'Optional work item id to include its thread and review/handoff records.' },
-          archive_item_id: { type: 'string', description: 'Optional work item id to retrieve its cold archived report and reviews on demand.' },
-          limit: { type: 'integer', description: 'How many channel messages to return (default 30, max 100).' },
+          item_id: { type: 'string', description: 'Include item thread/handoffs.' },
+          archive_item_id: { type: 'string', description: 'Retrieve archived item report/reviews.' },
+          limit: { type: 'integer', description: 'Channel messages limit (default 30, max 100).' },
         },
         additionalProperties: false,
       },
@@ -3351,27 +3341,14 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_dev_lookup',
       description:
-        'Fast zero-grep structural query against the local codebase manifest, modules, contracts, or task templates.',
+        'Structural query against codebase manifest, modules, contracts, or templates.',
       parameters: {
         type: 'object',
         properties: {
-          action: {
-            type: 'string',
-            enum: ['modules', 'module', 'commands', 'contracts', 'templates', 'search'],
-            description: 'What to look up (default: "modules").',
-          },
-          module: {
-            type: 'string',
-            description: 'Module name or path when action is "module".',
-          },
-          export_name: {
-            type: 'string',
-            description: 'Symbol name when searching for an exported function or class.',
-          },
-          refresh: {
-            type: 'boolean',
-            description: 'Force re-scan of codebase manifest if disk changes occurred.',
-          },
+          action: { type: 'string', enum: ['modules', 'module', 'commands', 'contracts', 'templates', 'search'] },
+          module: { type: 'string' },
+          export_name: { type: 'string' },
+          refresh: { type: 'boolean' },
         },
         additionalProperties: false,
       },
@@ -3407,45 +3384,18 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
     {
       name: 'team_dev_contract',
       description:
-        'Manage interface contracts: read, publish, list, validate, stub, or scaffold.',
+        'Manage interface contracts: list, read, publish, validate, stub, or scaffold.',
       parameters: {
         type: 'object',
         properties: {
-          action: {
-            type: 'string',
-            enum: ['list', 'read', 'publish', 'validate', 'stub', 'scaffold'],
-            description: 'Contract operation.',
-          },
-          contract_id: {
-            type: 'string',
-            description: 'Contract ID.',
-          },
-          module: {
-            type: 'string',
-            description: 'Module in manifest to scaffold.',
-          },
-          entry: {
-            type: 'string',
-            description: 'Entry file to scaffold.',
-          },
-          contract: {
-            type: 'object',
-            description: 'Contract object.',
-          },
-          exports: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'Symbol names to validate.',
-          },
-          format: {
-            type: 'string',
-            enum: ['esm', 'dts', 'json'],
-            description: 'Stub format: esm, dts, json.',
-          },
-          write_to: {
-            type: 'string',
-            description: 'File path to write stub.',
-          },
+          action: { type: 'string', enum: ['list', 'read', 'publish', 'validate', 'stub', 'scaffold'] },
+          contract_id: { type: 'string' },
+          module: { type: 'string' },
+          entry: { type: 'string' },
+          contract: { type: 'object' },
+          exports: { type: 'array', items: { type: 'string' } },
+          format: { type: 'string', enum: ['esm', 'dts', 'json'] },
+          write_to: { type: 'string' },
         },
         required: ['action'],
         additionalProperties: false,

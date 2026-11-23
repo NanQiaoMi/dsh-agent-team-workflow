@@ -68,8 +68,10 @@ const rows = [
   ['policy.lead', bytes(buildPolicy(SETTINGS))],
   ['tools.lead', bytes(toolSchemas(allTools))],
   ['tools.worker', bytes(toolSchemas(filterToolsByRole(allTools, resolveAllowedToolNames({ role: 'implementer', settings: SETTINGS }))))],
+  ['tools.worker.feature', bytes(toolSchemas(filterToolsByRole(allTools, resolveAllowedToolNames({ role: 'implementer', settings: SETTINGS, preset: 'feature' }))))],
   ['tools.worker.fast-fix', bytes(toolSchemas(filterToolsByRole(allTools, resolveAllowedToolNames({ role: 'implementer', settings: SETTINGS, preset: 'fast-fix' }))))],
   ['tools.reviewer', bytes(toolSchemas(filterToolsByRole(allTools, resolveAllowedToolNames({ role: 'reviewer', settings: SETTINGS }))))],
+  ['tools.reviewer.pr-review', bytes(toolSchemas(filterToolsByRole(allTools, resolveAllowedToolNames({ role: 'reviewer', settings: SETTINGS, preset: 'pr-review' }))))],
   ['tools.reviewer.fast-fix', bytes(toolSchemas(filterToolsByRole(allTools, resolveAllowedToolNames({ role: 'reviewer', settings: SETTINGS, preset: 'fast-fix' }))))],
   ['tools.verifier', bytes(toolSchemas(filterToolsByRole(allTools, resolveAllowedToolNames({ role: 'verifier', settings: SETTINGS }))))],
 ]
@@ -86,12 +88,14 @@ const budgets = {
   'policy.worker': 2200,
   'policy.reviewer': 1800,
   'policy.lead': 6200,
-  'tools.lead': 25000,
-  'tools.worker': 15000,
-  'tools.worker.fast-fix': 8500,
-  'tools.reviewer': 9000,
-  'tools.reviewer.fast-fix': 5500,
-  'tools.verifier': 5000,
+  'tools.lead': 19000,
+  'tools.worker': 11000,
+  'tools.worker.feature': 8500,
+  'tools.worker.fast-fix': 7500,
+  'tools.reviewer': 7500,
+  'tools.reviewer.pr-review': 5500,
+  'tools.reviewer.fast-fix': 5000,
+  'tools.verifier': 4200,
 }
 
 let failed = false

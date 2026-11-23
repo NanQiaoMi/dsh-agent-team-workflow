@@ -5,6 +5,8 @@
  * reviewer prompt turns, while ensuring each role has exactly what it needs.
  */
 
+const PRUNABLE_PRESETS = new Set(['fast-fix', 'feature', 'pr-review'])
+
 export const ROLE_TOOL_MATRIX = Object.freeze({
   lead: [
     'team_flow_plan',
@@ -95,7 +97,7 @@ export function resolveAllowedToolNames({ role = 'implementer', duties = [], set
 
   const effectivePreset = String(preset ?? state?.preset ?? '').trim().toLowerCase()
   const pruningEnabled = settings.presetToolPruning !== false && state?.settings?.presetToolPruning !== false
-  if (pruningEnabled && effectivePreset === 'fast-fix') {
+  if (pruningEnabled && PRUNABLE_PRESETS.has(effectivePreset)) {
     const hasOpenQueue = Array.isArray(state?.items) && state.items.some((it) => it.assignment === 'open')
     const hasOpenProposals = Array.isArray(state?.proposals) && state.proposals.some((p) => p.status === 'open')
     const hasContracts =
@@ -111,7 +113,10 @@ export function resolveAllowedToolNames({ role = 'implementer', duties = [], set
     }
     if (!hasContracts) {
       allowed.delete('team_dev_contract')
-      allowed.delete('team_dev_lookup')
+      // Retain symbol lookup during active feature implementation unless strict/contract-free pruning applies
+      if (effectivePreset !== 'feature') {
+        allowed.delete('team_dev_lookup')
+      }
     }
   }
 

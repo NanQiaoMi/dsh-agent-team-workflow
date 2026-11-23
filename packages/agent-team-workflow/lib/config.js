@@ -226,7 +226,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   legacyAllTools: false,
   /** Filter registered tools by role to reduce model prompt schema overhead. */
   roleToolScoping: true,
-  /** Prune redundant collaboration/devkit tools in lightweight presets (e.g. fast-fix) when inactive. */
+  /** Prune redundant collaboration/devkit tools in fast-fix, feature, and pr-review presets when inactive. */
   presetToolPruning: true,
   /** Pre-flight check in team_flow_report: fail fast on non-zero exit codes. */
   preReportCheck: true,
