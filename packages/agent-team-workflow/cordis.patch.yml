@@ -42,8 +42,12 @@
         gitBranchPrefix: agentteam/
         # Verification commands the `verify` action runs (e.g. ["pnpm -r test"]).
         gitVerifyCommands: []
+        # Post-merge verification commands executed on runBranch before finalize.
+        integrationVerifyCommands: []
         # Require item git verification before the gate accepts it.
         gitRequireVerify: false
+        # Run gitVerifyCommands on the host during team_flow_report to attach a tamper-proof snapshot.
+        hostVerifyOnReport: true
         # DSH providers used for auto-spawned teammates (native defaults).
         freshProvider: spawn
         forkProvider: fork
@@ -77,6 +81,10 @@
         # Per-item git worktree isolation: off | serial (one active worktree) | parallel (one per item).
         # Parallel mode isolates overlapping write scopes and lets items commit/verify in their own checkout.
         worktreeIsolation: off
+        # Defer Wave 1+ worktree creation until upstream dependencies merge into runBranch.
+        lazyWorktreeProvision: true
+        # Automatically commit dirty changes inside writeScopes on team_flow_report.
+        autoCommitOnReport: true
         # Autonomous state machine: auto-wake unblocked workers, auto-wake reviewers, and watchdog.
         autoOrchestrate: true
         autoWakeUnblocked: true
@@ -91,6 +99,11 @@
         reviewDiffBytes: 12288
         watchdogIntervalSeconds: 30
         watchdogMaxIntervalSeconds: 180
+        # Graduated stall recovery: nudge inactive members without progress up to N times before escalating to Lead.
+        maxStallNudges: 2
+        stallNudgeDelaySeconds: 45
+        # Prune redundant collaboration/devkit tools in lightweight presets (e.g. fast-fix) when inactive.
+        presetToolPruning: true
         thinkingRouting: auto
         thinkingDefaultBias: low
         # Parallel multi-reviewer dispatch & rubric-based review depth (auto | light | standard | deep).

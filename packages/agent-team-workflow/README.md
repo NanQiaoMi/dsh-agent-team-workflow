@@ -20,6 +20,7 @@
 - **自适应思考与模型路由（`lib/thinking-router.js`）**：拦截 `agent/request` 并结合 `ctx.llm.resolveModelInfo` 与同轮 `turn` 锁定，按成员角色（Lead 规划/仲裁/协调）、工作项复杂度（`complexity` / `thinking_tier`）、返工与审阅深度自动选择思考档位与可选角色模型。
 - **分级 Review 与 PR 体系（`lib/review-policy.js`）**：按修改文件与 diff 行数自动分级 `light | standard | deep` 并匹配 6 类域 Rubric（`code | security | api | docs | tests | refactor`）；支持并行多审阅者通知与乱序提交、`dod_checks` 校验、`team_flow_git { action: "pr_inspect" }` PR 风险预检与结构化 Markdown PR Review 提交。
 - **事件驱动编排与动态补齐**：订阅 `agent/status` 空闲事件，单飞防重入与同成员消息合并，支持 `lazyStaffing` 与 `take_review` / `claim` 等职责变更后的增量工具动态补齐。
+- **v2.1 可靠性与效率加固**：Wave 1+ 懒建 Worktree（基于最新 `runBranch` 切出）与汇报范围内安全自动提交；沉默卡死分级轻推（`maxStallNudges`）及超限升级 Lead；合后集成验证门禁（`integrationVerifyCommands`）；计划静态预检（`preflightPlan`）、工具结构化纠偏提示与主机 `hostVerified` 实测快照（支撑 `light` 审阅免重复跑慢测）；`fast-fix` 场景化工具瘦身（`presetToolPruning`）及看板/报告可靠性归因指标。
 
 **19 个模型工具**
 
@@ -86,6 +87,13 @@ plugin_manager(action: "install_bundle", target: "<此目录绝对路径>")
 | `parallelReviews` | `true` | 向多审阅者并行派发并允许乱序独立提交审阅 |
 | `defaultReviewDepth` | `auto` | 默认审阅深度：`auto \| light \| standard \| deep` |
 | `strictReviewRubric` | `false` | 开启后 `deep` 深度批准必须携带显式 `dod_checks` |
+| `lazyWorktreeProvision` | `true` | 仅预建已解锁波次 Worktree，Wave 1+ 等上游合入后按最新 `runBranch` 懒创建 |
+| `autoCommitOnReport` | `true` | 汇报时检测范围内未提交改动并安全自动提交（越界改动拦截报错） |
+| `maxStallNudges` | `2` | 同一 `rev` 沉默无进展成员的最大自动轻推次数（`0` 关闭），超限升级 Lead |
+| `stallNudgeDelaySeconds` | `45` | 唤醒或上次轻推后判定成员停滞的最小等待秒数 |
+| `integrationVerifyCommands` | `[]` | 全量合入 `runBranch` 后、Finalize 前必须通过的集成验证命令列表 |
+| `hostVerifyOnReport` | `true` | 汇报时由主机实测 `gitVerifyCommands` 并生成绑定 SHA 的 `hostVerified` 快照 |
+| `presetToolPruning` | `true` | 在 `fast-fix` 等轻量预设下按协作活跃度裁剪冗余工具 Schema |
 
 无 `Config` 导出（避免 schemastery 依赖）；配置在 `resolveSettings` 中收敛并夹紧范围，生效值回显在 `team_flow_status.settings`。
 
