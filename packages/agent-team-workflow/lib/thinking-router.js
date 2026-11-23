@@ -7,11 +7,24 @@
  * and fails open when capability probing is unavailable.
  */
 
+import { computeUsage } from './telemetry.js'
 import { ITEM_STATUS, pendingReviewFor, RUN_PHASE } from './workflow.js'
 
 export const THINKING_TIERS = Object.freeze(['off', 'low', 'medium', 'high', 'max'])
 export const ITEM_COMPLEXITIES = Object.freeze(['trivial', 'normal', 'complex'])
 export const THINKING_MODES = Object.freeze(['auto', 'role', 'off'])
+export const BUDGET_DOWNGRADE_RATIO = 0.8
+
+const BUDGET_PROTECTED_STAGES = new Set([
+  'arbitration',
+  'rework',
+  'rework-deep',
+  're-review-rebuttal',
+  'stall-recovery',
+  'review-stall-recovery',
+  'implement-override',
+  'review-override',
+])
 
 const MODEL_CACHE_TTL_MS = 5 * 60_000
 const MODEL_CACHE_MAX = 64
@@ -101,13 +114,72 @@ export function mapTierToEffort(tier, reasoningInfo, options = {}) {
 }
 
 /**
- * Determine the semantic thinking tier and optional role model route for a
- * Team member given the current workflow run state.
+ * Evaluate whether the run has reached the budget downgrade threshold (>= 80%).
+ * Supports both `{ totalTokens }` and `telemetry.js` `{ totals: { uncachedInputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } }`.
  *
- * @param {object} input - `{ membership, state, settings }`
- * @returns {{ tier: string, bias: 'low'|'high', llmProvider?: string, model?: string, maxTokens?: number, role: string, stage: string, itemId: string|null, reason: string }}
+ * @param {object|null|undefined} usage
+ * @param {object|null|undefined} settings
+ * @returns {{ active: boolean, ratio: number, usedTokens: number, budget: number }}
  */
-export function selectThinkingPlan({ membership, state, settings }) {
+export function computeBudgetPressure(usage, settings) {
+  const budget = Number(settings?.tokenBudgetPerRun ?? 0)
+  if (!Number.isFinite(budget) || budget <= 0 || !usage || typeof usage !== 'object') {
+    return { active: false, ratio: 0, usedTokens: 0, budget: 0 }
+  }
+  let usedTokens = 0
+  if (Number.isFinite(usage.totalTokens)) {
+    usedTokens = usage.totalTokens
+  } else if (usage.totals && typeof usage.totals === 'object') {
+    const t = usage.totals
+    usedTokens = ['uncachedInputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens']
+      .reduce((sum, key) => sum + (Number.isFinite(t[key]) ? t[key] : 0), 0)
+  }
+  const ratio = usedTokens / budget
+  return {
+    active: ratio >= BUDGET_DOWNGRADE_RATIO,
+    ratio,
+    usedTokens,
+    budget,
+  }
+}
+
+function hasRecentStallNudge(state, memberName, itemId) {
+  if (!state || !Array.isArray(state.events) || !memberName || !itemId) return false
+  const exact = `${memberName} on ${itemId}`
+  return state.events.some((ev) => {
+    if (ev?.type !== 'member/stall-nudge' || typeof ev.detail !== 'string') return false
+    return ev.detail === exact || ev.detail.startsWith(`${exact} `) || ev.detail.startsWith(`${exact}(`)
+  })
+}
+
+function applyBudgetPressure(plan, pressure) {
+  if (!pressure?.active || !plan || BUDGET_PROTECTED_STAGES.has(plan.stage)) return plan
+  if (plan.tier === 'medium' || plan.tier === 'high' || plan.tier === 'max') {
+    return {
+      ...plan,
+      tier: 'low',
+      bias: 'low',
+      reason: `${plan.reason}:budget-downgrade`,
+      budgetDowngraded: true,
+    }
+  }
+  return plan
+}
+
+/**
+ * Determine the semantic thinking tier and optional role model route for a
+ * Team member given the current workflow run state (and optional live token usage).
+ *
+ * @param {object} input - `{ membership, state, settings, usage }`
+ * @returns {{ tier: string, bias: 'low'|'high', llmProvider?: string, model?: string, maxTokens?: number, role: string, stage: string, itemId: string|null, reason: string, budgetDowngraded?: boolean }}
+ */
+export function selectThinkingPlan({ membership, state, settings, usage = null }) {
+  const basePlan = selectBasePlan({ membership, state, settings })
+  if (basePlan.stage === 'off') return basePlan
+  return applyBudgetPressure(basePlan, computeBudgetPressure(usage, settings))
+}
+
+function selectBasePlan({ membership, state, settings }) {
   const memberName = membership?.name ?? ''
   const items = Array.isArray(state?.items) ? state.items : []
   const activeOwned = items.filter((it) => it.owner === memberName && it.status !== ITEM_STATUS.APPROVED)
@@ -214,19 +286,30 @@ export function selectThinkingPlan({ membership, state, settings }) {
     const submitted = Array.isArray(pendingReviewItem.reviews)
       ? pendingReviewItem.reviews.filter((r) => r.status === 'submitted')
       : []
-    if (submitted.length > 0) {
-      const hasRebuttal = submitted.at(-1)?.findings?.some((f) => f.resolution?.state === 'rebut')
-      if (hasRebuttal) {
-        return {
-          tier: 'high',
-          bias: 'high',
-          ...modelMeta,
-          role: resolvedRole,
-          stage: 're-review-rebuttal',
-          itemId: pendingReviewItem.id,
-          reason: 'rebuttal-escalation',
-        }
+    const hasRebuttal = submitted.length > 0 && submitted.at(-1)?.findings?.some((f) => f.resolution?.state === 'rebut')
+    if (hasRebuttal) {
+      return {
+        tier: 'high',
+        bias: 'high',
+        ...modelMeta,
+        role: resolvedRole,
+        stage: 're-review-rebuttal',
+        itemId: pendingReviewItem.id,
+        reason: 'rebuttal-escalation',
       }
+    }
+    if (hasRecentStallNudge(state, memberName, pendingReviewItem.id)) {
+      return {
+        tier: 'high',
+        bias: 'high',
+        ...modelMeta,
+        role: resolvedRole,
+        stage: 'review-stall-recovery',
+        itemId: pendingReviewItem.id,
+        reason: 'stall-recovery-escalate',
+      }
+    }
+    if (submitted.length > 0) {
       if (explicitRoleTier !== null) {
         return {
           tier: explicitRoleTier,
@@ -311,6 +394,21 @@ export function selectThinkingPlan({ membership, state, settings }) {
       }
     }
     if (primaryOwned.status === ITEM_STATUS.CHANGES_REQUESTED) {
+      const submittedReviews = Array.isArray(primaryOwned.reviews)
+        ? primaryOwned.reviews.filter((r) => r.status === 'submitted')
+        : []
+      const hasBlocker = submittedReviews.at(-1)?.findings?.some((f) => f?.severity === 'blocker') === true
+      if (submittedReviews.length >= 2 || hasBlocker) {
+        return {
+          tier: 'max',
+          bias: 'high',
+          ...modelMeta,
+          role: resolvedRole,
+          stage: 'rework-deep',
+          itemId: primaryOwned.id,
+          reason: 'rework-max-escalate',
+        }
+      }
       return {
         tier: 'high',
         bias: 'high',
@@ -319,6 +417,17 @@ export function selectThinkingPlan({ membership, state, settings }) {
         stage: 'rework',
         itemId: primaryOwned.id,
         reason: 'rework-escalate',
+      }
+    }
+    if (hasRecentStallNudge(state, memberName, primaryOwned.id)) {
+      return {
+        tier: 'high',
+        bias: 'high',
+        ...modelMeta,
+        role: resolvedRole,
+        stage: 'stall-recovery',
+        itemId: primaryOwned.id,
+        reason: 'stall-recovery-escalate',
       }
     }
     if (explicitRoleTier !== null) {
@@ -379,7 +488,7 @@ export function selectThinkingPlan({ membership, state, settings }) {
  * waterfall hooks on Team members, caches model capabilities, locks per-turn
  * routing, and tracks telemetry per Team run.
  */
-export function createThinkingRouter({ ctx, store, settings, resolveModelInfo = () => null } = {}) {
+export function createThinkingRouter({ ctx, store, settings, resolveModelInfo = () => null, tokenUsage = () => null } = {}) {
   const modelCache = new Map() // `${provider}:${model}` -> { info, expiresAt }
   const turnDecisions = new Map() // agentId -> { turn, baseKey, patch, meta }
   const telemetryByTeam = new Map() // teamId -> Map<memberName, record>
@@ -553,7 +662,24 @@ export function createThinkingRouter({ ctx, store, settings, resolveModelInfo = 
               },
             }
           : settings
-        const plan = selectThinkingPlan({ membership, state, settings: effectiveSettings })
+        let usage = null
+        if (effectiveSettings?.tokenBudgetPerRun > 0 && typeof tokenUsage === 'function') {
+          try {
+            const inner = tokenUsage.length === 0 ? tokenUsage() : tokenUsage
+            if (typeof inner === 'function') {
+              const rawMembers = ctx?.agentTeams?.listMembers?.(membership.root ?? targetAgent) ?? []
+              const members = rawMembers.length > 0
+                ? rawMembers.map((m) => ({ name: m.name, role: m.role, agent: m.agent ?? (m.session ? { session: m.session } : targetAgent) }))
+                : [{ name: membership.name, role: membership.role, agent: targetAgent }]
+              usage = computeUsage({ members, read: inner, state })
+            } else if (inner && typeof inner === 'object') {
+              usage = inner
+            }
+          } catch {
+            usage = null
+          }
+        }
+        const plan = selectThinkingPlan({ membership, state, settings: effectiveSettings, usage })
 
         if (plan.tier === 'inherit' && (!plan.llmProvider || !plan.model) && !plan.maxTokens) {
           return base

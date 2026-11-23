@@ -57,6 +57,7 @@ export function apply(ctx, config = {}) {
     store,
     settings,
     resolveModelInfo: () => resolveModelInfoFn,
+    tokenUsage: () => tokenUsage,
   })
   const orchestrator = createOrchestrator({ ctx, store, settings, tokenUsage: () => tokenUsage, thinkingRouter })
   const installed = new Map()
