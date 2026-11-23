@@ -1,6 +1,7 @@
 # 42 · 可靠性与效率深度优化路线图（v2.1+ 演进计划）
 
-> 版本：规划版 v1.0（2026-11-23）  
+> 版本：交付版 v1.1（2026-11-23）  
+> 状态：✅ **PR-0 ~ PR-6 已全量合入 `main`（`2c58f4c`）并通过 312/312 测试与远端 CI**  
 > 基线：`main`（`82e2004`，`feature/workflow-v2-overhaul` 合入后）  
 > 范围：`@local/dsh-agent-team-workflow`（编排器、Worktree 引擎、工具矩阵、审阅策略、Telemetry 与看板客户端）  
 > 定位：在 v2 既有的思考路由、分级审阅与事件驱动编排之上，优先堵住**沉默卡死、基线漂移、静默丢代码、合后集成假成功**四大成功率硬伤，再压降剩余工具 Schema 开销与重复测试耗时，建立跨 Run 可靠性归因闭环。
@@ -182,3 +183,33 @@
 | 轻推策略对慢速但仍在思考的成员误判 | 中 | 成员异步工具耗时较长 | 仅在成员状态切实回到 `inactive` 且超过 `stallNudgeDelaySeconds` 时触发轻推；`running` 状态绝不打扰 |
 | 场景化裁剪误删后续需要的协作工具 | 高 | `fast-fix` 中途发起提案或交接 | 保留 `index.js` 动态工具补齐钩子与 `presetToolPruning: false` / `legacyAllTools: true` 双重回退 |
 | 集成验证命令耗时过长或未配置 | 低 | 项目未设置 `integrationVerifyCommands` | 未配置时平滑跳过或由 Lead 显式决策，设合理命令超时上限并输出清晰耗时日志 |
+
+---
+
+## 6. v2.1 实施结果（2026-11-23）
+
+全部 7 个 PR（#1 ~ #7）已通过 Squash Merge 合入 `main`（`2c58f4c`）：
+
+- **PR #1**（`160a79f`）：v2.1 规划路线图（`docs/42-reliability-and-efficiency-v2.1-plan.md`）
+- **PR #2**（`2b1f73e`）：Track 1 — Wave 1+ 懒创建 Worktree（`ensureItemWorktree`）、汇报时范围内安全自动提交（`autoCommitWorktreeIfSafe`）与脏工作区拒合
+- **PR #3**（`cdfe3a8`）：Track 2 — 成员沉默卡死分级轻推（`maxStallNudges: 2`）与超限升级 Lead
+- **PR #4**（`0fe3288`）：Track 3 — `runBranch` 合后集成验证门禁（`runIntegrationVerify`，统一覆盖 `autoFinalize` 与 `team_flow_gate`）
+- **PR #6**（`d122153`）：Track 5A — `fast-fix` 场景化工具瘦身（`presetToolPruning`）
+- **PR #5**（`b39ace7`）：Track 4 + 5B — `preflightPlan` 静态预检、结构化工具纠偏、主机 `hostVerified` 防篡改实测快照与 `light` 审阅免重跑快通道
+- **PR #7**（`2c58f4c`）：Track 6 — Run 级可靠性归因指标（`telemetry.js` / `dashboard.js` / `protocol.js` / `client.js`）与 `tools.integration.test.mjs` 纯 Node 环境解耦
+
+**`main`（`2c58f4c`）合后实测验证**：
+- `packages/tool-guard-kit`（`node --test test/*.test.mjs`）：**9/9** 通过
+- `packages/agent-team-workflow` Payload 预算门禁（`node bench/measure-payloads.mjs --check`）：**17/17** 通过，`tools.worker.fast-fix = 7,889 B`（较常规 `14,376 B` 下降 **45.1%**，预算 `8,500 B`）、`tools.reviewer.fast-fix = 5,276 B`（较常规 `8,365 B` 下降 **36.9%**，预算 `5,500 B`）
+- `packages/agent-team-workflow` 全量测试（`node --test test/*.test.mjs`，全部 21 个测试套件含 `tools.integration.test.mjs`）：**312/312** 全绿通过
+
+---
+
+## 7. v2.2 演进规划（已对齐，分 4 个独立 PR 落地）
+
+| 阶段 | 分支名 | 主题 | 核心设计要点 |
+|---|---|---|---|
+| **v2.2-PR1** | `feat/worktree-auto-presync` | 并行 Worktree 合并前自动无冲突预同步 | `autoMergeApprovedWorktree` 在直接 squash 合入失败时，若工作区干净且无实际文本冲突，自动将最新 `runBranch` 同步进 worktree 分支后再合并，免除无谓唤醒模型手动执行 `worktree_sync`；存在真实冲突才记录错误并唤醒仲裁 |
+| **v2.2-PR2** | `perf/all-preset-and-lead-schema-slimming` | 全预设与 Lead 工具 Schema 瘦身 | 将 `presetToolPruning` 扩展至 `feature` / `pr-review`（无开放队列/提案/契约时按需精简）并压缩 Lead/Worker 冗余 Schema 描述文本，压降常规 `tools.worker`（目标 ≤ 11KB）与 `tools.lead`（目标 ≤ 19KB） |
+| **v2.2-PR3** | `feat/adaptive-rework-and-budget-thinking` | 返工/卡死升档 + 接近预算自动降档 | 扩展 `thinking-router.js`：成员发生返工或停滞恢复时自动提升思考档位提高一次修复率；当 Run Token 消耗达到预算 `>= 80%` 时对非阻塞协调/常规轮次自动降档保底，防预算硬熔断 |
+| **v2.2-PR4** | `test/v21-full-lifecycle-simulation` | v2.1 全链路端到端仿真回归测试 | 新增单文件综合仿真用例，串联懒建 Wave 1+ Worktree、范围内自动提交、沉默卡死轻推自愈、主机 `hostVerified` 快照、合后集成门禁及可靠性归因指标全链路验证 |
