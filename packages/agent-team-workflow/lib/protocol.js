@@ -8,6 +8,7 @@
 
 import { outstandingReviewers, pendingReview, submittedRounds, unresolvedFindings } from './workflow.js'
 import { classifyDiffRisk, renderReviewRubric } from './review-policy.js'
+import { computeReliabilityMetrics } from './telemetry.js'
 
 /** Role names with a dedicated duty line; other roles get a generic duty. */
 export const ROLE_DUTIES = Object.freeze({
@@ -598,6 +599,21 @@ export function renderReportMarkdown(state, gate) {
     lines.push(`- Total rework rounds: ${totalRework}`)
     lines.push('')
   }
+  const rel = computeReliabilityMetrics(state)
+  const firstPassText = rel.firstPassApproveRate === null
+    ? 'n/a'
+    : `${Math.round(rel.firstPassApproveRate * 100)}% (${rel.firstPassApproved}/${rel.approvedItems})`
+  const intText = rel.integrationGate === null
+    ? 'skipped'
+    : `${rel.integrationGate.pass ? 'pass' : 'fail'} (${rel.integrationGate.durationMs}ms)`
+  lines.push('## Reliability & efficiency')
+  lines.push('')
+  lines.push(`- First-pass approve rate: ${firstPassText}`)
+  lines.push(`- Stall nudges / escalations: ${rel.stallNudges} / ${rel.stallEscalations}`)
+  lines.push(`- Auto-commits / merge conflicts: ${rel.autoCommits} / ${rel.mergeConflicts}`)
+  lines.push(`- Host-verified snapshots (pass / fail): ${rel.hostVerifiedPasses} / ${rel.hostVerifiedFailures}`)
+  lines.push(`- Integration gate: ${intText}`)
+  lines.push('')
   lines.push('## Audit trail (tail)')
   lines.push('')
   for (const event of state.events.slice(-40)) lines.push(`- ${event.at} [${event.type}] ${event.actor}: ${event.detail}`)

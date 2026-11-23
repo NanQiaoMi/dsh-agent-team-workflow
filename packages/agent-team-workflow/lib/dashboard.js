@@ -770,6 +770,75 @@ function buildRouting(rawRouting) {
   return result
 }
 
+function buildReliability(state) {
+  const items = recordList(state.items)
+  const events = recordList(state.events)
+  let approvedItems = 0
+  let firstPassApproved = 0
+  let reworkRounds = 0
+
+  for (const item of items) {
+    const reviews = recordList(item.reviews)
+    let hadRework = false
+    for (const review of reviews) {
+      if (textOf(review.status) !== 'submitted') continue
+      const verdict = textOf(review.verdict)
+      if (verdict !== 'approve' && verdict !== 'approve_with_nits') {
+        reworkRounds += 1
+        hadRework = true
+      }
+    }
+    if (textOf(item.status) === 'approved') {
+      approvedItems += 1
+      if (!hadRework) firstPassApproved += 1
+    }
+  }
+
+  let stallNudges = 0
+  let stallEscalations = 0
+  let autoCommits = 0
+  let mergeConflicts = 0
+  let hostVerifiedPasses = 0
+  let hostVerifiedFailures = 0
+
+  for (const event of events) {
+    const type = textOf(event.type)
+    if (type === 'member/stall-nudge') stallNudges += 1
+    else if (type === 'member/stall-escalated') stallEscalations += 1
+    else if (type === 'git/auto-commit') autoCommits += 1
+    else if (type === 'git/worktree-merge-conflict') mergeConflicts += 1
+    else if (type === 'git/host-verified') {
+      const detail = textOf(event.detail)
+      if (/\bpassed\b/i.test(detail)) hostVerifiedPasses += 1
+      else if (/\bfailed\b/i.test(detail)) hostVerifiedFailures += 1
+    }
+  }
+
+  const rawInt = isRecord(state.integrationGate) ? state.integrationGate : null
+  const integrationGate = rawInt === null
+    ? null
+    : {
+        pass: rawInt.pass === true,
+        durationMs: Number.isFinite(rawInt.durationMs) ? rawInt.durationMs : 0,
+        ranAt: isoOf(rawInt.ranAt),
+      }
+
+  return {
+    totalItems: items.length,
+    approvedItems,
+    firstPassApproved,
+    firstPassApproveRate: approvedItems > 0 ? Math.round((firstPassApproved / approvedItems) * 10000) / 10000 : null,
+    reworkRounds,
+    stallNudges,
+    stallEscalations,
+    autoCommits,
+    mergeConflicts,
+    hostVerifiedPasses,
+    hostVerifiedFailures,
+    integrationGate,
+  }
+}
+
 /**
  * Build the counts block from the already-normalized items, so the numbers can
  * never disagree with what the client renders.
@@ -1449,6 +1518,7 @@ function buildRun(state, context) {
     git: buildRunGit(state.git),
     usage: buildUsage(state.usage),
     timings: buildTimings(state, kept, waveInfo.waves, context.now),
+    reliability: buildReliability(state),
     routing: buildRouting(context.routing ?? state.usage?.routing),
     artifacts: buildArtifacts(state.artifacts, context.artifacts),
   }
