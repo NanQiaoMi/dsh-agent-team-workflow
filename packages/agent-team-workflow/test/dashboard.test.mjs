@@ -20,6 +20,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { SNAPSHOT_VERSION, buildSnapshot, computeWaves, normalizeItemStatus, normalizeStatus, tailEvents } from '../lib/dashboard.js'
+import { renderReportMarkdown } from '../lib/protocol.js'
+import { computeReliabilityMetrics } from '../lib/telemetry.js'
 
 const NOW = '2026-11-01T00:00:00.000Z'
 const ARTIFACT_ROOT = '/work/.agentteam'
@@ -1433,4 +1435,74 @@ test('the snapshot computes phase timings, routing telemetry, preset, and review
   assert.equal(liveSnap.run.routing.length, 1)
   assert.equal(liveSnap.run.routing[0].member, 'lead')
   assert.equal(liveSnap.run.timings.totalMs >= 0, true)
+})
+
+test('reliability metrics are computed across telemetry, dashboard snapshot, and final report markdown', () => {
+  const item1 = makeItem({
+    id: 'W1',
+    status: 'approved',
+    reviews: [makeReview({ status: 'submitted', verdict: 'approve' })],
+  })
+  const item2 = makeItem({
+    id: 'W2',
+    status: 'approved',
+    reviews: [
+      makeReview({ round: 1, status: 'submitted', verdict: 'request_changes' }),
+      makeReview({ round: 2, status: 'submitted', verdict: 'approve_with_nits' }),
+    ],
+  })
+  const events = [
+    { at: NOW, type: 'member/stall-nudge', actor: 'orchestrator', detail: 'worker1 on W1' },
+    { at: NOW, type: 'member/stall-nudge', actor: 'orchestrator', detail: 'worker1 on W1' },
+    { at: NOW, type: 'member/stall-escalated', actor: 'orchestrator', detail: 'worker1 on W1' },
+    { at: NOW, type: 'git/auto-commit', actor: 'worktree-manager', detail: 'W1 (1 file)' },
+    { at: NOW, type: 'git/worktree-merge-conflict', actor: 'worktree-manager', detail: 'W2: conflict' },
+    { at: NOW, type: 'git/host-verified', actor: 'host', detail: 'W1 passed (1 command(s), abc1234)' },
+    { at: NOW, type: 'git/host-verified', actor: 'host', detail: 'W2 failed (1 command(s), def5678)' },
+  ]
+  const state = makeState({
+    items: [item1, item2],
+    events,
+    integrationGate: { pass: true, branch: 'agentteam/run-1', ranAt: NOW, durationMs: 420, results: [] },
+  })
+
+  const snap = buildSnapshot(makeInput(state))
+  assert.deepEqual(snap.run.reliability, {
+    totalItems: 2,
+    approvedItems: 2,
+    firstPassApproved: 1,
+    firstPassApproveRate: 0.5,
+    reworkRounds: 1,
+    stallNudges: 2,
+    stallEscalations: 1,
+    autoCommits: 1,
+    mergeConflicts: 1,
+    hostVerifiedPasses: 1,
+    hostVerifiedFailures: 1,
+    integrationGate: { pass: true, durationMs: 420, ranAt: NOW },
+  })
+
+  assert.deepEqual(computeReliabilityMetrics(state), snap.run.reliability)
+
+  const emptyMetrics = computeReliabilityMetrics(null)
+  assert.equal(emptyMetrics.firstPassApproveRate, null)
+  assert.equal(emptyMetrics.integrationGate, null)
+
+  const md = renderReportMarkdown(
+    {
+      ...state,
+      objective: 'Test report',
+      acceptanceCriteria: ['Pass'],
+      constraints: [],
+      escalations: [],
+      settings: { maxReviewRounds: 2, strictScopes: false },
+    },
+    { pass: true, itemGates: [], teamFailures: [] },
+  )
+  assert.match(md, /## Reliability & efficiency/)
+  assert.match(md, /First-pass approve rate: 50% \(1\/2\)/)
+  assert.match(md, /Stall nudges \/ escalations: 2 \/ 1/)
+  assert.match(md, /Auto-commits \/ merge conflicts: 1 \/ 1/)
+  assert.match(md, /Host-verified snapshots \(pass \/ fail\): 1 \/ 1/)
+  assert.match(md, /Integration gate: pass \(420ms\)/)
 })

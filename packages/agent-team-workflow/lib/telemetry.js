@@ -105,3 +105,82 @@ export function computeUsage({ members = [], read = null, state = null, now = ne
 
   return usage
 }
+
+/**
+ * Compute run-level reliability and efficiency attribution metrics from blackboard state.
+ * Safe and total on null or partial state objects.
+ *
+ * @param {object|null} [state]
+ * @returns {object}
+ */
+export function computeReliabilityMetrics(state = null) {
+  const items = Array.isArray(state?.items) ? state.items : []
+  const events = Array.isArray(state?.events) ? state.events : []
+
+  let approvedItems = 0
+  let firstPassApproved = 0
+  let reworkRounds = 0
+
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue
+    const reviews = Array.isArray(item.reviews) ? item.reviews : []
+    let hadRework = false
+    for (const review of reviews) {
+      if (!review || review.status !== 'submitted') continue
+      if (review.verdict !== 'approve' && review.verdict !== 'approve_with_nits') {
+        reworkRounds += 1
+        hadRework = true
+      }
+    }
+    if (item.status === 'approved') {
+      approvedItems += 1
+      if (!hadRework) firstPassApproved += 1
+    }
+  }
+
+  let stallNudges = 0
+  let stallEscalations = 0
+  let autoCommits = 0
+  let mergeConflicts = 0
+  let hostVerifiedPasses = 0
+  let hostVerifiedFailures = 0
+
+  for (const event of events) {
+    if (!event || typeof event !== 'object') continue
+    const type = event.type
+    if (type === 'member/stall-nudge') stallNudges += 1
+    else if (type === 'member/stall-escalated') stallEscalations += 1
+    else if (type === 'git/auto-commit') autoCommits += 1
+    else if (type === 'git/worktree-merge-conflict') mergeConflicts += 1
+    else if (type === 'git/host-verified') {
+      const detail = String(event.detail ?? '')
+      if (/\bpassed\b/i.test(detail)) hostVerifiedPasses += 1
+      else if (/\bfailed\b/i.test(detail)) hostVerifiedFailures += 1
+    }
+  }
+
+  const rawIntegration = state?.integrationGate
+  const integrationGate =
+    rawIntegration !== null && rawIntegration !== undefined && typeof rawIntegration === 'object'
+      ? {
+          pass: rawIntegration.pass === true,
+          durationMs: Number.isFinite(rawIntegration.durationMs) ? rawIntegration.durationMs : 0,
+          ranAt: typeof rawIntegration.ranAt === 'string' ? rawIntegration.ranAt : null,
+        }
+      : null
+
+  return {
+    totalItems: items.length,
+    approvedItems,
+    firstPassApproved,
+    firstPassApproveRate: approvedItems > 0 ? Math.round((firstPassApproved / approvedItems) * 10000) / 10000 : null,
+    reworkRounds,
+    stallNudges,
+    stallEscalations,
+    autoCommits,
+    mergeConflicts,
+    hostVerifiedPasses,
+    hostVerifiedFailures,
+    integrationGate,
+  }
+}

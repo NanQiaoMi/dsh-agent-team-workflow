@@ -20,9 +20,114 @@ import { resolveSettings } from '../lib/config.js'
 import { createStore } from '../lib/store.js'
 import { buildTools } from '../lib/tools.js'
 
-const DSH_TOOLS = '/Applications/DSH Desktop.app/Contents/Resources/app/node_modules/@deepseek-ai/dsh-tools/lib/index.js'
+const DSH_TOOLS =
+  process.env.DSH_TOOLS_PATH ||
+  '/Applications/DSH Desktop.app/Contents/Resources/app/node_modules/@deepseek-ai/dsh-tools/lib/index.js'
 const { execFileSync } = await import('node:child_process')
-const { assertSupportedJsonSchema, validateJsonSchemaValue } = await import(DSH_TOOLS)
+
+const SUPPORTED_SCHEMA_TYPES = new Set(['string', 'number', 'integer', 'boolean', 'null', 'array', 'object'])
+
+function fallbackAssertSupportedJsonSchema(schema, at = 'schema') {
+  if (schema === null || typeof schema !== 'object' || Array.isArray(schema)) {
+    throw new Error(`${at} must be a JSON Schema object`)
+  }
+  if (schema.type !== undefined) {
+    const types = Array.isArray(schema.type) ? schema.type : [schema.type]
+    for (const t of types) {
+      if (!SUPPORTED_SCHEMA_TYPES.has(t)) throw new Error(`${at} has unsupported type "${t}"`)
+    }
+  }
+  if (schema.properties !== undefined) {
+    for (const [key, child] of Object.entries(schema.properties)) {
+      fallbackAssertSupportedJsonSchema(child, `${at}.properties.${key}`)
+    }
+  }
+  if (schema.items !== undefined && typeof schema.items === 'object') {
+    fallbackAssertSupportedJsonSchema(schema.items, `${at}.items`)
+  }
+  if (Array.isArray(schema.anyOf)) {
+    schema.anyOf.forEach((branch, idx) => fallbackAssertSupportedJsonSchema(branch, `${at}.anyOf[${idx}]`))
+  }
+  if (Array.isArray(schema.oneOf)) {
+    schema.oneOf.forEach((branch, idx) => fallbackAssertSupportedJsonSchema(branch, `${at}.oneOf[${idx}]`))
+  }
+}
+
+function matchesSchemaType(expectedType, value) {
+  if (expectedType === 'null') return value === null
+  if (expectedType === 'array') return Array.isArray(value)
+  if (expectedType === 'object') return value !== null && typeof value === 'object' && !Array.isArray(value)
+  if (expectedType === 'integer') return typeof value === 'number' && Number.isInteger(value)
+  if (expectedType === 'number') return typeof value === 'number' && Number.isFinite(value)
+  return typeof value === expectedType
+}
+
+function fallbackValidateJsonSchemaValue(schema, value, path = 'value') {
+  if (schema === null || schema === undefined || typeof schema !== 'object') return []
+  if (Object.keys(schema).length === 0) return []
+  const errors = []
+
+  if (Array.isArray(schema.anyOf) && schema.anyOf.length > 0) {
+    const anyMatch = schema.anyOf.some((branch) => fallbackValidateJsonSchemaValue(branch, value, path).length === 0)
+    if (!anyMatch) errors.push(`${path} does not match anyOf branches`)
+    return errors
+  }
+  if (Array.isArray(schema.oneOf) && schema.oneOf.length > 0) {
+    const matchCount = schema.oneOf.filter((branch) => fallbackValidateJsonSchemaValue(branch, value, path).length === 0).length
+    if (matchCount !== 1) errors.push(`${path} must match exactly one oneOf branch (matched ${matchCount})`)
+    return errors
+  }
+  if (Array.isArray(schema.enum) && !schema.enum.some((candidate) => Object.is(candidate, value))) {
+    errors.push(`${path} must be one of ${JSON.stringify(schema.enum)}`)
+  }
+  if (schema.type !== undefined) {
+    const types = Array.isArray(schema.type) ? schema.type : [schema.type]
+    if (!types.some((t) => matchesSchemaType(t, value))) {
+      errors.push(`${path} expected type ${types.join('|')}`)
+      return errors
+    }
+  }
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    if (Array.isArray(schema.required)) {
+      for (const reqKey of schema.required) {
+        if (!Object.prototype.hasOwnProperty.call(value, reqKey) || value[reqKey] === undefined) {
+          errors.push(`${path}.${reqKey} is required`)
+        }
+      }
+    }
+    const props = schema.properties ?? {}
+    for (const [key, propSchema] of Object.entries(props)) {
+      if (value[key] !== undefined) {
+        errors.push(...fallbackValidateJsonSchemaValue(propSchema, value[key], `${path}.${key}`))
+      }
+    }
+    if (schema.additionalProperties === false) {
+      for (const key of Object.keys(value)) {
+        if (!Object.prototype.hasOwnProperty.call(props, key)) {
+          errors.push(`${path}.${key} is not allowed by additionalProperties:false`)
+        }
+      }
+    }
+  }
+  if (Array.isArray(value) && schema.items !== undefined) {
+    for (let i = 0; i < value.length; i += 1) {
+      errors.push(...fallbackValidateJsonSchemaValue(schema.items, value[i], `${path}[${i}]`))
+    }
+  }
+  return errors
+}
+
+let assertSupportedJsonSchema = fallbackAssertSupportedJsonSchema
+let validateJsonSchemaValue = fallbackValidateJsonSchemaValue
+try {
+  const mod = await import(DSH_TOOLS)
+  if (typeof mod.assertSupportedJsonSchema === 'function' && typeof mod.validateJsonSchemaValue === 'function') {
+    assertSupportedJsonSchema = mod.assertSupportedJsonSchema
+    validateJsonSchemaValue = mod.validateJsonSchemaValue
+  }
+} catch {
+  // Pure Node / CI fallback validator active when @deepseek-ai/dsh-tools is absent
+}
 
 /** In-memory double of the Agent Teams service plus the plugin's host needs. */
 function createHarness(cwd) {

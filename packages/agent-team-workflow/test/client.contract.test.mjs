@@ -2426,3 +2426,50 @@ test('observability panels render phase timings, model/thinking routing, and dra
     board.dispose()
   }
 })
+
+test('reliability panel renders metrics safely and degrades cleanly when absent', async () => {
+  const relSnapshot = {
+    ...V2_SNAPSHOT,
+    run: {
+      ...V2_SNAPSHOT.run,
+      reliability: {
+        totalItems: 3,
+        approvedItems: 2,
+        firstPassApproved: 1,
+        firstPassApproveRate: 0.5,
+        reworkRounds: 1,
+        stallNudges: 2,
+        stallEscalations: 1,
+        autoCommits: 3,
+        mergeConflicts: 1,
+        hostVerifiedPasses: 2,
+        hostVerifiedFailures: 0,
+        integrationGate: { pass: true, durationMs: 3200, ranAt: '2026-11-02T00:05:00.000Z' },
+      },
+    },
+  }
+
+  const board = await mountBoard(relSnapshot)
+  try {
+    const tree = await board.render()
+    const panels = findByClass(tree, 'atw-reliability')
+    assert.equal(panels.length, 1)
+    const relText = textOf(panels[0])
+    assert.ok(relText.includes('k:board.reliability'))
+    assert.ok(relText.includes('50%'))
+    assert.ok(relText.includes('2 / 1'))
+    assert.ok(relText.includes('3 / 1'))
+    assert.ok(relText.includes('k:board.relPass'))
+  } finally {
+    board.dispose()
+  }
+
+  // Legacy snapshot without run.reliability omits panel without throwing
+  const legacyBoard = await mountBoard(V2_SNAPSHOT)
+  try {
+    const legacyTree = await legacyBoard.render()
+    assert.equal(findByClass(legacyTree, 'atw-reliability').length, 0)
+  } finally {
+    legacyBoard.dispose()
+  }
+})

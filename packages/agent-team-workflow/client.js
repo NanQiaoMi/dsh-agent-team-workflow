@@ -399,6 +399,14 @@ window.__ModuleLoader__.load({
       'board.timingAvgImpl': '平均实现',
       'board.timingAvgReview': '平均审阅',
       'board.timingRework': '返工轮次',
+      'board.reliability': '可靠性与自愈',
+      'board.relFirstPass': '首轮通过率',
+      'board.relStalls': '轻推 / 升级',
+      'board.relGit': '自动提交 / 冲突',
+      'board.relIntegration': '合后集成门禁',
+      'board.relPass': '通过',
+      'board.relFail': '失败',
+      'board.relSkipped': '未配置',
       'drawer.reviewStandard': '审阅标准',
       'drawer.complexity': '复杂度',
       'pipeline.title': '协作流水线',
@@ -788,6 +796,14 @@ window.__ModuleLoader__.load({
       'board.timingAvgImpl': 'Avg implement',
       'board.timingAvgReview': 'Avg review',
       'board.timingRework': 'Rework rounds',
+      'board.reliability': 'Reliability & recovery',
+      'board.relFirstPass': 'First-pass rate',
+      'board.relStalls': 'Nudges / escalations',
+      'board.relGit': 'Auto-commits / conflicts',
+      'board.relIntegration': 'Integration gate',
+      'board.relPass': 'pass',
+      'board.relFail': 'fail',
+      'board.relSkipped': 'skipped',
       'drawer.reviewStandard': 'Review standard',
       'drawer.complexity': 'Complexity',
       'pipeline.title': 'Collaboration Pipeline',
@@ -4363,6 +4379,37 @@ window.__ModuleLoader__.load({
       )
     }
 
+    function renderReliabilityPanel(view, run) {
+      const tr = view.tr
+      const rel = run !== null && run !== undefined && isRecord(run.reliability) ? run.reliability : null
+      if (rel === null) return null
+      const metric = (key, label, value) =>
+        h(
+          'div',
+          { key: key, className: 'atw-timing-card' },
+          h('span', { className: 'atw-timing-label' }, label),
+          h('span', { className: 'atw-timing-value' }, value),
+        )
+      const rateNum = num(rel.firstPassApproveRate, Number.NaN)
+      const firstPassText = Number.isFinite(rateNum) ? String(Math.round(rateNum * 100)) + '%' : '-'
+      const intGate = isRecord(rel.integrationGate) ? rel.integrationGate : null
+      const intText = intGate === null
+        ? tr('board.relSkipped')
+        : (intGate.pass === true ? tr('board.relPass') : tr('board.relFail')) + ' (' + formatDurationMs(num(intGate.durationMs, 0)) + ')'
+      const cards = [
+        metric('firstPass', tr('board.relFirstPass'), firstPassText),
+        metric('stalls', tr('board.relStalls'), String(num(rel.stallNudges, 0)) + ' / ' + String(num(rel.stallEscalations, 0))),
+        metric('git', tr('board.relGit'), String(num(rel.autoCommits, 0)) + ' / ' + String(num(rel.mergeConflicts, 0))),
+        metric('integration', tr('board.relIntegration'), intText),
+      ]
+      return h(
+        'section',
+        { className: 'atw-panel atw-reliability' },
+        panelHead(tr('board.reliability'), null),
+        h('div', { className: 'atw-panel-body' }, h('div', { className: 'atw-timing-grid' }, cards)),
+      )
+    }
+
     function renderRoutingPanel(view, run) {
       const tr = view.tr
       const entries = run !== null && run !== undefined ? toArray(run.routing).filter(isRecord) : []
@@ -4941,7 +4988,7 @@ window.__ModuleLoader__.load({
       content.push(h('div', { className: 'atw-main' }, renderFlowPanel(view, run, team), renderTopologyPanel(view, team, run)))
       content.push(h('div', { className: 'atw-collab' }, renderChannelPanel(view, run), renderProposalsPanel(view, run)))
       content.push(
-        h('div', { className: 'atw-usage-wrap' }, renderUsagePanel(view, run), renderTimingsPanel(view, run), renderRoutingPanel(view, run)),
+        h('div', { className: 'atw-usage-wrap' }, renderUsagePanel(view, run), renderTimingsPanel(view, run), renderReliabilityPanel(view, run), renderRoutingPanel(view, run)),
       )
       content.push(h('div', { className: 'atw-events-row' }, renderEventsPanel(view, run)))
       content.push(h('div', { className: 'atw-lower' }, renderGatePanel(view, run), renderEscalationsPanel(view, run)))
