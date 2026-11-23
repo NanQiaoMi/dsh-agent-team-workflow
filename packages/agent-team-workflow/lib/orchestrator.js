@@ -21,16 +21,17 @@ import {
   reReviewRequestMessage,
   reviewRequestMessage,
   roleGuidance,
+  stallNudgeMessage,
 } from './protocol.js'
 import { computeUsage } from './telemetry.js'
-import { autoCleanupRunWorktrees, getWorktreeDiffSummary } from './worktree-manager.js'
+import { autoCleanupRunWorktrees, ensureItemWorktree, getWorktreeDiffSummary, runIntegrationVerify, toIntegrationGateRecord } from './worktree-manager.js'
 
 /**
  * Build an orchestrator instance bound to the plugin context and store.
  * @param options - `{ ctx, store, settings, tokenUsage }`
  * @returns orchestrator interface.
  */
-export function createOrchestrator({ ctx, store, settings, tokenUsage = () => null, thinkingRouter = null }) {
+export function createOrchestrator({ ctx, store, settings, tokenUsage = () => null, thinkingRouter = null, now = () => Date.now() }) {
   if (!settings?.autoOrchestrate) {
     return {
       reconcile: async () => ({ actionsTaken: [], converged: false }),
@@ -50,6 +51,8 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
   // reports `inactive` is not woken again and again while its turn is queued.
   const sentForRev = new Map()
   const lastRevByTeam = new Map()
+  // Per-(team, action, target, item) stall tracking for graduated nudging & Lead escalation
+  const stallTracker = new Map()
   // Single-flight concurrency guards per team
   const inFlight = new Set()
   const inFlightPromises = new Map()
@@ -59,11 +62,19 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
   const debounceTimers = new Map()
   const idleStreaks = new Map()
 
+  function itemProgressFingerprint(item) {
+    if (!item) return ''
+    const submittedCount = Array.isArray(item.reviews)
+      ? item.reviews.filter((r) => r.status === 'submitted').length
+      : 0
+    return `${item.status ?? ''}:${item.report?.seq ?? 0}:${item.reviews?.length ?? 0}:${submittedCount}:${item.owner ?? ''}`
+  }
+
   function isThrottled(teamId, action, target, itemId = '') {
     const key = `${teamId}:${action}:${target}:${itemId}`
-    const now = Date.now()
+    const currentNow = now()
     const last = cooldowns.get(key) ?? 0
-    return now - last < COOLDOWN_MS
+    return currentNow - last < COOLDOWN_MS
   }
 
   /** @returns whether this exact notice was already sent for the same revision. */
@@ -89,16 +100,43 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
    * Unified deduplication registration called both by the orchestrator after
    * sending notices and by tools after direct peer sends.
    */
-  function markNotified(teamId, action, target, itemId = '', rev = null) {
+  function markNotified(teamId, action, target, itemId = '', rev = null, progress = null) {
     if (!teamId || !action || !target) return
     const key = `${teamId}:${action}:${target}:${itemId}`
-    cooldowns.set(key, Date.now())
+    const currentNow = now()
+    cooldowns.set(key, currentNow)
     if (cooldowns.size > 5000) {
       const first = cooldowns.keys().next().value
       if (first !== undefined) cooldowns.delete(first)
     }
     if (Number.isInteger(rev)) {
       markSentForRev(teamId, action, target, itemId, rev)
+    }
+    if ((action === 'wake-worker' || action === 'wake-reviewer') && itemId) {
+      const existing = stallTracker.get(key)
+      const progressChanged = progress !== null && existing && existing.progress !== null && existing.progress !== progress
+      const revChanged = progress === null && Number.isInteger(rev) && existing && existing.rev !== rev
+      if (!existing || progressChanged || revChanged) {
+        stallTracker.set(key, {
+          teamId,
+          action,
+          target,
+          itemId,
+          rev: Number.isInteger(rev) ? rev : (existing?.rev ?? null),
+          progress,
+          firstWokenAt: currentNow,
+          lastSentAt: currentNow,
+          nudgesSent: 0,
+          sawRunning: false,
+          escalated: false,
+        })
+        if (stallTracker.size > 5000) {
+          const first = stallTracker.keys().next().value
+          if (first !== undefined) stallTracker.delete(first)
+        }
+      } else if (progress !== null && existing.progress === null) {
+        existing.progress = progress
+      }
     }
   }
 
@@ -160,8 +198,118 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
       members = []
     }
     const memberMap = new Map(members.map((m) => [m.name, m]))
-    const stateRev = Number.isInteger(state.rev) ? state.rev : 0
+    let stateRev = Number.isInteger(state.rev) ? state.rev : 0
     lastRevByTeam.set(teamId, stateRev)
+
+    // Refresh stall tracking against current item progress and member activity
+    const currentNow = now()
+    const itemById = new Map(state.items.map((it) => [it.id, it]))
+    for (const [key, entry] of stallTracker.entries()) {
+      if (entry.teamId !== teamId) continue
+      const trackedItem = itemById.get(entry.itemId)
+      if (!trackedItem || trackedItem.status === ITEM_STATUS.APPROVED) {
+        stallTracker.delete(key)
+        continue
+      }
+      const currProg = itemProgressFingerprint(trackedItem)
+      if (entry.progress !== null && entry.progress !== currProg) {
+        stallTracker.delete(key)
+        continue
+      }
+      if (entry.progress === null) entry.progress = currProg
+      const trackedMember = memberMap.get(entry.target)
+      if (trackedMember?.status === 'running') {
+        entry.sawRunning = true
+        entry.lastSentAt = currentNow
+      }
+    }
+
+    async function recordStallEvent(event) {
+      const prevRev = stateRev
+      try {
+        const updated = await store.mutateState(root, (s) => {
+          appendEvent(s, event)
+          return s
+        })
+        const nextRev = updated?.rev
+        if (Number.isInteger(nextRev) && nextRev !== prevRev) {
+          for (const [k, v] of sentForRev.entries()) {
+            if (k.startsWith(`${teamId}:`) && v === prevRev) {
+              sentForRev.set(k, nextRev)
+            }
+          }
+          for (const entry of stallTracker.values()) {
+            if (entry.teamId === teamId && entry.rev === prevRev) {
+              entry.rev = nextRev
+            }
+          }
+          stateRev = nextRev
+          lastRevByTeam.set(teamId, nextRev)
+        }
+      } catch {
+        /* best effort audit event */
+      }
+    }
+
+    async function maybeHandleStall({ action, targetName, item, role, expectedTool, requiredFields }) {
+      const maxNudges = state.settings?.maxStallNudges ?? settings.maxStallNudges ?? 2
+      if (maxNudges <= 0) return false
+      const delaySeconds = state.settings?.stallNudgeDelaySeconds ?? settings.stallNudgeDelaySeconds ?? 45
+      const delayMs = delaySeconds * 1000
+      const key = `${teamId}:${action}:${targetName}:${item.id}`
+      const entry = stallTracker.get(key)
+      if (!entry || entry.escalated) return false
+      const checkNow = now()
+      if (checkNow - entry.lastSentAt < delayMs) return false
+
+      if (entry.nudgesSent < maxNudges) {
+        const attempt = entry.nudgesSent + 1
+        const msg = stallNudgeMessage({
+          item,
+          role,
+          expectedTool,
+          requiredFields,
+          attempt,
+          maxAttempts: maxNudges,
+        })
+        const ok = await sendNotice(root, targetName, msg)
+        if (!ok) return false
+        entry.nudgesSent = attempt
+        entry.lastSentAt = checkNow
+        entry.sawRunning = false
+        cooldowns.set(key, checkNow)
+        await recordStallEvent({
+          at: new Date(checkNow).toISOString(),
+          type: 'member/stall-nudge',
+          actor: 'orchestrator',
+          detail: `${targetName} on ${item.id} (${role}, nudge ${attempt}/${maxNudges})`,
+        })
+        actionsTaken.push({ type: 'stall-nudge', target: targetName, itemId: item.id, attempt, maxAttempts: maxNudges })
+        return true
+      }
+
+      const leadMember = members.find((m) => m.role === 'lead') ?? { name: 'lead' }
+      const stalledSeconds = Math.max(0, Math.round((checkNow - entry.firstWokenAt) / 1000))
+      const msg = `[LEAD_ARBITRATION_REQUIRED] Member "${targetName}" appears stalled on ${item.id} "${item.subject}" (${role}) after ${entry.nudgesSent} automatic nudge(s) (${stalledSeconds}s without workflow progress).\nAction: inspect with team_flow_status { item_id: "${item.id}" } and intervene via team_flow_repair { action: "reopen" | "reassign", item_id: "${item.id}", reason: "member stalled without tool progress" }.`
+      const ok = await sendNotice(root, leadMember.name, msg)
+      if (!ok) return false
+      entry.escalated = true
+      entry.lastSentAt = checkNow
+      await recordStallEvent({
+        at: new Date(checkNow).toISOString(),
+        type: 'member/stall-escalated',
+        actor: 'orchestrator',
+        detail: `${targetName} on ${item.id} (${role}, after ${entry.nudgesSent} nudges)`,
+      })
+      actionsTaken.push({
+        type: 'stall-escalated',
+        target: leadMember.name,
+        stalledMember: targetName,
+        itemId: item.id,
+        nudges: entry.nudgesSent,
+      })
+      return true
+    }
 
     // Live budget breaker: sampling the projection is cheap and lets the team
     // stop spending before the gate, instead of only failing at finalize.
@@ -231,9 +379,9 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
         const spawnedMember = { name, role: 'teammate', status: 'provisioning' }
         members.push(spawnedMember)
         memberMap.set(name, spawnedMember)
-        markNotified(teamId, kind, name, item.id, stateRev)
+        markNotified(teamId, kind, name, item.id, stateRev, itemProgressFingerprint(item))
         const wakeAction = kind === 'lazy-spawn-reviewer' ? 'wake-reviewer' : 'wake-worker'
-        markNotified(teamId, wakeAction, name, item.id, stateRev)
+        markNotified(teamId, wakeAction, name, item.id, stateRev, itemProgressFingerprint(item))
         actionsTaken.push({ type: kind, target: name, itemId: item.id })
         return true
       } catch (err) {
@@ -279,6 +427,37 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
 
         if ((item.status === ITEM_STATUS.PENDING || item.status === ITEM_STATUS.CHANGES_REQUESTED) && isUnblocked) {
           if (item.owner && typeof item.owner === 'string' && item.owner.length > 0) {
+            if (
+              state.settings?.gitEnabled &&
+              state.settings?.worktreeIsolation !== 'off' &&
+              state.settings?.autoWorktree !== false &&
+              !item.git?.worktreePath
+            ) {
+              const ensured = await ensureItemWorktree({
+                cwd: store.workingDir(root),
+                state,
+                itemId: item.id,
+                agent: root,
+                store,
+              }).catch(() => null)
+              if (ensured?.ok && ensured.worktreePath) {
+                item.git = {
+                  ...(item.git ?? {}),
+                  worktree: ensured.relative ?? item.git?.worktree,
+                  worktreePath: ensured.worktreePath,
+                  worktreeBranch: ensured.branch ?? item.git?.worktreeBranch,
+                }
+                const refreshed = await store.readState(root).catch(() => null)
+                if (refreshed) {
+                  const updatedItem = refreshed.items?.find((it) => it.id === item.id)
+                  if (updatedItem?.git) item.git = updatedItem.git
+                  if (Number.isInteger(refreshed.rev) && refreshed.rev > stateRev) {
+                    stateRev = refreshed.rev
+                    lastRevByTeam.set(teamId, stateRev)
+                  }
+                }
+              }
+            }
             const m = memberMap.get(item.owner)
             const scopes = Array.isArray(item.writeScopes) && item.writeScopes.length > 0
               ? item.writeScopes.join(', ')
@@ -352,10 +531,22 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
                 enqueueDispatch(item.owner, {
                   kind: 'wake-worker',
                   itemId: item.id,
+                  progress: itemProgressFingerprint(item),
                   message: msg,
                   shortLine,
                   detailSnippet,
                   actionRecord: { type: 'wake-worker', target: item.owner, itemId: item.id, isRework },
+                })
+              } else if (alreadySentForRev(teamId, 'wake-worker', item.owner, item.id, stateRev)) {
+                await maybeHandleStall({
+                  action: 'wake-worker',
+                  targetName: item.owner,
+                  item,
+                  role: isRework ? 'worker (rework)' : 'worker',
+                  expectedTool: isRework ? 'team_flow_review_respond' : 'team_flow_report',
+                  requiredFields: isRework
+                    ? ['item_id', 'responses']
+                    : ['item_id', 'summary', 'files', 'commands', 'evidence'],
                 })
               }
             }
@@ -421,12 +612,22 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
                 enqueueDispatch(revName, {
                   kind: 'wake-reviewer',
                   itemId: item.id,
+                  progress: itemProgressFingerprint(item),
                   message: msg,
                   shortLine: `[${prevByMe ? 'RE-REVIEW' : 'REVIEW'}] ${item.id} "${item.subject}" [${risk.depth}/${risk.profile}] (owner: ${item.owner})${wt}`,
                   detailSnippet: (prevByMe
                     ? `Re-review round ${pendingForRev?.round ?? (submitted.length + 1)} addressing round ${prevByMe.round}.`
                     : `Standard: ${risk.depth}/${risk.profile}. ${item.report?.summary ? `Summary: ${item.report.summary.slice(0, 220)}` : 'Awaiting review.'}${diff ? `\n${diff.slice(0, 300)}` : ''}`),
                   actionRecord: { type: 'wake-reviewer', target: revName, itemId: item.id },
+                })
+              } else if (alreadySentForRev(teamId, 'wake-reviewer', revName, item.id, stateRev)) {
+                await maybeHandleStall({
+                  action: 'wake-reviewer',
+                  targetName: revName,
+                  item,
+                  role: 'reviewer',
+                  expectedTool: 'team_flow_review_submit',
+                  requiredFields: ['item_id', 'verdict', 'summary', 'evidence_checked'],
                 })
               }
             }
@@ -441,7 +642,7 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
         const entry = entries[0]
         const ok = await sendNotice(root, targetName, entry.message)
         if (ok) {
-          markNotified(teamId, entry.kind, targetName, entry.itemId, stateRev)
+          markNotified(teamId, entry.kind, targetName, entry.itemId, stateRev, entry.progress ?? null)
           actionsTaken.push(entry.actionRecord)
         }
       } else if (entries.length > 1) {
@@ -452,7 +653,7 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
         const ok = await sendNotice(root, targetName, digestMsg)
         if (ok) {
           for (const entry of entries) {
-            markNotified(teamId, entry.kind, targetName, entry.itemId, stateRev)
+            markNotified(teamId, entry.kind, targetName, entry.itemId, stateRev, entry.progress ?? null)
             actionsTaken.push(entry.actionRecord)
           }
         }
@@ -530,13 +731,54 @@ export function createOrchestrator({ ctx, store, settings, tokenUsage = () => nu
           if (gate.teamFailures.length > 0) gate.pass = false
         }
         if (gate.pass) {
+          let integrationGate = null
+          const integration = await runIntegrationVerify({ cwd: store.workingDir(root), state })
+          if (integration.skipped !== true) {
+            integrationGate = toIntegrationGateRecord(integration)
+            gate.integration = integrationGate
+            if (!integration.ok) {
+              const failureDetail = integration.summary || integration.error || 'integration verification failed'
+              gate.pass = false
+              gate.teamFailures.push(`integration gate failed: ${failureDetail}`)
+              await store.mutateState(root, (current) => {
+                current.integrationGate = integrationGate
+                current.gate = gate
+                current.updatedAt = now
+                appendEvent(current, {
+                  at: now,
+                  type: 'gate/integration-failed',
+                  actor: 'orchestrator',
+                  detail: failureDetail,
+                })
+                return current
+              })
+              const leadMember = members.find((m) => m.role === 'lead') ?? { name: 'lead' }
+              if (options.force || (!isThrottled(teamId, 'integration-gate-failed', leadMember.name, '') && !alreadySentForRev(teamId, 'integration-gate-failed', leadMember.name, '', stateRev))) {
+                const msg = `[INTEGRATION_GATE_FAILED] All ${state.items.length} work items in run "${state.runId}" were approved, but post-merge integration verification failed on branch "${integration.branch ?? 'workspace'}".\nFailure: ${failureDetail}\nAuto-finalize was blocked. Inspect the failure and repair via team_flow_repair or create a fix item.`
+                const ok = await sendNotice(root, leadMember.name, msg)
+                if (ok) markNotified(teamId, 'integration-gate-failed', leadMember.name, '', stateRev)
+              }
+              actionsTaken.push({ type: 'integration-gate-failed', runId: state.runId, error: failureDetail })
+              return { actionsTaken, converged: true, finalized: false, integrationFailed: true }
+            }
+          }
+
           let reportPath = null
           await store.mutateState(root, async (current) => {
+            if (integrationGate !== null) current.integrationGate = integrationGate
             current.gate = gate
             if (usage !== null) current.usage = usage
             current.updatedAt = now
             current.phase = RUN_PHASE.FINALIZED
             current.finalizedAt = now
+            if (integrationGate !== null) {
+              appendEvent(current, {
+                at: now,
+                type: 'gate/integration-passed',
+                actor: 'orchestrator',
+                detail: `${integrationGate.results.length} command(s) passed (${integrationGate.durationMs}ms)`,
+              })
+            }
             const markdown = renderReportMarkdown(current, gate)
             reportPath = await store.writeArtifact(root, `teams/${store.teamIdOf(root)}/report.md`, markdown)
             current.artifacts = { ...(current.artifacts ?? {}), reportPath }
