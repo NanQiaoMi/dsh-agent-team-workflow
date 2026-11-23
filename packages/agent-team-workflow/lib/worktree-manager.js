@@ -322,28 +322,51 @@ export async function autoMergeApprovedWorktree({ cwd, state, itemId, agent, sto
     return { ok: false, reason: 'no_run_branch' }
   }
 
+  async function recordWorktreeMergeError(error, extraGit = {}) {
+    await store.mutateState(agent, (current) => {
+      W.ensureCollaboration(current)
+      const target = W.findItem(current, item.id)
+      if (target) {
+        target.git = {
+          ...(target.git ?? {}),
+          worktreeMergeError: error,
+          ...extraGit,
+        }
+        W.appendEvent(current, {
+          at: new Date().toISOString(),
+          type: 'git/worktree-merge-conflict',
+          actor: 'worktree-manager',
+          detail: `${target.id}: ${error}`,
+        })
+      }
+      return current
+    })
+  }
+
   if (item.git?.worktreePath) {
     const dirtyFiles = await listDirtyWorktreeFiles(item.git.worktreePath)
     if (dirtyFiles.length > 0) {
       const error = `worktree has uncommitted changes (${dirtyFiles.join(', ')}); commit them before merging`
-      await store.mutateState(agent, (current) => {
-        W.ensureCollaboration(current)
-        const target = W.findItem(current, item.id)
-        if (target) {
-          target.git = {
-            ...(target.git ?? {}),
-            worktreeMergeError: error,
-          }
-          W.appendEvent(current, {
-            at: new Date().toISOString(),
-            type: 'git/worktree-merge-conflict',
-            actor: 'worktree-manager',
-            detail: `${target.id}: ${error}`,
-          })
-        }
-        return current
-      })
+      await recordWorktreeMergeError(error)
       return { ok: false, error, dirty: true }
+    }
+  }
+
+  let presynced = false
+  let presyncSha = null
+  if (state.settings?.autoPresyncWorktree !== false && item.git?.worktreePath) {
+    const syncRes = await G.gitWorktreeSync({
+      cwd: item.git.worktreePath,
+      fromBranch: state.git.branch,
+      abortOnConflict: true,
+    })
+    if (syncRes.ok === true && syncRes.merged === true) {
+      presynced = true
+      presyncSha = syncRes.sha ?? null
+    } else if (syncRes.ok !== true && syncRes.conflict === true) {
+      const conflictedFiles = Array.isArray(syncRes.conflictedFiles) ? syncRes.conflictedFiles : []
+      await recordWorktreeMergeError(syncRes.error, { worktreeConflictedFiles: conflictedFiles })
+      return { ok: false, error: syncRes.error, conflict: true, conflictedFiles }
     }
   }
 
@@ -358,23 +381,7 @@ export async function autoMergeApprovedWorktree({ cwd, state, itemId, agent, sto
     if (typeof merged.error === 'string' && /nothing to commit/i.test(merged.error)) {
       // Worktree had no new changes; treat as merged cleanly
     } else {
-      await store.mutateState(agent, (current) => {
-        W.ensureCollaboration(current)
-        const target = W.findItem(current, item.id)
-        if (target) {
-          target.git = {
-            ...(target.git ?? {}),
-            worktreeMergeError: merged.error,
-          }
-          W.appendEvent(current, {
-            at: new Date().toISOString(),
-            type: 'git/worktree-merge-conflict',
-            actor: 'worktree-manager',
-            detail: `${target.id}: ${merged.error}`,
-          })
-        }
-        return current
-      })
+      await recordWorktreeMergeError(merged.error)
       return { ok: false, error: merged.error, conflict: true }
     }
   }
@@ -389,6 +396,16 @@ export async function autoMergeApprovedWorktree({ cwd, state, itemId, agent, sto
         worktreeMergedAt: mergedAt,
         worktreeMergeMethod: 'squash',
         worktreeMergeError: null,
+        worktreeConflictedFiles: null,
+        ...(presynced ? { worktreePresyncedAt: mergedAt, worktreePresyncSha: presyncSha } : {}),
+      }
+      if (presynced) {
+        W.appendEvent(current, {
+          at: mergedAt,
+          type: 'git/worktree-presynced',
+          actor: 'worktree-manager',
+          detail: `${target.id} ${state.git.branch}${presyncSha ? ` (${presyncSha.slice(0, 7)})` : ''}`,
+        })
       }
       W.appendEvent(current, {
         at: mergedAt,
@@ -400,7 +417,7 @@ export async function autoMergeApprovedWorktree({ cwd, state, itemId, agent, sto
     return current
   })
 
-  return { ok: true, itemId: item.id, mergedAt }
+  return { ok: true, itemId: item.id, mergedAt, presynced }
 }
 
 /**

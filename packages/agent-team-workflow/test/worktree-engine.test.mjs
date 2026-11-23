@@ -1458,3 +1458,254 @@ test('hostVerifyOnReport=false skips host verification and sets host_verified to
     assert.equal(reportRes.host_verified, null)
   })
 })
+
+test('autoPresyncWorktree merges non-overlapping parallel edits cleanly against latest runBranch', async () => {
+  await withRepo(async ({ repo }) => {
+    const baseLines = Array.from({ length: 12 }, (_, idx) => `line-${idx + 1}`).join('\n') + '\n'
+    await writeFile(join(repo, 'shared.txt'), baseLines)
+    await gitRun(repo, ['add', 'shared.txt'])
+    await gitRun(repo, ['commit', '-m', 'chore: add 12-line shared.txt'])
+
+    const harness = createHarness(repo)
+    const settings = resolveSettings({
+      gitEnabled: true,
+      gitBaseBranch: 'main',
+      worktreeIsolation: 'parallel',
+      allowScopeOverlap: true,
+      autoWorktree: true,
+      autoMergeWorktree: true,
+      autoPresyncWorktree: true,
+      autoCleanupWorktrees: false,
+      autoStaff: false,
+    })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: '2.2.0' })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const reviewTool = tools.find((t) => t.name === 'team_flow_review_submit')
+    const gitTool = tools.find((t) => t.name === 'team_flow_git')
+
+    const worker1Agent = { id: 'session-w1', session: { id: 'session-w1' } }
+    const worker2Agent = { id: 'session-w2', session: { id: 'session-w2' } }
+    const reviewer1Agent = { id: 'session-r1', session: { id: 'session-r1' } }
+
+    await planTool.execute(
+      {
+        objective: 'Presync non-overlapping parallel worktree edits',
+        acceptance_criteria: ['Both top and bottom edits preserved cleanly'],
+        items: [
+          {
+            id: 'T1',
+            subject: 'Edit top line of shared.txt',
+            owner: 'worker1',
+            reviewers: ['reviewer1'],
+            write_scopes: ['shared.txt'],
+            definition_of_done: ['Line 1 updated'],
+            evidence_commands: ['echo ok'],
+          },
+          {
+            id: 'T2',
+            subject: 'Edit bottom line of shared.txt',
+            owner: 'worker2',
+            reviewers: ['reviewer1'],
+            write_scopes: ['shared.txt'],
+            definition_of_done: ['Line 12 updated'],
+            evidence_commands: ['echo ok'],
+          },
+        ],
+      },
+      { agent: harness.lead },
+    )
+
+    let state = await store.readState(harness.lead)
+    const t1 = state.items.find((it) => it.id === 'T1')
+    const t2 = state.items.find((it) => it.id === 'T2')
+    assert.ok(t1.git?.worktreePath)
+    assert.ok(t2.git?.worktreePath)
+
+    // Both parallel workers modify opposite ends of shared.txt before either merges
+    const t1Lines = baseLines.replace('line-1\n', 'line-1-edited-by-T1\n')
+    const t2Lines = baseLines.replace('line-12\n', 'line-12-edited-by-T2\n')
+    await writeFile(join(t1.git.worktreePath, 'shared.txt'), t1Lines)
+    await writeFile(join(t2.git.worktreePath, 'shared.txt'), t2Lines)
+
+    await gitTool.execute(
+      { action: 'commit', item_id: 'T1', files: ['shared.txt'], message: 'feat: T1 edits top line' },
+      { agent: worker1Agent },
+    )
+    await gitTool.execute(
+      { action: 'commit', item_id: 'T2', files: ['shared.txt'], message: 'feat: T2 edits bottom line' },
+      { agent: worker2Agent },
+    )
+
+    // T1 reports and merges into runBranch first
+    await reportTool.execute(
+      { item_id: 'T1', summary: 'Top line done', files: ['shared.txt'], evidence: ['ok'] },
+      { agent: worker1Agent },
+    )
+    await reviewTool.execute(
+      { item_id: 'T1', verdict: 'approve', summary: 'LGTM', evidence_checked: ['ok'] },
+      { agent: reviewer1Agent },
+    )
+
+    // T2 reports and approves -> should auto-presync T1's commit from runBranch before merging
+    await reportTool.execute(
+      { item_id: 'T2', summary: 'Bottom line done', files: ['shared.txt'], evidence: ['ok'] },
+      { agent: worker2Agent },
+    )
+    await reviewTool.execute(
+      { item_id: 'T2', verdict: 'approve', summary: 'LGTM', evidence_checked: ['ok'] },
+      { agent: reviewer1Agent },
+    )
+
+    state = await store.readState(harness.lead)
+    const mergedT2 = state.items.find((it) => it.id === 'T2')
+    assert.ok(mergedT2.git?.worktreeMergedAt, 'T2 must auto-merge after presync')
+    assert.ok(mergedT2.git?.worktreePresyncedAt, 'T2 must record worktreePresyncedAt')
+    assert.ok(
+      state.events.some((ev) => ev.type === 'git/worktree-presynced' && ev.detail.includes('T2')),
+      'git/worktree-presynced event must be recorded for T2',
+    )
+
+    const finalContent = await gitRun(repo, ['show', `${state.git.branch}:shared.txt`])
+    assert.match(finalContent, /line-1-edited-by-T1/)
+    assert.match(finalContent, /line-12-edited-by-T2/)
+  })
+})
+
+test('autoPresyncWorktree aborts cleanly on real conflict and respects autoPresyncWorktree=false', async () => {
+  // Part A: real same-line conflict aborts cleanly, records worktreeConflictedFiles, leaves worktree clean
+  await withRepo(async ({ repo }) => {
+    const harness = createHarness(repo)
+    const settings = resolveSettings({
+      gitEnabled: true,
+      gitBaseBranch: 'main',
+      worktreeIsolation: 'parallel',
+      autoWorktree: true,
+      autoMergeWorktree: true,
+      autoPresyncWorktree: true,
+      autoStaff: false,
+    })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: '2.2.0' })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const reviewTool = tools.find((t) => t.name === 'team_flow_review_submit')
+    const gitTool = tools.find((t) => t.name === 'team_flow_git')
+
+    const worker1Agent = { id: 'session-w1', session: { id: 'session-w1' } }
+    const reviewer1Agent = { id: 'session-r1', session: { id: 'session-r1' } }
+
+    await planTool.execute(
+      {
+        objective: 'Abort presync cleanly on conflict',
+        acceptance_criteria: ['Conflicted files recorded and worktree left clean'],
+        items: [
+          {
+            id: 'T1',
+            subject: 'Conflicting edit',
+            owner: 'worker1',
+            reviewers: ['reviewer1'],
+            definition_of_done: ['Done'],
+            evidence_commands: ['echo ok'],
+          },
+        ],
+      },
+      { agent: harness.lead },
+    )
+
+    let state = await store.readState(harness.lead)
+    const t1 = state.items.find((it) => it.id === 'T1')
+    await gitRun(repo, ['switch', state.git.branch])
+    await writeFile(join(repo, 'conflict.txt'), 'runBranch line\n')
+    await gitRun(repo, ['add', 'conflict.txt'])
+    await gitRun(repo, ['commit', '-m', 'feat: runBranch conflict.txt'])
+    await gitRun(repo, ['switch', 'main'])
+
+    await writeFile(join(t1.git.worktreePath, 'conflict.txt'), 'worktree line\n')
+    await gitTool.execute(
+      { action: 'commit', item_id: 'T1', files: ['conflict.txt'], message: 'feat: worktree conflict.txt' },
+      { agent: worker1Agent },
+    )
+    await reportTool.execute(
+      { item_id: 'T1', summary: 'Edited conflict.txt', files: ['conflict.txt'], evidence: ['ok'] },
+      { agent: worker1Agent },
+    )
+    await reviewTool.execute(
+      { item_id: 'T1', verdict: 'approve', summary: 'Approve triggers presync conflict', evidence_checked: ['ok'] },
+      { agent: reviewer1Agent },
+    )
+
+    state = await store.readState(harness.lead)
+    const conflicted = state.items.find((it) => it.id === 'T1')
+    assert.deepEqual(conflicted.git?.worktreeConflictedFiles, ['conflict.txt'])
+    assert.match(conflicted.git?.worktreeMergeError ?? '', /conflicts/i)
+    const wtPorcelain = await gitRun(t1.git.worktreePath, ['status', '--porcelain'])
+    assert.equal(wtPorcelain.trim(), '', 'aborted presync must leave worktree clean')
+  })
+
+  // Part B: autoPresyncWorktree=false rollback switch skips presync step
+  await withRepo(async ({ repo }) => {
+    const baseLines = Array.from({ length: 12 }, (_, idx) => `line-${idx + 1}`).join('\n') + '\n'
+    await writeFile(join(repo, 'shared.txt'), baseLines)
+    await gitRun(repo, ['add', 'shared.txt'])
+    await gitRun(repo, ['commit', '-m', 'chore: add 12-line shared.txt'])
+
+    const harness = createHarness(repo)
+    const settings = resolveSettings({
+      gitEnabled: true,
+      gitBaseBranch: 'main',
+      worktreeIsolation: 'parallel',
+      allowScopeOverlap: true,
+      autoWorktree: true,
+      autoMergeWorktree: true,
+      autoPresyncWorktree: false,
+      autoCleanupWorktrees: false,
+      autoStaff: false,
+    })
+    const store = createStore({ ctx: harness.ctx, settings })
+    const tools = buildTools({ ctx: harness.ctx, settings, store, version: '2.2.0' })
+
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+    const reviewTool = tools.find((t) => t.name === 'team_flow_review_submit')
+    const gitTool = tools.find((t) => t.name === 'team_flow_git')
+
+    const worker1Agent = { id: 'session-w1', session: { id: 'session-w1' } }
+    const worker2Agent = { id: 'session-w2', session: { id: 'session-w2' } }
+    const reviewer1Agent = { id: 'session-r1', session: { id: 'session-r1' } }
+
+    await planTool.execute(
+      {
+        objective: 'Skip presync when disabled',
+        acceptance_criteria: ['No presync event when disabled'],
+        items: [
+          { id: 'T1', subject: 'Top', owner: 'worker1', reviewers: ['reviewer1'], write_scopes: ['shared.txt'], definition_of_done: ['ok'], evidence_commands: ['echo ok'] },
+          { id: 'T2', subject: 'Bottom', owner: 'worker2', reviewers: ['reviewer1'], write_scopes: ['shared.txt'], definition_of_done: ['ok'], evidence_commands: ['echo ok'] },
+        ],
+      },
+      { agent: harness.lead },
+    )
+
+    let state = await store.readState(harness.lead)
+    const t1 = state.items.find((it) => it.id === 'T1')
+    const t2 = state.items.find((it) => it.id === 'T2')
+    await writeFile(join(t1.git.worktreePath, 'shared.txt'), baseLines.replace('line-1\n', 'line-1-T1\n'))
+    await writeFile(join(t2.git.worktreePath, 'shared.txt'), baseLines.replace('line-12\n', 'line-12-T2\n'))
+    await gitTool.execute({ action: 'commit', item_id: 'T1', files: ['shared.txt'], message: 'feat: T1' }, { agent: worker1Agent })
+    await gitTool.execute({ action: 'commit', item_id: 'T2', files: ['shared.txt'], message: 'feat: T2' }, { agent: worker2Agent })
+
+    await reportTool.execute({ item_id: 'T1', summary: 'T1', files: ['shared.txt'], evidence: ['ok'] }, { agent: worker1Agent })
+    await reviewTool.execute({ item_id: 'T1', verdict: 'approve', summary: 'ok', evidence_checked: ['ok'] }, { agent: reviewer1Agent })
+    await reportTool.execute({ item_id: 'T2', summary: 'T2', files: ['shared.txt'], evidence: ['ok'] }, { agent: worker2Agent })
+    await reviewTool.execute({ item_id: 'T2', verdict: 'approve', summary: 'ok', evidence_checked: ['ok'] }, { agent: reviewer1Agent })
+
+    state = await store.readState(harness.lead)
+    const mergedT2 = state.items.find((it) => it.id === 'T2')
+    assert.ok(mergedT2.git?.worktreeMergedAt)
+    assert.equal(mergedT2.git?.worktreePresyncedAt, undefined)
+    assert.equal(state.events.some((ev) => ev.type === 'git/worktree-presynced'), false)
+  })
+})

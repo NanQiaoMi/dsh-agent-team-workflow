@@ -85,6 +85,8 @@
         lazyWorktreeProvision: true
         # Automatically commit dirty changes inside writeScopes on team_flow_report.
         autoCommitOnReport: true
+        # Automatically pre-sync approved worktrees against latest runBranch before squash-merging.
+        autoPresyncWorktree: true
         # Autonomous state machine: auto-wake unblocked workers, auto-wake reviewers, and watchdog.
         autoOrchestrate: true
         autoWakeUnblocked: true
