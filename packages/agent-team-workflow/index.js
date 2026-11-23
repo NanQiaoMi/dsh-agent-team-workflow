@@ -94,7 +94,13 @@ export function apply(ctx, config = {}) {
       }
     }
     const duties = computeDuties(membership, state)
-    const allowedNames = resolveAllowedToolNames({ role: membership.role, duties, settings })
+    const allowedNames = resolveAllowedToolNames({
+      role: membership.role,
+      duties,
+      settings,
+      preset: state?.preset ?? null,
+      state,
+    })
     const targetTools = filterToolsByRole(tools, allowedNames)
     for (const def of targetTools) {
       if (entry.registeredNames.has(def.name)) continue
@@ -179,7 +185,13 @@ export function apply(ctx, config = {}) {
     }
     const duties = computeDuties(membership, state)
 
-    const allowedNames = resolveAllowedToolNames({ role: membership.role, duties, settings })
+    const allowedNames = resolveAllowedToolNames({
+      role: membership.role,
+      duties,
+      settings,
+      preset: state?.preset ?? null,
+      state,
+    })
     const scopedTools = filterToolsByRole(tools, allowedNames)
 
     const dispose = install(agent, ctx, { settings, tools: scopedTools, store, policy, thinkingRouter })
