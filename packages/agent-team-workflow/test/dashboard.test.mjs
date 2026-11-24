@@ -1456,17 +1456,43 @@ test('reliability metrics are computed across telemetry, dashboard snapshot, and
     { at: NOW, type: 'member/stall-nudge', actor: 'orchestrator', detail: 'worker1 on W1' },
     { at: NOW, type: 'member/stall-escalated', actor: 'orchestrator', detail: 'worker1 on W1' },
     { at: NOW, type: 'git/auto-commit', actor: 'worktree-manager', detail: 'W1 (1 file)' },
+    { at: NOW, type: 'git/worktree-presynced', actor: 'worktree-manager', detail: 'W2 agentteam/run-1 (abc1234)' },
     { at: NOW, type: 'git/worktree-merge-conflict', actor: 'worktree-manager', detail: 'W2: conflict' },
     { at: NOW, type: 'git/host-verified', actor: 'host', detail: 'W1 passed (1 command(s), abc1234)' },
     { at: NOW, type: 'git/host-verified', actor: 'host', detail: 'W2 failed (1 command(s), def5678)' },
   ]
   const state = makeState({
-    items: [item1, item2],
+    items: [
+      { ...item1, git: { worktreeBranch: 'agentteam-wt/run-1/W1', worktreeMergedAt: NOW, worktreePresyncedAt: NOW } },
+      item2,
+    ],
     events,
+    usage: {
+      routing: {
+        worker1: {
+          member: 'worker1',
+          role: 'implementer',
+          provider: 'deepseek',
+          model: 'deepseek-chat',
+          requestedTier: 'low',
+          resolvedEffort: 'low',
+          stage: 'implement-complex',
+          reason: 'item-complex:budget-downgrade',
+          budgetDowngraded: true,
+          itemId: 'W1',
+          calls: 2,
+          byEffort: { low: 2 },
+        },
+      },
+    },
     integrationGate: { pass: true, branch: 'agentteam/run-1', ranAt: NOW, durationMs: 420, results: [] },
   })
 
   const snap = buildSnapshot(makeInput(state))
+  assert.equal(snap.run.items[0].git.worktreePresynced, true)
+  assert.equal(snap.run.items[0].git.worktreePresyncedAt, NOW)
+  assert.equal(snap.run.routing[0].reason, 'item-complex:budget-downgrade')
+  assert.equal(snap.run.routing[0].budgetDowngraded, true)
   assert.deepEqual(snap.run.reliability, {
     totalItems: 2,
     approvedItems: 2,
@@ -1476,6 +1502,7 @@ test('reliability metrics are computed across telemetry, dashboard snapshot, and
     stallNudges: 2,
     stallEscalations: 1,
     autoCommits: 1,
+    autoPresyncs: 1,
     mergeConflicts: 1,
     hostVerifiedPasses: 1,
     hostVerifiedFailures: 1,
@@ -1487,6 +1514,7 @@ test('reliability metrics are computed across telemetry, dashboard snapshot, and
   const emptyMetrics = computeReliabilityMetrics(null)
   assert.equal(emptyMetrics.firstPassApproveRate, null)
   assert.equal(emptyMetrics.integrationGate, null)
+  assert.equal(emptyMetrics.autoPresyncs, 0)
 
   const md = renderReportMarkdown(
     {
@@ -1503,6 +1531,7 @@ test('reliability metrics are computed across telemetry, dashboard snapshot, and
   assert.match(md, /First-pass approve rate: 50% \(1\/2\)/)
   assert.match(md, /Stall nudges \/ escalations: 2 \/ 1/)
   assert.match(md, /Auto-commits \/ merge conflicts: 1 \/ 1/)
+  assert.match(md, /Auto-presyncs: 1/)
   assert.match(md, /Host-verified snapshots \(pass \/ fail\): 1 \/ 1/)
   assert.match(md, /Integration gate: pass \(420ms\)/)
 })

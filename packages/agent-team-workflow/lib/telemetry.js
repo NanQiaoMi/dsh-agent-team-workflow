@@ -141,6 +141,7 @@ export function computeReliabilityMetrics(state = null) {
   let stallNudges = 0
   let stallEscalations = 0
   let autoCommits = 0
+  let autoPresyncs = 0
   let mergeConflicts = 0
   let hostVerifiedPasses = 0
   let hostVerifiedFailures = 0
@@ -151,6 +152,7 @@ export function computeReliabilityMetrics(state = null) {
     if (type === 'member/stall-nudge') stallNudges += 1
     else if (type === 'member/stall-escalated') stallEscalations += 1
     else if (type === 'git/auto-commit') autoCommits += 1
+    else if (type === 'git/worktree-presynced') autoPresyncs += 1
     else if (type === 'git/worktree-merge-conflict') mergeConflicts += 1
     else if (type === 'git/host-verified') {
       const detail = String(event.detail ?? '')
@@ -165,7 +167,7 @@ export function computeReliabilityMetrics(state = null) {
       ? {
           pass: rawIntegration.pass === true,
           durationMs: Number.isFinite(rawIntegration.durationMs) ? rawIntegration.durationMs : 0,
-          ranAt: typeof rawIntegration.ranAt === 'string' ? rawIntegration.ranAt : null,
+          ranAt: typeof rawIntegration.ranAt === 'string' && rawIntegration.ranAt.trim().length > 0 ? rawIntegration.ranAt : null,
         }
       : null
 
@@ -178,6 +180,7 @@ export function computeReliabilityMetrics(state = null) {
     stallNudges,
     stallEscalations,
     autoCommits,
+    autoPresyncs,
     mergeConflicts,
     hostVerifiedPasses,
     hostVerifiedFailures,

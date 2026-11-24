@@ -616,6 +616,7 @@ export function renderReportMarkdown(state, gate) {
   lines.push(`- First-pass approve rate: ${firstPassText}`)
   lines.push(`- Stall nudges / escalations: ${rel.stallNudges} / ${rel.stallEscalations}`)
   lines.push(`- Auto-commits / merge conflicts: ${rel.autoCommits} / ${rel.mergeConflicts}`)
+  lines.push(`- Auto-presyncs: ${rel.autoPresyncs}`)
   lines.push(`- Host-verified snapshots (pass / fail): ${rel.hostVerifiedPasses} / ${rel.hostVerifiedFailures}`)
   lines.push(`- Integration gate: ${intText}`)
   lines.push('')
