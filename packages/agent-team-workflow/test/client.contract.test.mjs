@@ -2473,3 +2473,43 @@ test('reliability panel renders metrics safely and degrades cleanly when absent'
     legacyBoard.dispose()
   }
 })
+
+test('dashboard renders autoPresyncs, budget downgrade, and escalation routing badges', async () => {
+  const v22Snapshot = {
+    ...V2_SNAPSHOT,
+    run: {
+      ...V2_SNAPSHOT.run,
+      reliability: {
+        totalItems: 2,
+        approvedItems: 2,
+        firstPassApproved: 2,
+        firstPassApproveRate: 1,
+        reworkRounds: 0,
+        stallNudges: 1,
+        stallEscalations: 0,
+        autoCommits: 2,
+        autoPresyncs: 4,
+        mergeConflicts: 0,
+        hostVerifiedPasses: 2,
+        hostVerifiedFailures: 0,
+        integrationGate: { pass: true, durationMs: 250, ranAt: '2026-11-02T00:05:00.000Z' },
+      },
+      routing: [
+        { member: 'impl-a', role: 'implementer', provider: 'deepseek', model: 'deepseek-chat', requestedTier: 'low', resolvedEffort: 'low', stage: 'implement-complex', reason: 'item-complex:budget-downgrade', budgetDowngraded: true, calls: 2 },
+        { member: 'rev-b', role: 'reviewer', provider: 'deepseek', model: 'deepseek-v4-pro', requestedTier: 'high', resolvedEffort: 'high', stage: 'review-stall-recovery', reason: 'stall-recovery-escalate', budgetDowngraded: false, calls: 1 },
+      ],
+    },
+  }
+  const board = await mountBoard(v22Snapshot)
+  try {
+    const tree = await board.render()
+    const relText = textOf(findByClass(tree, 'atw-reliability')[0])
+    assert.ok(relText.includes('k:board.relPresyncs'))
+    assert.ok(relText.includes('4'))
+    const routingText = textOf(findByClass(tree, 'atw-routing')[0])
+    assert.ok(routingText.includes('k:board.routingBudget'))
+    assert.ok(routingText.includes('k:board.routingEscalated'))
+  } finally {
+    board.dispose()
+  }
+})

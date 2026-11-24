@@ -557,6 +557,8 @@ export function createThinkingRouter({ ctx, store, settings, resolveModelInfo = 
       requestedTier: meta.requestedTier ?? 'inherit',
       resolvedEffort: meta.resolvedEffort ?? null,
       stage: meta.stage ?? null,
+      reason: meta.reason ?? null,
+      budgetDowngraded: meta.budgetDowngraded === true,
       itemId: meta.itemId ?? null,
       calls: 0,
       byEffort: {},
@@ -572,6 +574,8 @@ export function createThinkingRouter({ ctx, store, settings, resolveModelInfo = 
       requestedTier: meta.requestedTier ?? prev.requestedTier,
       resolvedEffort: meta.resolvedEffort ?? null,
       stage: meta.stage ?? prev.stage,
+      reason: meta.reason ?? prev.reason,
+      budgetDowngraded: meta.budgetDowngraded === true,
       itemId: meta.itemId ?? null,
       calls: prev.calls + 1,
       byEffort,
@@ -722,6 +726,8 @@ export function createThinkingRouter({ ctx, store, settings, resolveModelInfo = 
             requestedTier: plan.tier,
             resolvedEffort: base.reasoningEffort ?? null,
             stage: plan.stage,
+            reason: plan.reason ?? null,
+            budgetDowngraded: plan.budgetDowngraded === true,
             itemId: plan.itemId,
           }
           turnDecisions.set(targetAgent.id, { turn, baseKey, teamId, patch, meta })
@@ -745,6 +751,8 @@ export function createThinkingRouter({ ctx, store, settings, resolveModelInfo = 
           requestedTier: plan.tier,
           resolvedEffort,
           stage: plan.stage,
+          reason: plan.reason ?? null,
+          budgetDowngraded: plan.budgetDowngraded === true,
           itemId: plan.itemId,
         }
         turnDecisions.set(targetAgent.id, { turn, baseKey, teamId, patch, meta })

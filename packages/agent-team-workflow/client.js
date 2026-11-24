@@ -394,6 +394,8 @@ window.__ModuleLoader__.load({
       'board.routingModel': '模型',
       'board.routingEffort': '思考档位',
       'board.routingCalls': '调用',
+      'board.routingBudget': '预算降档',
+      'board.routingEscalated': '升档',
       'board.timings': '阶段耗时',
       'board.timingTotal': '总耗时',
       'board.timingAvgImpl': '平均实现',
@@ -403,6 +405,7 @@ window.__ModuleLoader__.load({
       'board.relFirstPass': '首轮通过率',
       'board.relStalls': '轻推 / 升级',
       'board.relGit': '自动提交 / 冲突',
+      'board.relPresyncs': '自动预同步',
       'board.relIntegration': '合后集成门禁',
       'board.relPass': '通过',
       'board.relFail': '失败',
@@ -791,6 +794,8 @@ window.__ModuleLoader__.load({
       'board.routingModel': 'model',
       'board.routingEffort': 'effort',
       'board.routingCalls': 'calls',
+      'board.routingBudget': 'budget',
+      'board.routingEscalated': 'escalated',
       'board.timings': 'Phase timings',
       'board.timingTotal': 'Total',
       'board.timingAvgImpl': 'Avg implement',
@@ -800,6 +805,7 @@ window.__ModuleLoader__.load({
       'board.relFirstPass': 'First-pass rate',
       'board.relStalls': 'Nudges / escalations',
       'board.relGit': 'Auto-commits / conflicts',
+      'board.relPresyncs': 'Auto-presyncs',
       'board.relIntegration': 'Integration gate',
       'board.relPass': 'pass',
       'board.relFail': 'fail',
@@ -1268,6 +1274,8 @@ window.__ModuleLoader__.load({
         worktreePath: str(raw.worktreePath),
         worktreeMerged: raw.worktreeMerged === true || Number.isFinite(parseTime(raw.worktreeMergedAt)),
         worktreeMergedAt: parseTime(raw.worktreeMergedAt),
+        worktreePresynced: raw.worktreePresynced === true || Number.isFinite(parseTime(raw.worktreePresyncedAt)),
+        worktreePresyncedAt: parseTime(raw.worktreePresyncedAt),
         worktreeMergeError: str(raw.worktreeMergeError),
       }
     }
@@ -4400,6 +4408,7 @@ window.__ModuleLoader__.load({
         metric('firstPass', tr('board.relFirstPass'), firstPassText),
         metric('stalls', tr('board.relStalls'), String(num(rel.stallNudges, 0)) + ' / ' + String(num(rel.stallEscalations, 0))),
         metric('git', tr('board.relGit'), String(num(rel.autoCommits, 0)) + ' / ' + String(num(rel.mergeConflicts, 0))),
+        metric('presyncs', tr('board.relPresyncs'), String(num(rel.autoPresyncs, 0))),
         metric('integration', tr('board.relIntegration'), intText),
       ]
       return h(
@@ -4429,7 +4438,14 @@ window.__ModuleLoader__.load({
       ]
       for (const entry of entries) {
         const modelLabel = str(entry.model, '-')
-        const effortLabel = str(entry.resolvedEffort, str(entry.requestedTier, '-'))
+        const baseEffort = str(entry.resolvedEffort, str(entry.requestedTier, '-'))
+        const stage = str(entry.stage)
+        const effortSuffix = entry.budgetDowngraded === true
+          ? ' · ' + tr('board.routingBudget')
+          : (stage === 'stall-recovery' || stage === 'review-stall-recovery' || stage === 'rework-deep'
+            ? ' · ' + tr('board.routingEscalated')
+            : '')
+        const effortLabel = baseEffort + effortSuffix
         rows.push(
           line('routing-' + str(entry.member, 'm'), 'atw-routing-line', [
             str(entry.member, '-'),

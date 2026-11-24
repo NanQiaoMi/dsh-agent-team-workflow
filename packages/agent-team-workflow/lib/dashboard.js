@@ -1,8 +1,8 @@
 /**
  * Pure aggregation for the live Agent Team dashboard snapshot.
  *
- * This module is deliberately dependency-free: it has **zero imports** (not
- * even Node built-ins), does not read files, does not touch Cordis, and never
+ * This module has no external or Node built-in dependencies (only pure
+ * dependency-free helpers), does not read files, does not touch Cordis, and never
  * mutates its input. `dashboard-route.js` feeds it plain data read from the
  * blackboard and the Team board, and the Web client consumes the JSON it
  * returns — so the whole shape of docs/09 §2 and the peer-collaboration layer
@@ -38,6 +38,8 @@
  * are newer than the rest, so their absence is normal and every one of them
  * has a documented default (`plan` / null / null / false / ceil(affected/2)).
  */
+
+import { computeReliabilityMetrics } from './telemetry.js'
 
 /** Snapshot schema version; bump only for a breaking shape change. */
 export const SNAPSHOT_VERSION = 2
@@ -608,6 +610,8 @@ function buildItemGit(raw) {
     worktreeBranch: textOf(raw.worktreeBranch) || null,
     worktreeMergedAt: isoOf(raw.worktreeMergedAt),
     worktreeMerged: raw.worktreeMerged === true || isoOf(raw.worktreeMergedAt) !== null,
+    worktreePresyncedAt: isoOf(raw.worktreePresyncedAt),
+    worktreePresynced: raw.worktreePresynced === true || isoOf(raw.worktreePresyncedAt) !== null,
     worktreePath: textOf(raw.worktreePath) || null,
     worktreeMergeError: textOf(raw.worktreeMergeError) || null,
   }
@@ -762,81 +766,14 @@ function buildRouting(rawRouting) {
       requestedTier: isoOf(rawEntry.requestedTier) ?? 'inherit',
       resolvedEffort: isoOf(rawEntry.resolvedEffort),
       stage: isoOf(rawEntry.stage),
+      reason: isoOf(rawEntry.reason),
+      budgetDowngraded: rawEntry.budgetDowngraded === true,
       itemId: isoOf(rawEntry.itemId),
       calls: integerOf(rawEntry.calls, 0),
       byEffort,
     })
   }
   return result
-}
-
-function buildReliability(state) {
-  const items = recordList(state.items)
-  const events = recordList(state.events)
-  let approvedItems = 0
-  let firstPassApproved = 0
-  let reworkRounds = 0
-
-  for (const item of items) {
-    const reviews = recordList(item.reviews)
-    let hadRework = false
-    for (const review of reviews) {
-      if (textOf(review.status) !== 'submitted') continue
-      const verdict = textOf(review.verdict)
-      if (verdict !== 'approve' && verdict !== 'approve_with_nits') {
-        reworkRounds += 1
-        hadRework = true
-      }
-    }
-    if (textOf(item.status) === 'approved') {
-      approvedItems += 1
-      if (!hadRework) firstPassApproved += 1
-    }
-  }
-
-  let stallNudges = 0
-  let stallEscalations = 0
-  let autoCommits = 0
-  let mergeConflicts = 0
-  let hostVerifiedPasses = 0
-  let hostVerifiedFailures = 0
-
-  for (const event of events) {
-    const type = textOf(event.type)
-    if (type === 'member/stall-nudge') stallNudges += 1
-    else if (type === 'member/stall-escalated') stallEscalations += 1
-    else if (type === 'git/auto-commit') autoCommits += 1
-    else if (type === 'git/worktree-merge-conflict') mergeConflicts += 1
-    else if (type === 'git/host-verified') {
-      const detail = textOf(event.detail)
-      if (/\bpassed\b/i.test(detail)) hostVerifiedPasses += 1
-      else if (/\bfailed\b/i.test(detail)) hostVerifiedFailures += 1
-    }
-  }
-
-  const rawInt = isRecord(state.integrationGate) ? state.integrationGate : null
-  const integrationGate = rawInt === null
-    ? null
-    : {
-        pass: rawInt.pass === true,
-        durationMs: Number.isFinite(rawInt.durationMs) ? rawInt.durationMs : 0,
-        ranAt: isoOf(rawInt.ranAt),
-      }
-
-  return {
-    totalItems: items.length,
-    approvedItems,
-    firstPassApproved,
-    firstPassApproveRate: approvedItems > 0 ? Math.round((firstPassApproved / approvedItems) * 10000) / 10000 : null,
-    reworkRounds,
-    stallNudges,
-    stallEscalations,
-    autoCommits,
-    mergeConflicts,
-    hostVerifiedPasses,
-    hostVerifiedFailures,
-    integrationGate,
-  }
 }
 
 /**
@@ -1518,7 +1455,7 @@ function buildRun(state, context) {
     git: buildRunGit(state.git),
     usage: buildUsage(state.usage),
     timings: buildTimings(state, kept, waveInfo.waves, context.now),
-    reliability: buildReliability(state),
+    reliability: computeReliabilityMetrics(state),
     routing: buildRouting(context.routing ?? state.usage?.routing),
     artifacts: buildArtifacts(state.artifacts, context.artifacts),
   }
