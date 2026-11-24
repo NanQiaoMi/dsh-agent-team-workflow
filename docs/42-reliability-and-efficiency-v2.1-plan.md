@@ -212,4 +212,33 @@
 | **v2.2-PR1** | `feat/worktree-auto-presync` | 并行 Worktree 合并前自动无冲突预同步 | `autoMergeApprovedWorktree` 在 squash 合入前先以 `abortOnConflict: true` 自动将最新 `runBranch` 同步进干净 worktree，免除无谓唤醒模型手动执行 `worktree_sync`；存在真实冲突才记录错误并唤醒仲裁（PR #9） | **已合入 `main`** |
 | **v2.2-PR2** | `perf/all-preset-and-lead-schema-slimming` | 全预设与 Lead 工具 Schema 瘦身 | 将 `presetToolPruning` 扩展至 `feature` / `pr-review`（无开放队列/提案/契约时按需精简）并压缩 19 个工具冗余描述文本，实测 `tools.lead` 降至 `14,153 B`（-40.3%）、`tools.worker` 降至 `8,511 B`（-40.8%）（PR #10） | **已合入 `main`** |
 | **v2.2-PR3** | `feat/adaptive-rework-and-budget-thinking` | 返工/卡死升档 + 接近预算自动降档 | 扩展 `thinking-router.js`：多轮/blocker 返工升档 `max`、停滞轻推恢复升档 `high`；当 `tokenBudgetPerRun > 0` 且消耗 `>= 80%` 时对非阻塞常规/协调轮次自动降档保底并保护关键阶段（PR #11） | **已合入 `main`** |
-| **v2.2-PR4** | `test/v21-full-lifecycle-simulation` | v2.1/v2.2 全链路端到端仿真回归测试 | 新增 `test/v21-lifecycle-simulation.test.mjs`，串联 `feature` 预设裁剪、懒建 Wave 1+ Worktree、沉默轻推与停滞升档、范围内自动提交、主机 `hostVerified` 快照、无冲突自动预同步、80% 预算降档、合后集成门禁及可靠性归因指标全链路验证 | **当前 PR** |
+| **v2.2-PR4** | `test/v21-full-lifecycle-simulation` | v2.1/v2.2 全链路端到端仿真回归测试 | 新增 `test/v21-lifecycle-simulation.test.mjs`，串联 `feature` 预设裁剪、懒建 Wave 1+ Worktree、沉默轻推与停滞升档、范围内自动提交、主机 `hostVerified` 快照、无冲突自动预同步、80% 预算降档、合后集成门禁及可靠性归因指标全链路验证 | **已合入 `main`（PR #12 / `f64b793`）** |
+
+---
+
+## 8. v2.3 交付记录（已全部合入 `main`）
+
+| 阶段 | PR / Commit | 主题 | 核心成果 | 状态 |
+|---|---|---|---|---|
+| **v2.3-PR1** | PR #13（`c7f93e1`） | Lead 策略提示词瘦身与连续同错熔断引导 | Lead policy 压降至 `1,875 B`（预算 `< 3.2 KB`），并在工具层加入连续同错熔断引导 | **已合入 `main`** |
+| **v2.3-PR2** | PR #14（`af47403`） | 可靠性归因指标去重与看板增强 | 去重可靠性归因指标计算，看板与报告展示 presync / budget / escalation 维度 | **已合入 `main`** |
+| **v2.3-PR3** | PR #15（`84e4cb9`） | `lib/tools.js` 按领域拆分 | 将 3,530 行的 `lib/tools.js` 拆分为 `lib/tools/*.js`（6 个子模块）与薄门面 `lib/tools.js`，保持 `buildTools` / `REPEATED_FAILURE_THRESHOLD` 对外契约零破坏 | **已合入 `main`** |
+
+---
+
+## 9. v2.4 工程底座与核心模块治理规划（小步快跑，4 个独立 PR）
+
+在保持零外部运行时依赖、零行为回归与既有 `state.json` 完全兼容的前提下，补齐 Monorepo CI 盲区、建立防失忆项目记忆，并沿用门面零破坏模式治理剩余两个后端大文件：
+
+| 阶段 | 分支名 | 主题 | 主要改动范围 | 状态 |
+|---|---|---|---|---|
+| **v2.4-PR1** | `ci/monorepo-coverage-and-project-memory` | CI 全包覆盖 + 项目记忆防失忆 | `.github/workflows/ci.yml` 纳入 `dsh-git-graph`；新增根目录 `AGENTS.md` 与 `docs/DECISIONS.md`；同步 `docs/42` | **进行中** |
+| **v2.4-PR2** | `refactor/split-workflow-by-domain` | 按领域拆分 `lib/workflow.js` | 将 `lib/workflow.js`（2,309 行）拆分为 `lib/workflow/{constants,plan,review,collaboration,status-and-gates}.js` + 薄门面 + 导出一致性回归测试 | 待开始 |
+| **v2.4-PR3** | `refactor/split-dashboard-by-domain` | 按领域拆分 `lib/dashboard.js` | 将 `lib/dashboard.js`（1,521 行）拆分为 `lib/dashboard/{shared,items-and-git,collaboration,snapshot}.js` + 薄门面 + 导出一致性回归测试 | 待开始 |
+| **v2.4-PR4** | `chore/architecture-guardrails` | 轻量架构护栏脚本与 CI 门禁 | 新增零依赖 `bench/check-architecture.mjs`（校验子模块无环依赖与单模块行数预算，排除受沙箱约束的 `client.js`），接入 `ci.yml` 与 `AGENTS.md` | 待开始 |
+
+### v2.4 终态验收标准
+
+1. **三包测试 100% 覆盖与全绿**：`tool-guard-kit`、`dsh-git-graph`、`agent-team-workflow` 与 Payload 预算门禁在本地与 GitHub Actions（Node 22 & 24）均全绿通过。
+2. **核心模块无巨石**：`lib/workflow.js` 与 `lib/dashboard.js` 门面均 `< 80` 行，拆分后所有子模块 `< 650` 行且零循环依赖；现有调用方零改动。
+3. **项目记忆与护栏生效**：根目录具备 `AGENTS.md` 与 `docs/DECISIONS.md`，且 `check-architecture.mjs` 在 CI 中持续把关防反弹。

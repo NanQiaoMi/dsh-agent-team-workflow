@@ -29,6 +29,10 @@ jobs:
         working-directory: packages/tool-guard-kit
         run: node --test test/*.test.mjs
 
+      - name: dsh-git-graph tests
+        working-directory: packages/dsh-git-graph
+        run: node --test test/*.test.mjs
+
       # `tools.integration.test.mjs` falls back to a built-in zero-dependency
       # JSON-Schema validator when `@deepseek-ai/dsh-tools` is absent, so all
       # 21 suites run in CI.
