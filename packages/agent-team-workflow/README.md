@@ -110,7 +110,8 @@ lib/thinking-router.js  agent/request 自适应思考档位/模型路由器与�
 lib/review-policy.js    Diff 风险分级器、6 类 Rubric 清单、DoD 校验与 PR Review Markdown 格式化
 lib/orchestrator.js     事件驱动编排器、同成员摘要合并与自适应 watchdog
 lib/git.js              安全 Git / Worktree / PR 检查（gitPrInspect）原语
-lib/tools.js            19 个工具定义与执行
+lib/tools.js            19 个工具定义聚合入口（按领域拆分为 lib/tools/*.js）
+lib/tools/              工具领域子模块（shared / plan-and-gate / execution-and-review / git / collab / devkit）
 lib/tool-matrix.js      基于角色与职责的工具装配矩阵
 lib/telemetry.js        细粒度 Token 消耗归因度量与分角色占比统计
 client.js               Web 端看板（conversation.view，纯 JS 动态模块，只 require('react')）
