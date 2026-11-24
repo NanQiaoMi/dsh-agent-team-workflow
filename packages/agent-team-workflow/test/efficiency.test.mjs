@@ -17,7 +17,7 @@ import { buildPolicy, renderQueueBrief, renderReportMarkdown, renderReviewerBrie
 import { buildSnapshot } from '../lib/dashboard.js'
 import { computeUsage } from '../lib/telemetry.js'
 import { createStore } from '../lib/store.js'
-import { buildTools } from '../lib/tools.js'
+import { buildTools, REPEATED_FAILURE_THRESHOLD } from '../lib/tools.js'
 import { filterToolsByRole, resolveAllowedToolNames } from '../lib/tool-matrix.js'
 import { createOrchestrator } from '../lib/orchestrator.js'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -114,7 +114,7 @@ test('spawn briefs and static policies stay small', () => {
   assert.ok(bytes(queue) <= 3800, `queue brief too large: ${bytes(queue)} bytes`)
   assert.ok(bytes(buildPolicy(SETTINGS, 'implementer')) <= 2200)
   assert.ok(bytes(buildPolicy(SETTINGS, 'reviewer')) <= 1800)
-  assert.ok(bytes(buildPolicy(SETTINGS)) <= 6200)
+  assert.ok(bytes(buildPolicy(SETTINGS)) <= 3200)
 })
 
 test('every persisted mutation bumps state.rev exactly once', async () => {
@@ -516,4 +516,106 @@ test('telemetry computeUsage breaks down tokens by role and reports token share'
   assert.equal(snapshot.run.usage.tokenShare.lead, 0.2)
   assert.equal(snapshot.run.usage.byRole.worker.totalTokens, 600)
   assert.equal(snapshot.run.usage.tokenShare.worker, 0.6)
+})
+
+test('buildPolicy slims Lead policy under 3200 bytes and conditionally includes git/planFirst rules', () => {
+  const defaultLead = buildPolicy(resolveSettings({ gitEnabled: false, planFirst: false }))
+  assert.ok(bytes(defaultLead) <= 3200, `expected default Lead policy <= 3200 bytes, got ${bytes(defaultLead)}`)
+  assert.match(defaultLead, /^## Agent Team Workflow/)
+  assert.equal(defaultLead.includes('Git & Worktrees'), false)
+  assert.equal(defaultLead.includes('Plan-first'), false)
+
+  const gitAndPlanLead = buildPolicy(resolveSettings({ gitEnabled: true, planFirst: true }))
+  assert.ok(bytes(gitAndPlanLead) <= 3200, `expected git+planFirst Lead policy <= 3200 bytes, got ${bytes(gitAndPlanLead)}`)
+  assert.match(gitAndPlanLead, /Git & Worktrees/)
+  assert.match(gitAndPlanLead, /Plan-first/)
+})
+
+test('buildTools appends repeated-failure guidance on 3rd consecutive error and resets on success', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'atw-breaker-'))
+  try {
+    assert.equal(REPEATED_FAILURE_THRESHOLD, 3)
+    const lead = { id: 'session-lead', session: { id: 'session-lead' } }
+    const impl = { id: 'session-impl', session: { id: 'session-impl' } }
+    const members = [
+      { name: 'lead', role: 'lead', id: lead.id, status: 'running' },
+      { name: 'impl', role: 'teammate', id: impl.id, status: 'running' },
+    ]
+    const ctx = {
+      agents: { list: () => [lead, impl] },
+      agentTeams: {
+        tryMembership: (a) => {
+          const m = members.find((x) => x.id === a.id)
+          return m ? { root: lead, id: a.id, name: m.name, role: m.role } : undefined
+        },
+        membership: (a) => ctx.agentTeams.tryMembership(a),
+        listMembers: () => members,
+        async sendMessage() { return { messageId: 'm1' } },
+        async createTask(_c, req) { return { id: 't1', revision: 1, subject: req.subject, description: req.description, status: 'pending' } },
+        async updateTask() { return { id: 't1', revision: 2, status: 'in_progress' } },
+      },
+      workingDirectory: { get: () => cwd, defaultDirectory: cwd },
+      artifactsDir: () => join(cwd, '.dsh-artifacts'),
+    }
+    const settings = resolveSettings({ gitEnabled: false, autoStaff: false, preReportCheck: true })
+    const store = createStore({ ctx, settings })
+    const tools = buildTools({ ctx, settings, store, version: '2.3.0' })
+    const planTool = tools.find((t) => t.name === 'team_flow_plan')
+    const reportTool = tools.find((t) => t.name === 'team_flow_report')
+
+    await planTool.execute(
+      {
+        objective: 'Test failure breaker',
+        acceptance_criteria: ['Breaker triggers on 3rd consecutive failure'],
+        items: [
+          {
+            id: 'W1',
+            subject: 'Check failure breaker',
+            owner: 'impl',
+            reviewers: ['lead'],
+            write_scopes: ['src/'],
+            definition_of_done: ['Done'],
+            evidence_commands: ['echo ok'],
+          },
+        ],
+      },
+      { agent: lead },
+    )
+
+    const badArgs = { item_id: 'W1', summary: 'failed', files: ['src/a.js'], commands: [{ command: 'npm test', exit_code: 1 }], evidence: [] }
+    // Failures 1 & 2 must NOT include repeated-failure guidance yet
+    for (let i = 1; i <= 2; i += 1) {
+      await assert.rejects(
+        () => reportTool.execute(badArgs, { agent: impl }),
+        (err) => {
+          assert.equal(err.message.includes('[REPEATED_FAILURE_GUIDANCE]'), false, `attempt ${i} should not emit guidance`)
+          return true
+        },
+      )
+    }
+
+    // Failure 3 must include repeated-failure guidance
+    await assert.rejects(
+      () => reportTool.execute(badArgs, { agent: impl }),
+      /\[REPEATED_FAILURE_GUIDANCE\].*3 consecutive times/s,
+    )
+
+    // Success resets consecutive failure counter
+    const okRes = await reportTool.execute(
+      { item_id: 'W1', summary: 'passed', files: ['src/a.js'], commands: [{ command: 'echo ok', exit_code: 0 }], evidence: ['ok'] },
+      { agent: impl },
+    )
+    assert.equal(okRes.reported, true)
+
+    // Next failure starts back at count 1 (no guidance)
+    await assert.rejects(
+      () => reportTool.execute({ item_id: 'MISSING', summary: 'x', files: ['src/a.js'] }, { agent: impl }),
+      (err) => {
+        assert.equal(err.message.includes('[REPEATED_FAILURE_GUIDANCE]'), false)
+        return true
+      },
+    )
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
 })

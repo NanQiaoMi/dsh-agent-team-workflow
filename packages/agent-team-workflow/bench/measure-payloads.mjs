@@ -87,7 +87,7 @@ const budgets = {
   'brief.queue': 3800,
   'policy.worker': 2200,
   'policy.reviewer': 1800,
-  'policy.lead': 6200,
+  'policy.lead': 3200,
   'tools.lead': 19000,
   'tools.worker': 11000,
   'tools.worker.feature': 8500,
