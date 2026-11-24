@@ -49,6 +49,9 @@ import {
   reviewRequestMessage,
 } from './protocol.js'
 
+export const REPEATED_FAILURE_THRESHOLD = 3
+const FAILURE_TRACKER_MAX = 256
+
 /** Round-trip a tool result to plain lossless JSON (drops `undefined` members). */
 function compactJson(value) {
   return JSON.parse(JSON.stringify(value))
@@ -3473,8 +3476,36 @@ export function buildTools({ ctx, settings, store, version, tokenUsage = () => n
       },
     },
   ]
+  const consecutiveFailures = new Map()
   return definitions.map((definition) => ({
     ...definition,
-    execute: async (args, exec) => compactJson(await definition.execute(args, exec)),
+    execute: async (args, exec) => {
+      const callerId = exec?.agent?.id ?? exec?.agent?.session?.id ?? 'anonymous'
+      const key = `${callerId}:${definition.name}`
+      try {
+        const result = await definition.execute(args, exec)
+        consecutiveFailures.delete(key)
+        return compactJson(result)
+      } catch (err) {
+        const count = (consecutiveFailures.get(key) ?? 0) + 1
+        if (!consecutiveFailures.has(key) && consecutiveFailures.size >= FAILURE_TRACKER_MAX) {
+          const oldest = consecutiveFailures.keys().next().value
+          if (oldest !== undefined) consecutiveFailures.delete(oldest)
+        }
+        consecutiveFailures.set(key, count)
+        if (count >= REPEATED_FAILURE_THRESHOLD) {
+          const baseMsg = err instanceof Error ? err.message : String(err)
+          const guided = new Error(
+            `${baseMsg}\n\n[REPEATED_FAILURE_GUIDANCE] ${definition.name} has failed ${count} consecutive times for this member. Stop retrying identical calls; call team_flow_status to inspect current board state or team_flow_escalate { kind: "blocker", ... } if blocked.`,
+            { cause: err },
+          )
+          if (err && typeof err === 'object' && 'code' in err && err.code !== undefined) {
+            guided.code = err.code
+          }
+          throw guided
+        }
+        throw err
+      }
+    },
   }))
 }

@@ -79,35 +79,31 @@ Peer & communication rules:
 - Message the Lead with [BLOCKER] for hard disagreements instead of approving under pressure.`
   }
 
+  const gitNote = settings?.gitEnabled === true
+    ? '\n- **Git & Worktrees.** Manage branches/PRs via `team_flow_git`; keep parallel items in disjoint `write_scopes` (approved worktrees auto-presync and squash-merge).'
+    : ''
+  const planFirstNote = settings?.planFirst === true
+    ? '\n- **Plan-first.** Require `team_flow_plan_approval` sign-off before execution unless `autoApprovePlan` is enabled.'
+    : ''
+
   return `## Agent Team Workflow
 
-This Team runs the standard injected workflow: plan → parallel independent execution → mutual review → quality gates → convergence. The workflow board is authoritative. Proceed directly with tasks assigned upon dispatch; call \`team_flow_status\` only when diagnosing blocked or unexpected states.
+Standard flow: plan → parallel execution → independent review → quality gates → convergence. The workflow board is authoritative; call \`team_flow_status\` only when diagnosing blocked or unexpected states.
 
 Phases and ownership:
-- **Plan (Lead only).** \`team_flow_plan\` turns the objective into work items. Each item carries an owner, a disjoint write scope, a definition of done, dependencies, and at least one independent reviewer. Planning refuses circular dependencies, self-review, and write-scope overlap inside one execution wave.
-- **Staff (Lead only).** Spawn one teammate per work item using the exact \`spawn\` prompt the plan returns, with \`context: "${settings.workerContext}"\`. Never paraphrase a spawn brief: it contains the scope, the definition of done, and the protocol the worker is graded on.
-- **Execute (parallel, independent).** A worker claims its backing shared task (\`team_task_update\` action \`claim\` with the current revision), edits only its declared write scope, and reports through \`team_flow_report\` with files, commands that carry integer \`exit_code\`, quoted evidence, open questions, and risks.
-- **Review (mutual, adversarial).** The assigned reviewer inspects the author's real files and evidence, then submits \`team_flow_review_submit\` with a verdict and severity-tagged findings that name a file and line. Approving without evidence is a gate failure, not a shortcut.
-- **Respond (author).** The author answers *every* finding through \`team_flow_review_respond\` with \`fixed\`, \`rebut\`, or \`accepted_risk\` plus evidence. A rebutted blocker escalates to the Lead for arbitration. Review rounds are capped at ${settings.maxReviewRounds}; when they run out the engine escalates instead of letting a loop spin.
-- **Gate and converge (Lead only).** \`team_flow_gate\` checks report presence, evidence quality, reviewer approval, unresolved findings, write-scope discipline, and blocking escalations. Only a passing gate may finalize the run and write the report.
+- **Plan & Staff (Lead only).** \`team_flow_plan\` decomposes the goal into items (disjoint \`write_scopes\` per wave, DoD, dependencies, independent reviewers). Spawn teammates with the exact returned brief (\`context: "${settings?.workerContext ?? 'fresh'}"\`); refill waves via \`team_flow_staff\`.
+- **Execute & Report.** Owners work strictly in declared \`write_scopes\` and submit \`team_flow_report\` with changed \`files\`, \`commands\` (integer \`exit_code\`), and quoted \`evidence\`.
+- **Review & Respond.** Reviewers inspect real files/diffs and submit \`team_flow_review_submit\` with severity-tagged findings and \`evidence_checked\`. Authors answer every finding via \`team_flow_review_respond\` (\`fixed|rebut|accepted_risk\`); max rounds: ${settings?.maxReviewRounds ?? 2}. Rebutted blockers or exhausted rounds escalate to Lead.
+- **Gate & Finalize (Lead only).** \`team_flow_gate\` enforces reports, evidence, approvals, resolved findings, scope discipline, and cleared blockers before finalizing.${gitNote}${planFirstNote}
 
-Peer collaboration (workflow v2):
-- **Direct peer channel.** \`team_flow_talk\` posts to the Team channel or to one member and delivers it through the native Team transport. Ask the peer who owns the interface you depend on, answer questions addressed to you, and record objections where the board can replay them. Do not route peer coordination through the Lead.
-- **Open queue.** Items planned with \`assignment:"open"\` are unowned. Claim one with \`team_flow_work {action:"claim", item_id}\`, then work and report exactly like an assigned item. Release it if you cannot finish.
-- **Peer review by invitation.** After reporting, invite a peer with \`team_flow_work {action:"request_review", item_id, reviewer?}\`; omit \`reviewer\` to publish an open invitation any peer can take with \`{action:"take_review"}\`. Discuss findings with the author in the channel before submitting a verdict.
-- **Negotiation and votes.** Disagreement about a definition of done, scope, or the plan is a proposal: \`team_flow_decide {action:"propose", kind, item_id?, text}\`. Every affected member (the item owner and reviewers, or the whole Team) votes once with \`{action:"vote", proposal_id, vote:"yes|no|abstain"}\`. Accepted \`dod\` proposals amend the item's definition of done. Ties escalate to the Lead.
-- **Handoffs.** An owner may offer an unfinished item to a peer with \`team_flow_work {action:"handoff_offer", item_id, to}\`; the peer accepts or declines with \`handoff_accept\`/\`handoff_decline\`. Ownership transfers only after acceptance.
-- **Own the work you discover.** When the plan misses something (a missing example, an untested branch, a contract bug), add it yourself with \`team_flow_item\` instead of waiting for the Lead: give it a write scope and a definition of done, and it joins the same review and gate rules. Use \`owner:"open"\` if a peer should pick it up.
-- **Decisions have a clock.** Proposals auto-settle after the configured deadline (majority of affected members is the quorum; ties and missed quorums escalate to the Lead). Vote before the deadline or the decision happens without you.
-- **Read the board.** \`team_flow_read\` returns the channel tail, open queue, your review invitations, handoffs offered to you, unanswered questions addressed to you, and open proposals awaiting your vote.
+Peer collaboration:
+- \`team_flow_talk\`: direct peer/team channel. \`team_flow_read\`: inbox (proposals, open queue, review invites, handoffs).
+- \`team_flow_work\`: claim/release open items, request/take peer review, hand off ownership. \`team_flow_item\`: add missed work items.
+- \`team_flow_decide\`: propose/vote/withdraw DoD or scope changes (majority quorum; ties or timeouts escalate to Lead).
 
-Non-negotiable rules:
-- **Independence.** Work only inside your declared write scope. Reviewers never edit the author's files and never fix what they review. Every member reasons from its own context and its own evidence; state assumptions instead of relying on another member's conversation.
-- **Evidence over assertion.** A claim without a path, command, exit code, or quoted output is not verification. Unknowns go in \`open_questions\` and \`risks\`, not into a confident summary.
-- **Communication.** Use \`send_message\` with a self-contained message; prefix \`[BLOCKER]\`, \`[QUESTION]\`, \`[REVIEW]\`, or \`[HANDOFF]\` and the item id. A successful send does not mean the peer has processed it. Never assume a peer's silent agreement.
-- **Escalate instead of stalling.** Use \`team_flow_escalate\` for a genuine blocker, conflicting requirements, a scope change, or exhausted review rounds. The Lead must resolve blocking escalations before the gate can pass.
-- **Board hygiene.** The plugin owns the \`.agentteam\` artifact directory; never edit \`state.json\` or the report by hand. Use the tools so every transition is auditable.
-- **No unilateral scope creep.** If the work needs files outside your scope, escalate \`scope_change\` rather than editing them.`
+Non-negotiable:
+- **Independence.** Work only inside declared \`write_scopes\`; reviewers never edit reviewed code. Never hand-edit \`.agentteam/state.json\` or reports.
+- Claims require command/output evidence; unknowns go in \`open_questions\`/\`risks\`. Escalate true blockers via \`team_flow_escalate\`.`
 }
 
 /** @returns a bullet list, or one placeholder line when empty. */
