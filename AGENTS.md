@@ -23,7 +23,8 @@ This repository is a zero-dependency Node.js (ESM) monorepo hosting DeepSeek Har
     │   ├── lib/
     │   │   ├── config.js           # Settings resolution, presets, reversible feature switches
     │   │   ├── store.js            # Per-team atomic JSON blackboard (<cwd>/.agentteam/) + locking
-    │   │   ├── workflow.js         # Run state machine, planning, review, collaboration, gates
+    │   │   ├── workflow.js         # Thin barrel facade aggregating lib/workflow/*.js
+    │   │   ├── workflow/           # Domain workflow submodules (constants, plan, review, collaboration, status-and-gates)
     │   │   ├── orchestrator.js     # Event-driven dispatcher, stall watchdog, auto-finalize
     │   │   ├── worktree-manager.js # Lazy Wave 1+ worktrees, auto-commit, auto-presync, integration verify
     │   │   ├── protocol.js         # Role policies, briefs, stall nudges, report rendering
@@ -42,7 +43,7 @@ This repository is a zero-dependency Node.js (ESM) monorepo hosting DeepSeek Har
     │   │   ├── tool-guard.js       # Team role subject resolver for tool-guard-kit
     │   │   ├── hooks.js            # Hook helpers
     │   │   └── transcript.js       # Session log summarizer
-    │   └── test/                   # 22 Node test suites (*.test.mjs)
+    │   └── test/                   # 23 Node test suites (*.test.mjs)
     ├── dsh-git-graph/              # Git commit DAG & branch visualizer (@local/dsh-git-graph)
     │   ├── index.js                # Cordis plugin entrypoint & git_graph_* tools
     │   ├── client.js               # Webview UI bundle (zero-require sandbox)
