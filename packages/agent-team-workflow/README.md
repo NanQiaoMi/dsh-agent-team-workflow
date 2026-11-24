@@ -89,6 +89,7 @@ plugin_manager(action: "install_bundle", target: "<此目录绝对路径>")
 | `strictReviewRubric` | `false` | 开启后 `deep` 深度批准必须携带显式 `dod_checks` |
 | `lazyWorktreeProvision` | `true` | 仅预建已解锁波次 Worktree，Wave 1+ 等上游合入后按最新 `runBranch` 懒创建 |
 | `autoCommitOnReport` | `true` | 汇报时检测范围内未提交改动并安全自动提交（越界改动拦截报错） |
+| `autoPresyncWorktree` | `true` | 已批准 Worktree 合并前自动无冲突预同步最新 `runBranch` |
 | `maxStallNudges` | `2` | 同一 `rev` 沉默无进展成员的最大自动轻推次数（`0` 关闭），超限升级 Lead |
 | `stallNudgeDelaySeconds` | `45` | 唤醒或上次轻推后判定成员停滞的最小等待秒数 |
 | `integrationVerifyCommands` | `[]` | 全量合入 `runBranch` 后、Finalize 前必须通过的集成验证命令列表 |

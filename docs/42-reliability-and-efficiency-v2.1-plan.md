@@ -207,9 +207,9 @@
 
 ## 7. v2.2 演进规划（已对齐，分 4 个独立 PR 落地）
 
-| 阶段 | 分支名 | 主题 | 核心设计要点 |
-|---|---|---|---|
-| **v2.2-PR1** | `feat/worktree-auto-presync` | 并行 Worktree 合并前自动无冲突预同步 | `autoMergeApprovedWorktree` 在直接 squash 合入失败时，若工作区干净且无实际文本冲突，自动将最新 `runBranch` 同步进 worktree 分支后再合并，免除无谓唤醒模型手动执行 `worktree_sync`；存在真实冲突才记录错误并唤醒仲裁 |
-| **v2.2-PR2** | `perf/all-preset-and-lead-schema-slimming` | 全预设与 Lead 工具 Schema 瘦身 | 将 `presetToolPruning` 扩展至 `feature` / `pr-review`（无开放队列/提案/契约时按需精简）并压缩 Lead/Worker 冗余 Schema 描述文本，压降常规 `tools.worker`（目标 ≤ 11KB）与 `tools.lead`（目标 ≤ 19KB） |
-| **v2.2-PR3** | `feat/adaptive-rework-and-budget-thinking` | 返工/卡死升档 + 接近预算自动降档 | 扩展 `thinking-router.js`：成员发生返工或停滞恢复时自动提升思考档位提高一次修复率；当 Run Token 消耗达到预算 `>= 80%` 时对非阻塞协调/常规轮次自动降档保底，防预算硬熔断 |
-| **v2.2-PR4** | `test/v21-full-lifecycle-simulation` | v2.1 全链路端到端仿真回归测试 | 新增单文件综合仿真用例，串联懒建 Wave 1+ Worktree、范围内自动提交、沉默卡死轻推自愈、主机 `hostVerified` 快照、合后集成门禁及可靠性归因指标全链路验证 |
+| 阶段 | 分支名 | 主题 | 核心设计要点 | 状态 |
+|---|---|---|---|---|
+| **v2.2-PR1** | `feat/worktree-auto-presync` | 并行 Worktree 合并前自动无冲突预同步 | `autoMergeApprovedWorktree` 在 squash 合入前先以 `abortOnConflict: true` 自动将最新 `runBranch` 同步进干净 worktree，免除无谓唤醒模型手动执行 `worktree_sync`；存在真实冲突才记录错误并唤醒仲裁（PR #9） | **已合入 `main`** |
+| **v2.2-PR2** | `perf/all-preset-and-lead-schema-slimming` | 全预设与 Lead 工具 Schema 瘦身 | 将 `presetToolPruning` 扩展至 `feature` / `pr-review`（无开放队列/提案/契约时按需精简）并压缩 19 个工具冗余描述文本，实测 `tools.lead` 降至 `14,153 B`（-40.3%）、`tools.worker` 降至 `8,511 B`（-40.8%）（PR #10） | **已合入 `main`** |
+| **v2.2-PR3** | `feat/adaptive-rework-and-budget-thinking` | 返工/卡死升档 + 接近预算自动降档 | 扩展 `thinking-router.js`：多轮/blocker 返工升档 `max`、停滞轻推恢复升档 `high`；当 `tokenBudgetPerRun > 0` 且消耗 `>= 80%` 时对非阻塞常规/协调轮次自动降档保底并保护关键阶段（PR #11） | **已合入 `main`** |
+| **v2.2-PR4** | `test/v21-full-lifecycle-simulation` | v2.1/v2.2 全链路端到端仿真回归测试 | 新增 `test/v21-lifecycle-simulation.test.mjs`，串联 `feature` 预设裁剪、懒建 Wave 1+ Worktree、沉默轻推与停滞升档、范围内自动提交、主机 `hostVerified` 快照、无冲突自动预同步、80% 预算降档、合后集成门禁及可靠性归因指标全链路验证 | **当前 PR** |
