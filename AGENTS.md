@@ -34,7 +34,8 @@ This repository is a zero-dependency Node.js (ESM) monorepo hosting DeepSeek Har
     │   │   ├── thinking-router.js  # Adaptive reasoning effort & 80% token-budget downgrade
     │   │   ├── review-policy.js    # Risk classification & review depth/rubric routing
     │   │   ├── telemetry.js        # Token usage & reliability attribution metrics
-    │   │   ├── dashboard.js        # Read-only snapshot builder for the live board
+    │   │   ├── dashboard.js        # Thin barrel facade aggregating lib/dashboard/*.js
+    │   │   ├── dashboard/          # Domain dashboard submodules (shared, items-and-git, collaboration, snapshot)
     │   │   ├── dashboard-route.js  # Authenticated Connection route for dashboard state
     │   │   ├── member-route.js     # Authenticated Connection route for member transcript/view
     │   │   ├── git.js              # Git CLI wrappers & porcelain parsing
@@ -43,7 +44,7 @@ This repository is a zero-dependency Node.js (ESM) monorepo hosting DeepSeek Har
     │   │   ├── tool-guard.js       # Team role subject resolver for tool-guard-kit
     │   │   ├── hooks.js            # Hook helpers
     │   │   └── transcript.js       # Session log summarizer
-    │   └── test/                   # 23 Node test suites (*.test.mjs)
+    │   └── test/                   # 24 Node test suites (*.test.mjs)
     ├── dsh-git-graph/              # Git commit DAG & branch visualizer (@local/dsh-git-graph)
     │   ├── index.js                # Cordis plugin entrypoint & git_graph_* tools
     │   ├── client.js               # Webview UI bundle (zero-require sandbox)
