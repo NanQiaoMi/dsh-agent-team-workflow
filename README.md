@@ -30,6 +30,23 @@
 把做不完的任务交接给同伴；Lead 只负责定 mission、仲裁死锁与最终门禁。
 所有协作动作都落在黑板（`state.json`）上，可在实时看板中回放。
 
+### 工作流生命周期
+
+```mermaid
+flowchart LR
+  Plan["1. Plan & Worktree 隔离<br/>team_flow_plan / 写范围"] --> Exec["2. 并行执行 & 沙箱守卫<br/>worker + ctx.tools.guard()"]
+  Exec --> Report["3. 交付与自检<br/>team_flow_report + 证据"]
+  Report --> Review["4. 相互评审<br/>team_flow_review_submit"]
+  Review -->|请求修改| Exec
+  Review -->|全部批准| Gate["5. 六类门禁 & 合流<br/>team_flow_gate finalize"]
+```
+
+<p align="center">
+  <img src="docs/images/dashboard-overview.png" alt="Agent Team 实时监控看板总览" />
+  <br />
+  <sub><b>实时监控看板总览</b> · 多波次执行流程图（含 <code>blockedBy</code> 依赖与评审自循环）、统计摘要与协作频道</sub>
+</p>
+
 ## 目录
 
 | 路径 | 内容 |
@@ -132,6 +149,35 @@ Lead 会 `team_flow_plan` → 用返回的 spawn 简报 spawn 队友 → worker 
 - **事件流 / 门禁 / 升级**三面板 + **详情抽屉**（DoD、报告文件与命令退出码、评审记录与 findings 处置、repair log）。
 
 数据来自 `GET /api/agent-team-workflow.snapshot?session=<id>`（Connection 认证围栏内，只读、`no-store`），客户端 1.2 秒轮询、页面隐藏时暂停。看板不写任何状态。
+
+### 看板核心视图预览
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/images/topology-flow.png" alt="协作拓扑与成员分工" />
+      <br />
+      <sub><b>协作拓扑与用量总览</b> · Lead / 成员 / 工作项 / 评审边关系图与实时状态</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/images/member-transcript.png" alt="成员详情与对话轨迹" />
+      <br />
+      <sub><b>成员详情与对话轨迹</b> · Worktree 隔离分支、活动时间线与近 40 条对话投影</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/images/usage-panel.png" alt="用量统计与门禁面板" />
+      <br />
+      <sub><b>用量统计与门禁面板</b> · 按成员统计输入/输出/缓存读写及六类门禁评估</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/images/sandbox-intercept.png" alt="原生工具沙箱拦截" />
+      <br />
+      <sub><b>原生工具沙箱拦截</b> · 只读角色尝试写操作时被 <code>ctx.tools.guard()</code> 实时阻断</sub>
+    </td>
+  </tr>
+</table>
 
 ## 插件配置（`cordis.patch.yml` 的 `config`）
 
