@@ -34,11 +34,11 @@
 
 ```mermaid
 flowchart LR
-  Plan["1. Plan & Worktree 隔离\nteam_flow_plan / 写范围"] --> Exec["2. 并行执行 & 沙箱守卫\nworker + ctx.tools.guard()"]
-  Exec --> Report["3. 交付与自检\nteam_flow_report + 证据"]
-  Report --> Review["4. 相互评审\nteam_flow_review_submit"]
+  Plan["1. Plan & Worktree 隔离<br/>team_flow_plan / 写范围"] --> Exec["2. 并行执行 & 沙箱守卫<br/>worker + ctx.tools.guard()"]
+  Exec --> Report["3. 交付与自检<br/>team_flow_report + 证据"]
+  Report --> Review["4. 相互评审<br/>team_flow_review_submit"]
   Review -->|请求修改| Exec
-  Review -->|全部批准| Gate["5. 六类门禁 & 合流\nteam_flow_gate finalize"]
+  Review -->|全部批准| Gate["5. 六类门禁 & 合流<br/>team_flow_gate finalize"]
 ```
 
 <p align="center">
