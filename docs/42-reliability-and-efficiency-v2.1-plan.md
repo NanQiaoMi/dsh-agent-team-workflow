@@ -232,8 +232,8 @@
 
 | 阶段 | 分支名 | 主题 | 主要改动范围 | 状态 |
 |---|---|---|---|---|
-| **v2.4-PR1** | `ci/monorepo-coverage-and-project-memory` | CI 全包覆盖 + 项目记忆防失忆 | `.github/workflows/ci.yml` 纳入 `dsh-git-graph`；新增根目录 `AGENTS.md` 与 `docs/DECISIONS.md`；同步 `docs/42` | **进行中** |
-| **v2.4-PR2** | `refactor/split-workflow-by-domain` | 按领域拆分 `lib/workflow.js` | 将 `lib/workflow.js`（2,309 行）拆分为 `lib/workflow/{constants,plan,review,collaboration,status-and-gates}.js` + 薄门面 + 导出一致性回归测试 | 待开始 |
+| **v2.4-PR1** | `ci/monorepo-coverage-and-project-memory` | CI 全包覆盖 + 项目记忆防失忆 | `.github/workflows/ci.yml` 纳入 `dsh-git-graph`；新增根目录 `AGENTS.md` 与 `docs/DECISIONS.md`；同步 `docs/42` | **已合入 `main`（PR #16 / `c1c8650`）** |
+| **v2.4-PR2** | `refactor/split-workflow-by-domain` | 按领域拆分 `lib/workflow.js` | 将 `lib/workflow.js`（2,309 行）拆分为 `lib/workflow/{constants,plan,review,collaboration,status-and-gates}.js` + 薄门面 + 导出一致性回归测试 | **进行中** |
 | **v2.4-PR3** | `refactor/split-dashboard-by-domain` | 按领域拆分 `lib/dashboard.js` | 将 `lib/dashboard.js`（1,521 行）拆分为 `lib/dashboard/{shared,items-and-git,collaboration,snapshot}.js` + 薄门面 + 导出一致性回归测试 | 待开始 |
 | **v2.4-PR4** | `chore/architecture-guardrails` | 轻量架构护栏脚本与 CI 门禁 | 新增零依赖 `bench/check-architecture.mjs`（校验子模块无环依赖与单模块行数预算，排除受沙箱约束的 `client.js`），接入 `ci.yml` 与 `AGENTS.md` | 待开始 |
 
